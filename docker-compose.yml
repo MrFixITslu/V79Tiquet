@@ -9,5 +9,5 @@ services:
     ports:
       # Change the first number (8080) to any port that is free on your server.
       # The second number (8080) must remain matching the Nginx port inside the container.
-      - "8080:8080"
+      - "3010:80"
     restart: unless-stopped
