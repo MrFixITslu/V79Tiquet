@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  v79-tiquet-manager:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: v79-tiquet-manager
+    ports:
+      # Change the first number (8080) to any port that is free on your server.
+      # The second number (8080) must remain matching the Nginx port inside the container.
+      - "8080:8080"
+    restart: unless-stopped
