@@ -4,7 +4,6 @@ dist
 .github
 .gitignore
 Dockerfile
-nginx.conf
 .dockerignore
 npm-debug.log
 README.md
