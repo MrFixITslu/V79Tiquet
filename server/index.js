@@ -3,6 +3,7 @@ import express from "express";
 import cors from "cors";
 import http from "http";
 import { WebSocketServer } from "ws";
+import { createServer as createViteServer } from "vite";
 import db from "./db.js";
 import { sendPortalLink, sendStatusUpdate } from "./email.js";
 import { registerOAuthRoutes } from "./oauth.js";
@@ -38,7 +39,7 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 const isProduction = process.env.NODE_ENV === "production";
-const PORT = isProduction ? (process.env.PORT || 8080) : 3001;
+const PORT = process.env.PORT || 3000;
 
 registerHealthCheck(app);
 
@@ -1772,12 +1773,18 @@ if (process.env.STRIPE_SECRET_KEY) {
   logger.warn("Stripe routes registered in SIMULATED mode (dev only, no STRIPE_SECRET_KEY set).");
 }
 
-// Serve static frontend files in production
+// Serve static frontend files in production, or mount Vite middleware in development
 if (isProduction) {
     app.use(express.static(path.join(__dirname, '../dist')));
     app.get('*', (req, res) => {
         res.sendFile(path.join(__dirname, '../dist/index.html'));
     });
+} else {
+    const vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: "spa",
+    });
+    app.use(vite.middlewares);
 }
 
 // ── Global error handler ──────────────────────────────────────────────────
