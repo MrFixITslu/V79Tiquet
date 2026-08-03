@@ -1,49 +1,9 @@
-version: '3.8'
-
 services:
   v79-tiquet-manager:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: v79-tiquet-manager
-<<<<<<< Updated upstream
-    restart: unless-stopped
-    env_file: .env
-    environment:
-      - NODE_ENV=production
-      - PORT=3050
-      - DATABASE_PATH=/app/data/tiquet.db
-      # Detected automatically by Nginx Proxy Manager on the shared proxy_network.
-      - VIRTUAL_HOST=
-      - VIRTUAL_PORT=3050
-      - LETSENCRYPT_HOST=tiquet.v79sl.duckdns.org
     ports:
-      # Kept from the original V79Tiquet compose file — do not change unless
-      # you also update the NPM proxy host entry for tiquet.v79sl.duckdns.org.
-      - "3050:80"
-    volumes:
-      - tiquet_data:/app/data
-      - tiquet_uploads:/app/uploads
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3050/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 20s
-    networks:
-      - proxy_network
-
-volumes:
-  tiquet_data:
-  tiquet_uploads:
-
-networks:
-  proxy_network:
-    external: true
-=======
-    ports:
-      # Change the first number (8080) to any port that is free on your server.
-      # The second number (8080) must remain matching the Nginx port inside the container.
       - "8080:8080"
     restart: unless-stopped
->>>>>>> Stashed changes

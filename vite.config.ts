@@ -20,12 +20,6 @@ export default defineConfig(({mode}) => {
       port: 3000,
       allowedHosts: true,
       hmr: process.env.DISABLE_HMR !== 'true',
-<<<<<<< Updated upstream
-      proxy: {
-        '/api': 'http://localhost:3050',
-      },
-=======
->>>>>>> Stashed changes
     },
   };
 });
