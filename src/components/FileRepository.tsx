@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { FileItem } from "../types";
+import { api, ApiError } from "../api";
 import {
   File,
   Upload,
@@ -9,19 +10,21 @@ import {
   FileText,
   Image as ImageIcon,
   FileArchive,
-  MoreVertical,
   Clock,
   User,
+  Loader2,
 } from "lucide-react";
 
 export function FileRepository({
   files,
-  setFiles,
+  onFilesChanged,
 }: {
   files: FileItem[];
-  setFiles: React.Dispatch<React.SetStateAction<FileItem[]>>;
+  onFilesChanged: () => void;
 }) {
   const [searchQuery, setSearchQuery] = useState("");
+  const [uploading, setUploading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const filteredFiles = files.filter((f) =>
     f.name.toLowerCase().includes(searchQuery.toLowerCase())
@@ -42,58 +45,54 @@ export function FileRepository({
     return <File className="w-5 h-5 text-slate-400" />;
   };
 
-  const handleUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const uploadedFiles = e.target.files;
-    if (!uploadedFiles) return;
+    if (!uploadedFiles || uploadedFiles.length === 0) return;
 
-    const newFiles: FileItem[] = Array.from(uploadedFiles).map((file: any) => ({
-      id: crypto.randomUUID(),
-      name: file.name,
-      size: file.size,
-      type: file.type,
-      uploadedAt: new Date().toISOString(),
-      uploadedBy: "Current User",
-    }));
-
-    setFiles([...newFiles, ...files]);
-  };
-
-  const handleDelete = (id: string) => {
-    if (confirm("Are you sure you want to delete this file?")) {
-      setFiles(files.filter((f) => f.id !== id));
+    setError(null);
+    setUploading(true);
+    try {
+      const formData = new FormData();
+      Array.from(uploadedFiles).forEach((file: File) => formData.append("files", file));
+      await api.post("/files", formData);
+      onFilesChanged();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Upload failed. Please try again.");
+    } finally {
+      setUploading(false);
+      e.target.value = "";
     }
   };
 
-  const handleDownload = (file: FileItem) => {
-    let content: any = `Mock content for ${file.name}`;
-    
-    // If it's a PDF, provide a minimal valid PDF structure so viewers don't crash
-    if (file.type.includes("pdf")) {
-      content = `%PDF-1.4
-1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
-2 0 obj<</Type/Pages/Count 1/Kids[3 0 R]>>endobj
-3 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R/Resources<<>>>>endobj
-xref
-0 4
-0000000000 65535 f
-0000000009 00000 n
-0000000052 00000 n
-0000000101 00000 n
-trailer<</Size 4/Root 1 0 R>>
-startxref
-178
-%%EOF`;
+  const handleDelete = async (id: string) => {
+    if (!confirm("Are you sure you want to delete this file?")) return;
+    try {
+      await api.del(`/files/${id}`);
+      onFilesChanged();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Failed to delete file.");
     }
+  };
 
-    const blob = new Blob([content], { type: file.type });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = file.name;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+  const handleDownload = async (file: FileItem) => {
+    try {
+      const token = sessionStorage.getItem("tiquet_token");
+      const res = await fetch(`/api/files/${file.id}/download`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) throw new Error("Download failed");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = file.name;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setError("Failed to download file.");
+    }
   };
 
   return (
@@ -106,11 +105,15 @@ startxref
           </p>
         </div>
         <label className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors shadow-sm cursor-pointer">
-          <Upload className="w-4 h-4" />
-          Upload Files
-          <input type="file" multiple className="hidden" onChange={handleUpload} />
+          {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+          {uploading ? "Uploading..." : "Upload Files"}
+          <input type="file" multiple className="hidden" onChange={handleUpload} disabled={uploading} />
         </label>
       </div>
+
+      {error && (
+        <div className="text-sm text-red-700 bg-red-50 border border-red-100 rounded-xl px-4 py-3">{error}</div>
+      )}
 
       <div className="flex items-center gap-4 bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
         <div className="relative flex-1">
