@@ -147,7 +147,7 @@ export interface AuthenticatedUser {
   name: string;
   email: string;
   photoUrl?: string;
-  provider: "google" | "apple";
+  provider: "google" | "apple" | "email";
 }
 
 export interface FileItem {

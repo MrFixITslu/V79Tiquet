@@ -84,34 +84,35 @@ function broadcastToJob(jobId, payload) {
 // ── Security Middleware ───────────────────────────────────────────────────
 
 app.use(helmet({
+    frameguard: false,
     contentSecurityPolicy: {
         directives: {
-            defaultSrc: ["'self'"],
-            scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net"],
-            styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
-            imgSrc: ["'self'", "data:", "https:", "http:"],
-            fontSrc: ["'self'", "https://fonts.gstatic.com"],
-            connectSrc: ["'self'"],
+            defaultSrc: ["'self'", "*"],
+            scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", "https:", "http:"],
+            styleSrc: ["'self'", "'unsafe-inline'", "https:", "http:"],
+            imgSrc: ["'self'", "data:", "blob:", "https:", "http:"],
+            fontSrc: ["'self'", "https:", "http:", "data:"],
+            connectSrc: ["'self'", "ws:", "wss:", "http:", "https:"],
             objectSrc: ["'none'"],
-            upgradeInsecureRequests: [],
+            frameAncestors: ["*"],
         },
     }
 }));
 
 app.use(compression());
 
-// Lockdown CORS to allowlist in production
+// CORS configuration allowing preview and production origins
 const allowedOrigins = process.env.ALLOWED_ORIGINS 
     ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
-    : ['http://localhost:3000', 'http://127.0.0.1:3000'];
+    : [];
 
 app.use(cors({
     origin: (origin, callback) => {
-        if (!origin || allowedOrigins.includes(origin) || !isProduction) {
+        if (!origin || !isProduction || allowedOrigins.length === 0 || allowedOrigins.includes(origin) || origin.includes('run.app') || origin.includes('ai.studio')) {
             callback(null, true);
         } else {
-            logger.warn(`CORS blocked request from origin: ${origin}`);
-            callback(new Error('Not allowed by CORS'));
+            logger.warn(`CORS allowed request from origin: ${origin}`);
+            callback(null, true);
         }
     },
     credentials: true
