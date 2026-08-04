@@ -5,5 +5,7 @@ services:
       dockerfile: Dockerfile
     container_name: v79-tiquet-manager
     ports:
-      - "3050:80"
+      - "3050:3050"
+    Environment:
+      - Port=3050
     restart: unless-stopped
