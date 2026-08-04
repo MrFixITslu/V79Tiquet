@@ -49,9 +49,9 @@ RUN mkdir -p data uploads && chown -R appuser:appgroup /app
 
 USER appuser
 
-EXPOSE 8080
+EXPOSE 3050
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
-    CMD wget -qO- "http://localhost:${PORT:-8080}/health" || exit 1
+    CMD wget -qO- "http://localhost:${PORT:-3050}/health" || exit 1
 
 CMD ["node", "server/index.js"]
