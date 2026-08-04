@@ -9,7 +9,7 @@ services:
     env_file: .env
     environment:
       - NODE_ENV=production
-      - PORT=8080
+      - PORT=3050
       - DATABASE_PATH=/app/data/tiquet.db
     # No `ports:` mapping on purpose. Nginx Proxy Manager reaches this
     # container over the shared `proxy_network` by container name + internal
@@ -19,12 +19,12 @@ services:
     # binds to the host at all. If you ever need to hit it directly from the
     # host for debugging, temporarily add:
     #   ports:
-    #     - "8080:8080"
+    #     - "3050:80"
     volumes:
       - tiquet_data:/app/data
       - tiquet_uploads:/app/uploads
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/health"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:3050/health"]
       interval: 30s
       timeout: 10s
       retries: 3
