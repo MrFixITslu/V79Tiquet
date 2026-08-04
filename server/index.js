@@ -3,8 +3,7 @@ import express from "express";
 import cors from "cors";
 import http from "http";
 import { WebSocketServer } from "ws";
-import { createServer as createViteServer } from "vite";
-import db from "./db.js";
+import db, { dbDir } from "./db.js";
 import { sendPortalLink, sendStatusUpdate } from "./email.js";
 import { registerOAuthRoutes } from "./oauth.js";
 import { v4 as uuidv4 } from "uuid";
@@ -38,18 +37,60 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
+
+// This app always sits behind a reverse proxy (Nginx Proxy Manager) in
+// production. Without this, req.ip resolves to NPM's internal container IP
+// for every request — meaning every user shares one rate-limit bucket
+// (so one noisy client can lock everyone else out of login) and every
+// audit-log entry records the wrong IP. `1` = trust exactly one hop
+// (the proxy directly in front of this container), which is correct for
+// this topology and avoids the security risk of trusting arbitrary
+// client-supplied X-Forwarded-For values.
+app.set('trust proxy', 1);
 const isProduction = process.env.NODE_ENV === "production";
-const PORT = process.env.PORT || 3050;
+const PORT = isProduction ? (process.env.PORT || 8080) : 3001;
 
 registerHealthCheck(app);
 
-const JWT_SECRET = process.env.JWT_SECRET || 'dev_jwt_secret_v79_tickit';
-const SA_JWT_SECRET = process.env.SUPER_ADMIN_JWT_SECRET || 'dev_sa_jwt_secret_v79_tickit';
+// JWT secrets: strongly prefer an explicit JWT_SECRET / SUPER_ADMIN_JWT_SECRET
+// in the environment (documented in env.example). If one isn't set in
+// production, DO NOT crash the process — a crash-looping container is
+// unreachable from the reverse proxy and just presents as a permanent 502
+// with no useful error visible outside `docker logs`. Instead, generate a
+// strong random secret once and persist it next to the database (inside the
+// same Docker volume, so it survives restarts/redeploys) so sessions stay
+// valid across restarts even if the operator forgot to set one explicitly.
+function loadOrCreatePersistedSecret(envValue, filename, label) {
+    if (envValue) return envValue;
 
-if (isProduction && (!process.env.JWT_SECRET || !process.env.SUPER_ADMIN_JWT_SECRET)) {
-    console.error("FATAL: JWT_SECRET or SUPER_ADMIN_JWT_SECRET not set in production.");
-    process.exit(1);
+    const secretPath = path.join(dbDir, filename);
+    try {
+        if (fs.existsSync(secretPath)) {
+            return fs.readFileSync(secretPath, "utf8").trim();
+        }
+        const generated = crypto.randomBytes(64).toString("hex");
+        fs.writeFileSync(secretPath, generated, { mode: 0o600 });
+        console.warn(
+            `[WARN] ${label} was not set — generated and persisted a random one at ${secretPath}. ` +
+            `Set ${label} explicitly in your .env for a fully reproducible deploy (see env.example).`
+        );
+        return generated;
+    } catch (e) {
+        // If we can't even persist a generated secret (e.g. read-only volume),
+        // that's a real configuration problem worth failing loudly on rather
+        // than silently issuing a secret that changes every restart and logs
+        // everyone out.
+        console.error(`[FATAL] ${label} not set and could not persist a generated one at ${secretPath}: ${e.message}`);
+        process.exit(1);
+    }
 }
+
+const JWT_SECRET = isProduction
+    ? loadOrCreatePersistedSecret(process.env.JWT_SECRET, ".jwt_secret", "JWT_SECRET")
+    : (process.env.JWT_SECRET || 'dev_jwt_secret_v79_tickit');
+const SA_JWT_SECRET = isProduction
+    ? loadOrCreatePersistedSecret(process.env.SUPER_ADMIN_JWT_SECRET, ".sa_jwt_secret", "SUPER_ADMIN_JWT_SECRET")
+    : (process.env.SUPER_ADMIN_JWT_SECRET || 'dev_sa_jwt_secret_v79_tickit');
 
 // ── Real-time chat: WebSocket job-room registry ───────────────────────────
 // Maps jobId -> Set of live ws connections subscribed to that job's chat.
@@ -84,35 +125,34 @@ function broadcastToJob(jobId, payload) {
 // ── Security Middleware ───────────────────────────────────────────────────
 
 app.use(helmet({
-    frameguard: false,
     contentSecurityPolicy: {
         directives: {
-            defaultSrc: ["'self'", "*"],
-            scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", "https:", "http:"],
-            styleSrc: ["'self'", "'unsafe-inline'", "https:", "http:"],
-            imgSrc: ["'self'", "data:", "blob:", "https:", "http:"],
-            fontSrc: ["'self'", "https:", "http:", "data:"],
-            connectSrc: ["'self'", "ws:", "wss:", "http:", "https:"],
+            defaultSrc: ["'self'"],
+            scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net"],
+            styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+            imgSrc: ["'self'", "data:", "https:", "http:"],
+            fontSrc: ["'self'", "https://fonts.gstatic.com"],
+            connectSrc: ["'self'"],
             objectSrc: ["'none'"],
-            frameAncestors: ["*"],
+            upgradeInsecureRequests: [],
         },
     }
 }));
 
 app.use(compression());
 
-// CORS configuration allowing preview and production origins
+// Lockdown CORS to allowlist in production
 const allowedOrigins = process.env.ALLOWED_ORIGINS 
     ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
-    : [];
+    : ['http://localhost:3000', 'http://127.0.0.1:3000'];
 
 app.use(cors({
     origin: (origin, callback) => {
-        if (!origin || !isProduction || allowedOrigins.length === 0 || allowedOrigins.includes(origin) || origin.includes('run.app') || origin.includes('ai.studio')) {
+        if (!origin || allowedOrigins.includes(origin) || !isProduction) {
             callback(null, true);
         } else {
-            logger.warn(`CORS allowed request from origin: ${origin}`);
-            callback(null, true);
+            logger.warn(`CORS blocked request from origin: ${origin}`);
+            callback(new Error('Not allowed by CORS'));
         }
     },
     credentials: true
@@ -1223,7 +1263,7 @@ app.get("/api/files", authenticateToken, (req, res) => {
     }
 });
 
-app.post("/api/files", authenticateToken, generalUpload.array("files", 20), (req, res) => {
+app.post("/api/files", authenticateToken, uploadLimiter, generalUpload.array("files", 20), (req, res) => {
     try {
         const uploaded = (req.files || []).map(f => {
             const id = uuidv4();
@@ -1410,7 +1450,7 @@ const upload = multer({
 });
 
 // POST /api/jobs/:id/files  — upload one or many files into the job folder
-app.post("/api/jobs/:id/files", authenticateToken, upload.array('files', 20), (req, res) => {
+app.post("/api/jobs/:id/files", authenticateToken, uploadLimiter, upload.array('files', 20), (req, res) => {
     const { id: jobId } = req.params;
     try {
         if (!req.files || req.files.length === 0) return res.status(400).json({ error: 'No files uploaded' });
@@ -1774,18 +1814,20 @@ if (process.env.STRIPE_SECRET_KEY) {
   logger.warn("Stripe routes registered in SIMULATED mode (dev only, no STRIPE_SECRET_KEY set).");
 }
 
-// Serve static frontend files in production, or mount Vite middleware in development
+// Serve static frontend files in production
 if (isProduction) {
     app.use(express.static(path.join(__dirname, '../dist')));
-    app.get('*', (req, res) => {
+    // Only fall back to the SPA shell for real page routes. Without the
+    // /api exclusion here, any unmatched /api/* request (typo'd endpoint,
+    // stale frontend build calling a removed route, etc.) would silently
+    // return a 200 HTML page instead of a 404 — masking real API errors
+    // as if they succeeded.
+    app.get(/^(?!\/api\/).*/, (req, res) => {
         res.sendFile(path.join(__dirname, '../dist/index.html'));
     });
-} else {
-    const vite = await createViteServer({
-        server: { middlewareMode: true },
-        appType: "spa",
+    app.use('/api', (req, res) => {
+        res.status(404).json({ error: 'Not found' });
     });
-    app.use(vite.middlewares);
 }
 
 // ── Global error handler ──────────────────────────────────────────────────

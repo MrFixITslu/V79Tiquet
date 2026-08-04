@@ -9,7 +9,7 @@ const defaultDbPath = fs.existsSync(path.resolve('data/data.db')) ? 'data/data.d
 const dbPath = process.env.TEST_DB || process.env.DATABASE_PATH || defaultDbPath;
 
 // Ensure parent directory exists
-const dbDir = path.dirname(path.resolve(dbPath));
+export const dbDir = path.dirname(path.resolve(dbPath));
 if (!fs.existsSync(dbDir)) {
     fs.mkdirSync(dbDir, { recursive: true });
 }

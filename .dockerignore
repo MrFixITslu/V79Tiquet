@@ -7,3 +7,11 @@ Dockerfile
 .dockerignore
 npm-debug.log
 README.md
+data
+logs
+uploads/*
+!uploads/.gitkeep
+*.db
+*.db-shm
+*.db-wal
+.env
