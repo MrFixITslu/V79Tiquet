@@ -185,3 +185,23 @@ function escapeHtml(str) {
         .replace(/>/g, '&gt;')
         .replace(/"/g, '&quot;');
 }
+
+/**
+ * Merge {{field}} tokens in a stored template (subject or html body) with
+ * plain-text values. Values are HTML-escaped before substitution so a
+ * client name or company field can never break out of the template markup.
+ */
+export function renderTemplate(template, vars) {
+    return String(template ?? '').replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (match, key) => {
+        return Object.prototype.hasOwnProperty.call(vars, key) ? escapeHtml(vars[key]) : match;
+    });
+}
+
+/**
+ * Send an already-rendered template. Thin wrapper around the internal
+ * `send()` helper so callers (welcome email, newsletter broadcast) don't
+ * need their own copy of the transporter/logging logic.
+ */
+export async function sendTemplated(to, subject, html) {
+    return send(to, subject, html);
+}

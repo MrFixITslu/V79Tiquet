@@ -85,6 +85,32 @@ export interface Client {
   phone: string;
   address: string;
   createdAt: string;
+  industryId?: string | null;
+  newsletterOptIn?: number; // 0 or 1 — stored as SQLite INTEGER
+  newsletterOptedInAt?: string | null;
+}
+
+export interface Industry {
+  id: string;
+  name: string;
+}
+
+export type EmailTemplateType = "welcome" | "newsletter";
+
+export interface EmailTemplate {
+  type: EmailTemplateType;
+  subject: string;
+  htmlBody: string;
+  updatedAt: string;
+}
+
+export interface NewsletterSend {
+  id: string;
+  industryId: string | null;
+  subject: string;
+  recipientCount: number;
+  sentAt: string;
+  sentBy: string | null;
 }
 
 export interface Job {

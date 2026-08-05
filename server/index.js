@@ -3,8 +3,8 @@ import express from "express";
 import cors from "cors";
 import http from "http";
 import { WebSocketServer } from "ws";
-import db, { dbDir } from "./db.js";
-import { sendPortalLink, sendStatusUpdate } from "./email.js";
+import db, { dbDir, seedDefaultTemplatesForAccount } from "./db.js";
+import { sendPortalLink, sendStatusUpdate, sendTemplated, renderTemplate } from "./email.js";
 import { registerOAuthRoutes } from "./oauth.js";
 import { v4 as uuidv4 } from "uuid";
 import jwt from "jsonwebtoken";
@@ -25,6 +25,7 @@ import { logger } from "./logger.js";
 import { 
     sanitizeString, 
     sanitizeObject, 
+    sanitizeEmailHtml,
     isValidEmail, 
     isValidUUID, 
     isNonEmptyString,
@@ -346,6 +347,7 @@ app.post("/api/auth/register", async (req, res) => {
             db.prepare("INSERT INTO settings (id, name, email, account_id) VALUES (?, ?, ?, ?)").run(uuidv4(), companyName, email, accountId);
         });
         registerTx();
+        seedDefaultTemplatesForAccount(accountId);
 
         logger.audit('user_registered', { userId, email, accountId });
 
@@ -1336,20 +1338,54 @@ app.get("/api/clients", authenticateToken, (req, res) => {
     }
 });
 
+// Public URL for the company's main marketing site — included in the welcome
+// email. Distinct from APP_BASE_URL, which is this app's own portal domain.
+const COMPANY_WEBSITE_URL = process.env.COMPANY_WEBSITE_URL || 'https://v79sl.duckdns.org';
+const APP_BASE_URL_FOR_TEMPLATES = (process.env.APP_BASE_URL || 'http://localhost:3000').replace(/\/$/, '');
+
+// Renders and sends the account's 'welcome' template to a newly-created
+// client. Fire-and-forget by design (see call sites) — a slow or failed SMTP
+// send must never block or fail client creation itself.
+async function sendWelcomeEmailForClient(client, accountId) {
+    const template = db.prepare("SELECT * FROM email_templates WHERE account_id = ? AND type = 'welcome'").get(accountId);
+    if (!template || !template.subject || !template.htmlBody) return { success: false, error: 'No welcome template configured' };
+
+    const settings = db.prepare("SELECT * FROM settings WHERE account_id = ?").get(accountId);
+    const vars = {
+        client_name: client.name || '',
+        company_name: settings?.name || '',
+        company_address: settings?.address || '',
+        company_phone: settings?.phone || '',
+        company_email: settings?.email || '',
+        site_url: COMPANY_WEBSITE_URL,
+        opt_in_link: `${APP_BASE_URL_FOR_TEMPLATES}/api/newsletter/confirm/${client.newsletterOptInToken}`,
+    };
+
+    const subject = renderTemplate(template.subject, vars);
+    const html = renderTemplate(template.htmlBody, vars);
+    return sendTemplated(client.email, subject, html);
+}
+
 // Create a new client
 app.post("/api/clients", authenticateToken, (req, res) => {
-    const { name, company, email, phone, address } = sanitizeObject(req.body);
+    const { name, company, email, phone, address, industryId } = sanitizeObject(req.body);
     if (!name || !email) return badRequest(res, "Name and email are required");
     if (!isValidEmail(email)) return badRequest(res, "Invalid email format");
 
     try {
         const id = isNonEmptyString(req.body.id) ? String(req.body.id).slice(0, 64) : uuidv4();
         const createdAt = new Date().toISOString();
+        const newsletterOptInToken = uuidv4();
         db.prepare(
-            "INSERT INTO clients (id, name, company, email, phone, address, createdAt, account_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-        ).run(id, name, company || null, email, phone || null, address || null, createdAt, req.accountId);
+            "INSERT INTO clients (id, name, company, email, phone, address, industryId, newsletterOptInToken, newsletterOptIn, createdAt, account_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)"
+        ).run(id, name, company || null, email, phone || null, address || null, industryId || null, newsletterOptInToken, createdAt, req.accountId);
 
         const newClient = db.prepare("SELECT * FROM clients WHERE id = ?").get(id);
+
+        sendWelcomeEmailForClient(newClient, req.accountId)
+            .then(r => console.log(`📧 Welcome email ${r.success ? 'sent' : 'failed'} to ${newClient.email}`))
+            .catch(e => console.error('Welcome email error:', e));
+
         res.status(201).json({ ...newClient, jobs: [], totalJobs: 0, activeJobs: 0, totalRevenue: 0 });
     } catch (error) {
         res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
@@ -1359,10 +1395,10 @@ app.post("/api/clients", authenticateToken, (req, res) => {
 // Update client contact info
 app.put("/api/clients/:id", authenticateToken, (req, res) => {
     const { id } = req.params;
-    const { phone, company, notes, email } = req.body;
+    const { phone, company, notes, email, industryId } = req.body;
     try {
-        db.prepare("UPDATE clients SET phone = ?, company = ?, notes = ?, email = ? WHERE id = ? AND account_id = ?")
-            .run(phone || null, company || null, notes || null, email || null, id, req.accountId);
+        db.prepare("UPDATE clients SET phone = ?, company = ?, notes = ?, email = ?, industryId = ? WHERE id = ? AND account_id = ?")
+            .run(phone || null, company || null, notes || null, email || null, industryId || null, id, req.accountId);
         res.json({ success: true });
     } catch (error) {
         res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
@@ -1376,6 +1412,230 @@ app.delete("/api/clients/:id", authenticateToken, (req, res) => {
         const result = db.prepare("DELETE FROM clients WHERE id = ? AND account_id = ?").run(id, req.accountId);
         if (result.changes === 0) return res.status(404).json({ error: "Client not found" });
         res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+    }
+});
+
+// ── Industries (editable dropdown for client grouping) ─────────────────────────
+
+app.get("/api/industries", authenticateToken, (req, res) => {
+    try {
+        const rows = db.prepare("SELECT * FROM industries WHERE account_id = ? ORDER BY name ASC").all(req.accountId);
+        res.json(rows);
+    } catch (error) {
+        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+    }
+});
+
+app.post("/api/industries", authenticateToken, (req, res) => {
+    const { name } = sanitizeObject(req.body);
+    if (!isNonEmptyString(name)) return badRequest(res, "Industry name is required");
+    try {
+        const id = uuidv4();
+        db.prepare("INSERT INTO industries (id, name, account_id) VALUES (?, ?, ?)").run(id, name.slice(0, 120), req.accountId);
+        res.status(201).json(db.prepare("SELECT * FROM industries WHERE id = ?").get(id));
+    } catch (error) {
+        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+    }
+});
+
+app.put("/api/industries/:id", authenticateToken, (req, res) => {
+    const { id } = req.params;
+    const { name } = sanitizeObject(req.body);
+    if (!isNonEmptyString(name)) return badRequest(res, "Industry name is required");
+    try {
+        const result = db.prepare("UPDATE industries SET name = ? WHERE id = ? AND account_id = ?").run(name.slice(0, 120), id, req.accountId);
+        if (result.changes === 0) return res.status(404).json({ error: "Industry not found" });
+        res.json(db.prepare("SELECT * FROM industries WHERE id = ?").get(id));
+    } catch (error) {
+        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+    }
+});
+
+app.delete("/api/industries/:id", authenticateToken, (req, res) => {
+    const { id } = req.params;
+    try {
+        // Clients referencing this industry just fall back to "no industry"
+        // rather than blocking the delete — there's no FK constraint forcing
+        // either choice, so this is the friendlier default for an admin
+        // cleaning up their list.
+        db.prepare("UPDATE clients SET industryId = NULL WHERE industryId = ? AND account_id = ?").run(id, req.accountId);
+        const result = db.prepare("DELETE FROM industries WHERE id = ? AND account_id = ?").run(id, req.accountId);
+        if (result.changes === 0) return res.status(404).json({ error: "Industry not found" });
+        res.json({ success: true });
+    } catch (error) {
+        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+    }
+});
+
+// ── Email templates (welcome + newsletter, admin-editable) ─────────────────────
+
+const VALID_TEMPLATE_TYPES = new Set(['welcome', 'newsletter']);
+
+app.get("/api/templates", authenticateToken, (req, res) => {
+    try {
+        const rows = db.prepare("SELECT type, subject, htmlBody, updatedAt FROM email_templates WHERE account_id = ?").all(req.accountId);
+        res.json(rows);
+    } catch (error) {
+        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+    }
+});
+
+app.put("/api/templates/:type", authenticateToken, (req, res) => {
+    const { type } = req.params;
+    if (!VALID_TEMPLATE_TYPES.has(type)) return badRequest(res, "Unknown template type");
+
+    const subject = sanitizeString(req.body?.subject || '');
+    // Rich HTML — deliberately NOT run through sanitizeString (which strips
+    // all tags); sanitizeEmailHtml keeps formatting while stripping anything
+    // dangerous (script tags, event handlers, javascript: URLs).
+    const htmlBody = sanitizeEmailHtml(req.body?.htmlBody || '');
+
+    try {
+        const existing = db.prepare("SELECT id FROM email_templates WHERE account_id = ? AND type = ?").get(req.accountId, type);
+        const updatedAt = new Date().toISOString();
+        if (existing) {
+            db.prepare("UPDATE email_templates SET subject = ?, htmlBody = ?, updatedAt = ? WHERE id = ?")
+                .run(subject, htmlBody, updatedAt, existing.id);
+        } else {
+            db.prepare("INSERT INTO email_templates (id, type, subject, htmlBody, updatedAt, account_id) VALUES (?, ?, ?, ?, ?, ?)")
+                .run(uuidv4(), type, subject, htmlBody, updatedAt, req.accountId);
+        }
+        res.json(db.prepare("SELECT type, subject, htmlBody, updatedAt FROM email_templates WHERE account_id = ? AND type = ?").get(req.accountId, type));
+    } catch (error) {
+        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+    }
+});
+
+app.post("/api/templates/:type/test", authenticateToken, async (req, res) => {
+    const { type } = req.params;
+    if (!VALID_TEMPLATE_TYPES.has(type)) return badRequest(res, "Unknown template type");
+    try {
+        const template = db.prepare("SELECT * FROM email_templates WHERE account_id = ? AND type = ?").get(req.accountId, type);
+        if (!template || !template.subject || !template.htmlBody) return badRequest(res, "Template is empty — add content before sending a test");
+
+        const settings = db.prepare("SELECT * FROM settings WHERE account_id = ?").get(req.accountId);
+        const testTo = req.user?.email;
+        if (!testTo) return badRequest(res, "No email on your account to send the test to");
+
+        const vars = {
+            client_name: 'Test Recipient',
+            company_name: settings?.name || '',
+            company_address: settings?.address || '',
+            company_phone: settings?.phone || '',
+            company_email: settings?.email || '',
+            site_url: COMPANY_WEBSITE_URL,
+            opt_in_link: `${APP_BASE_URL_FOR_TEMPLATES}/api/newsletter/confirm/test-token`,
+        };
+        const result = await sendTemplated(testTo, `[TEST] ${renderTemplate(template.subject, vars)}`, renderTemplate(template.htmlBody, vars));
+        res.json({ success: result.success, error: result.error });
+    } catch (error) {
+        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+    }
+});
+
+// ── Newsletter opt-in confirmation (public — reached from an emailed link) ────
+
+const newsletterConfirmLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 30 });
+
+app.get("/api/newsletter/confirm/:token", newsletterConfirmLimiter, (req, res) => {
+    const { token } = req.params;
+    const confirmationPage = (message) => `<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Newsletter Subscription</title></head>
+<body style="margin:0;padding:0;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh">
+  <div style="background:#ffffff;border-radius:8px;box-shadow:0 2px 8px rgba(0,0,0,.08);padding:40px;max-width:420px;text-align:center">
+    <p style="color:#1e293b;font-size:16px;line-height:1.6;margin:0">${escapeHtmlForConfirmPage(message)}</p>
+  </div>
+</body></html>`;
+
+    try {
+        if (!isValidUUID(token)) return res.status(400).send(confirmationPage("This confirmation link isn't valid."));
+        const client = db.prepare("SELECT id, newsletterOptIn FROM clients WHERE newsletterOptInToken = ?").get(token);
+        if (!client) return res.status(404).send(confirmationPage("This confirmation link isn't valid."));
+
+        if (!client.newsletterOptIn) {
+            db.prepare("UPDATE clients SET newsletterOptIn = 1, newsletterOptedInAt = ? WHERE id = ?")
+                .run(new Date().toISOString(), client.id);
+        }
+        res.send(confirmationPage("You're subscribed! Thanks for signing up for our newsletter."));
+    } catch (error) {
+        res.status(500).send(confirmationPage("Something went wrong confirming your subscription. Please try again later."));
+    }
+});
+
+function escapeHtmlForConfirmPage(str) {
+    return String(str ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+// ── Newsletter broadcast ────────────────────────────────────────────────────────
+
+app.get("/api/newsletter/sends", authenticateToken, (req, res) => {
+    try {
+        const rows = db.prepare("SELECT id, industryId, subject, recipientCount, sentAt, sentBy FROM newsletter_sends WHERE account_id = ? ORDER BY sentAt DESC LIMIT 50").all(req.accountId);
+        res.json(rows);
+    } catch (error) {
+        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+    }
+});
+
+app.post("/api/newsletter/broadcast", authenticateToken, (req, res) => {
+    const { industryId } = req.body || {};
+    try {
+        const template = db.prepare("SELECT * FROM email_templates WHERE account_id = ? AND type = 'newsletter'").get(req.accountId);
+        if (!template || !template.subject || !template.htmlBody) {
+            return badRequest(res, "Your newsletter template is empty — add content in Settings before broadcasting");
+        }
+
+        const recipients = industryId
+            ? db.prepare("SELECT * FROM clients WHERE account_id = ? AND newsletterOptIn = 1 AND email IS NOT NULL AND email != '' AND industryId = ?").all(req.accountId, industryId)
+            : db.prepare("SELECT * FROM clients WHERE account_id = ? AND newsletterOptIn = 1 AND email IS NOT NULL AND email != ''").all(req.accountId);
+
+        if (recipients.length === 0) {
+            return badRequest(res, "No opted-in clients match that group");
+        }
+
+        const settings = db.prepare("SELECT * FROM settings WHERE account_id = ?").get(req.accountId);
+        const sendId = uuidv4();
+        const sentAt = new Date().toISOString();
+
+        // Respond immediately with the recipient count; the actual sends
+        // happen after the response, sequentially with a short delay between
+        // each — there's no email queue in this app, and awaiting hundreds
+        // of SMTP round-trips inside the HTTP request would time out the
+        // request for no benefit to the admin waiting on it.
+        res.status(202).json({ started: true, recipientCount: recipients.length });
+
+        (async () => {
+            for (const client of recipients) {
+                const vars = {
+                    client_name: client.name || '',
+                    company_name: settings?.name || '',
+                    company_address: settings?.address || '',
+                    company_phone: settings?.phone || '',
+                    company_email: settings?.email || '',
+                    site_url: COMPANY_WEBSITE_URL,
+                };
+                const subject = renderTemplate(template.subject, vars);
+                const html = renderTemplate(template.htmlBody, vars);
+                try {
+                    await sendTemplated(client.email, subject, html);
+                } catch (e) {
+                    console.error(`Newsletter send failed for ${client.email}:`, e.message);
+                }
+                await new Promise(r => setTimeout(r, 250));
+            }
+
+            try {
+                db.prepare(
+                    "INSERT INTO newsletter_sends (id, industryId, subject, contentSnapshot, recipientCount, sentAt, sentBy, account_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+                ).run(sendId, industryId || null, template.subject, template.htmlBody, recipients.length, sentAt, req.user?.email || null, req.accountId);
+                logger.audit('newsletter_broadcast', { accountId: req.accountId, industryId: industryId || null, recipientCount: recipients.length, sentBy: req.user?.email });
+            } catch (e) {
+                console.error('Failed to log newsletter send:', e.message);
+            }
+        })();
     } catch (error) {
         res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
     }

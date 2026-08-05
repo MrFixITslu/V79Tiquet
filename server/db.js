@@ -137,6 +137,32 @@ db.exec(`
     createdAt TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS industries (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    account_id TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS email_templates (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    htmlBody TEXT NOT NULL,
+    updatedAt TEXT NOT NULL,
+    account_id TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS newsletter_sends (
+    id TEXT PRIMARY KEY,
+    industryId TEXT,
+    subject TEXT NOT NULL,
+    contentSnapshot TEXT NOT NULL,
+    recipientCount INTEGER NOT NULL DEFAULT 0,
+    sentAt TEXT NOT NULL,
+    sentBy TEXT,
+    account_id TEXT
+  );
+
   CREATE TABLE IF NOT EXISTS payroll_records (
     id TEXT PRIMARY KEY,
     employeeId TEXT NOT NULL,
@@ -221,6 +247,11 @@ safeAddColumn('users', 'oauth_id TEXT');
 safeAddColumn('clients', 'address TEXT');
 safeAddColumn('settings', 'address TEXT');
 
+safeAddColumn('clients', 'industryId TEXT');
+safeAddColumn('clients', 'newsletterOptIn INTEGER DEFAULT 0');
+safeAddColumn('clients', 'newsletterOptInToken TEXT');
+safeAddColumn('clients', 'newsletterOptedInAt TEXT');
+
 safeAddColumn('accounts', 'status TEXT DEFAULT \'active\'');
 safeAddColumn('accounts', 'plan TEXT DEFAULT \'trial\'');
 safeAddColumn('accounts', 'suspendedAt TEXT');
@@ -228,7 +259,7 @@ safeAddColumn('accounts', 'trialEndsAt TEXT');
 safeAddColumn('accounts', 'stripeCustomerId TEXT');
 
 // Add account_id to tables for multi-tenancy
-const tenantTables = ['jobs', 'job_tags', 'activity_logs', 'employees', 'users', 'user_permissions', 'files', 'clients', 'job_messages', 'settings', 'payroll_records'];
+const tenantTables = ['jobs', 'job_tags', 'activity_logs', 'employees', 'users', 'user_permissions', 'files', 'clients', 'job_messages', 'settings', 'payroll_records', 'industries', 'email_templates', 'newsletter_sends'];
 for (const table of tenantTables) {
   safeAddColumn(table, "account_id TEXT DEFAULT 'default_account'");
 }
@@ -248,6 +279,10 @@ try {
     CREATE INDEX IF NOT EXISTS idx_clients_account ON clients(account_id);
     CREATE INDEX IF NOT EXISTS idx_employees_account ON employees(account_id);
     CREATE INDEX IF NOT EXISTS idx_payroll_account ON payroll_records(account_id);
+    CREATE INDEX IF NOT EXISTS idx_industries_account ON industries(account_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_templates_account_type ON email_templates(account_id, type);
+    CREATE INDEX IF NOT EXISTS idx_newsletter_sends_account ON newsletter_sends(account_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_newsletter_token ON clients(newsletterOptInToken) WHERE newsletterOptInToken IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oauth ON users (oauth_provider, oauth_id) WHERE oauth_provider IS NOT NULL;
   `);
 } catch (e) {
@@ -392,6 +427,77 @@ try {
   }
 } catch (e) {
   console.error("Database seed check error:", e.message);
+}
+
+// Seed default email templates (welcome + blank newsletter) per account
+const DEFAULT_WELCOME_SUBJECT = 'Welcome to {{company_name}}!';
+const DEFAULT_WELCOME_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;padding:40px 20px">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+        <tr><td style="background:#1e293b;padding:28px 36px">
+          <h1 style="margin:0;color:#ffffff;font-size:20px;font-weight:600">{{company_name}}</h1>
+        </td></tr>
+        <tr><td style="padding:36px">
+          <h2 style="margin:0 0 16px;color:#1e293b;font-size:22px">Welcome, {{client_name}}!</h2>
+          <p style="margin:0 0 20px;color:#475569;line-height:1.6">
+            Thank you for choosing {{company_name}}. We're glad to have you with us.
+          </p>
+          <p style="margin:0 0 28px;color:#475569;line-height:1.6">
+            Learn more about us at <a href="{{site_url}}" style="color:#3b82f6">{{site_url}}</a>.
+          </p>
+          <a href="{{opt_in_link}}" style="display:inline-block;background:#3b82f6;color:#ffffff;padding:14px 28px;border-radius:6px;text-decoration:none;font-weight:600;font-size:15px">
+            Yes, send me the newsletter
+          </a>
+        </td></tr>
+        <tr><td style="background:#f1f5f9;padding:20px 36px;color:#94a3b8;font-size:12px">
+          {{company_name}} &middot; {{company_address}} &middot; {{company_phone}} &middot; {{company_email}}
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+
+const insertTemplate = db.prepare(`
+  INSERT INTO email_templates (id, type, subject, htmlBody, updatedAt, account_id)
+  VALUES (@id, @type, @subject, @htmlBody, @updatedAt, @account_id)
+`);
+
+// Exported so account-creation code paths (register, OAuth signup) can seed
+// a brand-new account's templates immediately instead of waiting for the
+// next server boot's catch-up loop below.
+export function seedDefaultTemplatesForAccount(accountId) {
+  try {
+    const hasWelcome = db.prepare("SELECT id FROM email_templates WHERE account_id = ? AND type = 'welcome'").get(accountId);
+    if (!hasWelcome) {
+      insertTemplate.run({
+        id: uuidv4(), type: 'welcome', subject: DEFAULT_WELCOME_SUBJECT,
+        htmlBody: DEFAULT_WELCOME_HTML, updatedAt: new Date().toISOString(), account_id: accountId
+      });
+    }
+    const hasNewsletter = db.prepare("SELECT id FROM email_templates WHERE account_id = ? AND type = 'newsletter'").get(accountId);
+    if (!hasNewsletter) {
+      insertTemplate.run({
+        id: uuidv4(), type: 'newsletter', subject: '',
+        htmlBody: '', updatedAt: new Date().toISOString(), account_id: accountId
+      });
+    }
+  } catch (e) {
+    console.error("Email template seed error:", e.message);
+  }
+}
+
+try {
+  const allAccountsForTemplates = db.prepare("SELECT id FROM accounts").all();
+  for (const acc of allAccountsForTemplates) {
+    seedDefaultTemplatesForAccount(acc.id);
+  }
+} catch (e) {
+  console.error("Email template seed error:", e.message);
 }
 
 export default db;

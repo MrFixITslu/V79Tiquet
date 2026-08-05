@@ -38,6 +38,35 @@ export const isValidEmail = (str) => typeof str === 'string' && EMAIL_RE.test(st
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const isValidUUID = (str) => typeof str === 'string' && UUID_RE.test(str);
 
+// ── Rich HTML sanitisation (email templates / newsletter content) ─────────────
+//
+// sanitizeString() above strips ALL tags — correct for plain-text fields, but
+// it would destroy email template HTML entirely. This is the counterpart for
+// content that's genuinely meant to contain markup: it strips <script>,
+// event-handler attributes (onclick etc.), and javascript: URLs while
+// preserving the formatting tags email templates actually need.
+import sanitizeHtmlLib from 'sanitize-html';
+
+export const sanitizeEmailHtml = (html) => {
+    if (typeof html !== 'string') return '';
+    return sanitizeHtmlLib(html, {
+        allowedTags: [
+            'a', 'b', 'strong', 'i', 'em', 'u', 'p', 'br', 'hr', 'span', 'div',
+            'table', 'thead', 'tbody', 'tr', 'td', 'th',
+            'ul', 'ol', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+            'img', 'blockquote', 'small',
+        ],
+        allowedAttributes: {
+            a: ['href', 'style', 'target', 'rel'],
+            img: ['src', 'alt', 'style', 'width', 'height'],
+            '*': ['style', 'align', 'width', 'height', 'cellpadding', 'cellspacing', 'border', 'colspan', 'rowspan'],
+        },
+        allowedSchemes: ['http', 'https', 'mailto'],
+        // Merge fields like {{client_name}} live in text content, which
+        // sanitize-html never touches — only tags/attributes are filtered.
+    });
+};
+
 export const isNonEmptyString = (str, maxLen = 1000) =>
     typeof str === 'string' && str.trim().length > 0 && str.length <= maxLen;
 

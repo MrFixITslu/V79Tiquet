@@ -11,7 +11,7 @@ import { Invoices } from "./components/Invoices";
 import { Clients } from "./components/Clients";
 import { Settings } from "./components/Settings";
 import { AuthGate } from "./components/AuthGate";
-import { Job, Employee, PayrollRecord, AppUser, Client, BusinessSettings, AuthenticatedUser, Business } from "./types";
+import { Job, Employee, PayrollRecord, AppUser, Client, BusinessSettings, AuthenticatedUser, Business, Industry } from "./types";
 import { api, getToken, setToken } from "./api";
 import { useSyncedCollection } from "./useSyncedCollection";
 
@@ -81,6 +81,7 @@ export default function App() {
   const { items: employees, setItems: setEmployees } = useSyncedCollection<Employee>("/employees", authenticated);
   const { items: payrollRecords, setItems: setPayrollRecords } = useSyncedCollection<PayrollRecord>("/payroll", authenticated);
   const { items: users, setItems: setUsers } = useSyncedCollection<AppUser>("/users", authenticated);
+  const { items: industries, setItems: setIndustries } = useSyncedCollection<Industry>("/industries", authenticated);
 
   const [files, setFilesState] = useState<import("./types").FileItem[]>([]);
   const reloadFiles = useCallback(async () => {
@@ -231,7 +232,7 @@ export default function App() {
           {activeTab === "jobs" && (
             <JobBoard jobs={jobs} setJobs={setJobs} employees={employees} clients={clients} settings={settings} />
           )}
-          {activeTab === "clients" && <Clients clients={clients} setClients={setClients} jobs={jobs} />}
+          {activeTab === "clients" && <Clients clients={clients} setClients={setClients} jobs={jobs} industries={industries} />}
           {activeTab === "payroll" && (
             <Payroll
               employees={employees}
@@ -245,7 +246,9 @@ export default function App() {
           {activeTab === "invoices" && (
             <Invoices jobs={jobs} setJobs={setJobs} employees={employees} clients={clients} settings={settings} />
           )}
-          {activeTab === "settings" && <Settings settings={settings} setSettings={handleUpdateSettings} />}
+          {activeTab === "settings" && (
+            <Settings settings={settings} setSettings={handleUpdateSettings} industries={industries} setIndustries={setIndustries} />
+          )}
           {activeTab === "new-request" && (
             <div className="max-w-4xl mx-auto">
               <JobRequestForm
@@ -276,6 +279,7 @@ export default function App() {
 
       {isNewClientModalOpen && (
         <NewClientModal
+          industries={industries}
           onClose={() => setIsNewClientModalOpen(false)}
           onCreate={(newClient) => {
             setClients([newClient, ...clients]);
@@ -319,7 +323,7 @@ export default function App() {
   );
 }
 
-function NewClientModal({ onClose, onCreate }: { onClose: () => void; onCreate: (c: Client) => void }) {
+function NewClientModal({ industries, onClose, onCreate }: { industries: Industry[]; onClose: () => void; onCreate: (c: Client) => void }) {
   const [error, setError] = useState<string | null>(null);
   return (
     <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-50 p-4">
@@ -341,6 +345,7 @@ function NewClientModal({ onClose, onCreate }: { onClose: () => void; onCreate: 
             const email = (target.elements.namedItem("clientEmail") as HTMLInputElement).value;
             const phone = (target.elements.namedItem("clientPhone") as HTMLInputElement).value;
             const address = (target.elements.namedItem("clientAddress") as HTMLInputElement).value;
+            const industryId = (target.elements.namedItem("clientIndustry") as HTMLSelectElement).value;
 
             if (!name || !email) {
               setError("Contact name and email are required.");
@@ -354,6 +359,7 @@ function NewClientModal({ onClose, onCreate }: { onClose: () => void; onCreate: 
               email,
               phone,
               address,
+              industryId: industryId || null,
               createdAt: new Date().toISOString(),
             });
           }}
@@ -376,6 +382,15 @@ function NewClientModal({ onClose, onCreate }: { onClose: () => void; onCreate: 
               <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Phone</label>
               <input name="clientPhone" type="text" placeholder="+1 (555) 000-0000" className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 outline-none text-sm text-slate-800" />
             </div>
+          </div>
+          <div>
+            <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Industry</label>
+            <select name="clientIndustry" className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 outline-none text-sm text-slate-800">
+              <option value="">— None —</option>
+              {industries.map((ind) => (
+                <option key={ind.id} value={ind.id}>{ind.name}</option>
+              ))}
+            </select>
           </div>
           <div>
             <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Billing Address</label>

@@ -26,6 +26,7 @@ import { OAuth2Client } from 'google-auth-library';
 import appleSignin   from 'apple-signin-auth';
 import { v4 as uuidv4 } from 'uuid';
 import db            from './db.js';
+import { seedDefaultTemplatesForAccount } from './db.js';
 import { logger }    from './logger.js';
 
 const JWT_SECRET     = process.env.JWT_SECRET || 'dev_jwt_secret_v79_tickit';
@@ -88,6 +89,8 @@ function findOrCreateOAuthUser(provider, oauthId, email, displayName) {
         db.prepare("INSERT INTO settings (id, name, email, account_id) VALUES (?, ?, ?, ?)")
           .run(uuidv4(), companyName, safeEmail, accountId);
     })();
+
+    seedDefaultTemplatesForAccount(accountId);
 
     logger.audit('oauth_user_created', { provider: safeProvider, userId, email: safeEmail, accountId });
     return db.prepare("SELECT * FROM users WHERE id = ?").get(userId);

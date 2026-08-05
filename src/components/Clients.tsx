@@ -13,15 +13,16 @@ import {
   ExternalLink,
   Contact
 } from "lucide-react";
-import { Client, Job, COLUMNS } from "../types";
+import { Client, Job, COLUMNS, Industry } from "../types";
 
 interface ClientsProps {
   clients: Client[];
   setClients: React.Dispatch<React.SetStateAction<Client[]>>;
   jobs: Job[];
+  industries: Industry[];
 }
 
-export function Clients({ clients, setClients, jobs }: ClientsProps) {
+export function Clients({ clients, setClients, jobs, industries }: ClientsProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingClient, setEditingClient] = useState<Client | null>(null);
@@ -186,6 +187,7 @@ export function Clients({ clients, setClients, jobs }: ClientsProps) {
       {isModalOpen && (
         <ClientModal
           client={editingClient}
+          industries={industries}
           onClose={() => {
             setIsModalOpen(false);
             setEditingClient(null);
@@ -197,6 +199,7 @@ export function Clients({ clients, setClients, jobs }: ClientsProps) {
       {selectedClient && (
         <ClientDetailModal
           client={selectedClient}
+          industries={industries}
           jobs={jobs.filter(j => j.clientId === selectedClient.id || j.client === selectedClient.company)}
           onClose={() => setSelectedClient(null)}
         />
@@ -207,10 +210,12 @@ export function Clients({ clients, setClients, jobs }: ClientsProps) {
 
 function ClientModal({
   client,
+  industries,
   onClose,
   onSave,
 }: {
   client: Client | null;
+  industries: Industry[];
   onClose: () => void;
   onSave: (data: Omit<Client, "id" | "createdAt">) => void;
 }) {
@@ -220,6 +225,7 @@ function ClientModal({
     email: client?.email || "",
     phone: client?.phone || "",
     address: client?.address || "",
+    industryId: client?.industryId || "",
   });
 
   return (
@@ -290,6 +296,19 @@ function ClientModal({
             />
           </div>
           <div className="space-y-1.5">
+            <label className="text-sm font-semibold text-slate-700">Industry</label>
+            <select
+              value={formData.industryId}
+              onChange={(e) => setFormData({ ...formData, industryId: e.target.value })}
+              className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 outline-none transition-all"
+            >
+              <option value="">— None —</option>
+              {industries.map((ind) => (
+                <option key={ind.id} value={ind.id}>{ind.name}</option>
+              ))}
+            </select>
+          </div>
+          <div className="space-y-1.5">
             <label className="text-sm font-semibold text-slate-700">Address</label>
             <textarea
               required
@@ -323,13 +342,16 @@ function ClientModal({
 
 function ClientDetailModal({
   client,
+  industries,
   jobs,
   onClose,
 }: {
   client: Client;
+  industries: Industry[];
   jobs: Job[];
   onClose: () => void;
 }) {
+  const industryName = industries.find((i) => i.id === client.industryId)?.name;
   return (
     <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-2xl shadow-xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[90vh]">
@@ -377,6 +399,21 @@ function ClientDetailModal({
               </div>
               <div className="text-sm font-semibold text-slate-700 line-clamp-2">{client.address}</div>
             </div>
+          </div>
+
+          <div className="flex items-center gap-3">
+            {industryName && (
+              <span className="text-xs font-bold uppercase tracking-wide px-2.5 py-1 rounded-full bg-indigo-50 text-indigo-600 border border-indigo-100">
+                {industryName}
+              </span>
+            )}
+            <span className={`text-xs font-bold uppercase tracking-wide px-2.5 py-1 rounded-full border ${
+              client.newsletterOptIn
+                ? "bg-emerald-50 text-emerald-600 border-emerald-100"
+                : "bg-slate-50 text-slate-400 border-slate-200"
+            }`}>
+              {client.newsletterOptIn ? "Newsletter: Subscribed" : "Newsletter: Not subscribed"}
+            </span>
           </div>
 
           <div className="space-y-4">
