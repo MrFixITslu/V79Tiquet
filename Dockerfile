@@ -23,9 +23,11 @@ RUN npm run build
 #
 # NOTE: this replaces the previous static-nginx-only Dockerfile. That was no
 # longer viable once real login, 2FA, and data storage were added — plain
-# nginx can't run an API. Container name and external port (8080) are kept
-# unchanged from the original V79Tiquet setup so NPM routing does not need to
-# be reconfigured.
+# nginx can't run an API. Container name is kept unchanged from the original
+# V79Tiquet setup. NOTE: the app listens on port 3050 (set via PORT in
+# docker-compose.yml / .env, see server/index.js) — in Nginx Proxy Manager,
+# the Proxy Host's "Forward Port" for this app MUST be 3050, not 8080.
+# Pointing NPM at 8080 (nothing listens there) causes a 502 Bad Gateway.
 # ─────────────────────────────────────────────────────────────────────────────
 FROM node:20-alpine AS production
 

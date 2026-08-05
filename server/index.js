@@ -131,7 +131,7 @@ app.use(helmet({
             scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net"],
             styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
             imgSrc: ["'self'", "data:", "https:", "http:"],
-            fontSrc: ["'self'", "https://fonts.gstatic.com"],
+            fontSrc: ["'self'", "data:", "https://fonts.gstatic.com"],
             connectSrc: ["'self'"],
             objectSrc: ["'none'"],
             upgradeInsecureRequests: [],

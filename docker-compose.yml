@@ -13,13 +13,15 @@ services:
       - DATABASE_PATH=/app/data/tiquet.db
     # No `ports:` mapping on purpose. Nginx Proxy Manager reaches this
     # container over the shared `proxy_network` by container name + internal
-    # port (v79-tiquet-manager:8080) — it does not need, and shouldn't use,
+    # port (v79-tiquet-manager:3050 — this MUST match the PORT env var below;
+    # NPM's Proxy Host "Forward Port" must be set to 3050, not 8080, or every
+    # request 502s) — it does not need, and shouldn't use,
     # a host port mapping. This also means this app can never collide with
     # anything else's host port (3000 or otherwise), since nothing here
     # binds to the host at all. If you ever need to hit it directly from the
     # host for debugging, temporarily add:
     #   ports:
-    #     - "3050:80"
+    #     - "3050:3050"
     volumes:
       - tiquet_data:/app/data
       - tiquet_uploads:/app/uploads
