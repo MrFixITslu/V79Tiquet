@@ -187,14 +187,83 @@ function escapeHtml(str) {
 }
 
 /**
- * Merge {{field}} tokens in a stored template (subject or html body) with
- * plain-text values. Values are HTML-escaped before substitution so a
- * client name or company field can never break out of the template markup.
+ * Merge {{field}} tokens into a PLAIN TEXT template (subject or message
+ * body — see plainTextToHtml/wrapEmailShell below for how the body becomes
+ * an actual email). Deliberately does NOT escape here — this template is
+ * plain text the admin typed, not HTML, so there's nothing to break out of
+ * yet. Escaping happens exactly once, in plainTextToHtml, right before the
+ * text is placed inside markup.
  */
-export function renderTemplate(template, vars) {
+export function renderPlainTemplate(template, vars) {
     return String(template ?? '').replace(/\{\{\s*([a-zA-Z0-9_]+)\s*\}\}/g, (match, key) => {
-        return Object.prototype.hasOwnProperty.call(vars, key) ? escapeHtml(vars[key]) : match;
+        return Object.prototype.hasOwnProperty.call(vars, key) ? String(vars[key] ?? '') : match;
     });
+}
+
+/**
+ * Turns admin-typed plain text into safe email HTML: escapes everything
+ * (so there's no HTML-injection surface at all — unlike a rich-text editor,
+ * this never trusts stored markup), then auto-links bare URLs, then relies
+ * on `white-space: pre-line` to preserve the paragraph/line breaks the
+ * admin actually typed without needing to hand-split into <p>/<br> tags.
+ */
+export function plainTextToHtml(text) {
+    const escaped = escapeHtml(text);
+    const linked = escaped.replace(
+        /(https?:\/\/[^\s<]+)/g,
+        (url) => `<a href="${url}" style="color:#3b82f6;text-decoration:underline">${url}</a>`
+    );
+    return `<div style="color:#475569;line-height:1.6;white-space:pre-line">${linked}</div>`;
+}
+
+/**
+ * Fixed branded shell (header bar, card, footer) that every templated email
+ * renders inside. This part is never admin-edited — only the subject and
+ * plain-text message body are — so there's no way for a template edit to
+ * break the layout, lose the footer/contact info, or omit the opt-in link.
+ */
+export function wrapEmailShell({ companyName, companyAddress, companyPhone, companyEmail, bodyHtml, ctaHtml }) {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;padding:40px 20px">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+        <tr><td style="background:#1e293b;padding:28px 36px">
+          <h1 style="margin:0;color:#ffffff;font-size:20px;font-weight:600">${escapeHtml(companyName || '')}</h1>
+        </td></tr>
+        <tr><td style="padding:36px">
+          ${bodyHtml}
+          ${ctaHtml ? `<div style="margin-top:24px">${ctaHtml}</div>` : ''}
+        </td></tr>
+        <tr><td style="background:#f1f5f9;padding:20px 36px;color:#94a3b8;font-size:12px">
+          ${escapeHtml(companyName || '')} &middot; ${escapeHtml(companyAddress || '')} &middot; ${escapeHtml(companyPhone || '')} &middot; ${escapeHtml(companyEmail || '')}
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+}
+
+/**
+ * Full pipeline: plain-text template + merge vars -> safe HTML email, ready
+ * to send. `ctaHtml`, if given, is fixed markup (not admin-typed) — e.g. the
+ * "Yes, send me the newsletter" button on the welcome email.
+ */
+export function renderEmailFromPlainTemplate(subjectTemplate, bodyTemplate, vars, { ctaHtml } = {}) {
+    const subject = renderPlainTemplate(subjectTemplate, vars).replace(/[\r\n]+/g, ' ').trim();
+    const bodyHtml = plainTextToHtml(renderPlainTemplate(bodyTemplate, vars));
+    const html = wrapEmailShell({
+        companyName: vars.company_name,
+        companyAddress: vars.company_address,
+        companyPhone: vars.company_phone,
+        companyEmail: vars.company_email,
+        bodyHtml,
+        ctaHtml,
+    });
+    return { subject, html };
 }
 
 /**

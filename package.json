@@ -39,7 +39,6 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "recharts": "^3.7.0",
-    "sanitize-html": "^2.17.6",
     "speakeasy": "^2.0.0",
     "uuid": "^13.0.0",
     "vite": "^6.2.0",

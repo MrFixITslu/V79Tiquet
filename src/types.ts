@@ -100,7 +100,7 @@ export type EmailTemplateType = "welcome" | "newsletter";
 export interface EmailTemplate {
   type: EmailTemplateType;
   subject: string;
-  htmlBody: string;
+  body: string;
   updatedAt: string;
 }
 

@@ -4,7 +4,7 @@ import cors from "cors";
 import http from "http";
 import { WebSocketServer } from "ws";
 import db, { dbDir, seedDefaultTemplatesForAccount } from "./db.js";
-import { sendPortalLink, sendStatusUpdate, sendTemplated, renderTemplate } from "./email.js";
+import { sendPortalLink, sendStatusUpdate, sendTemplated, renderEmailFromPlainTemplate } from "./email.js";
 import { registerOAuthRoutes } from "./oauth.js";
 import { v4 as uuidv4 } from "uuid";
 import jwt from "jsonwebtoken";
@@ -25,7 +25,6 @@ import { logger } from "./logger.js";
 import { 
     sanitizeString, 
     sanitizeObject, 
-    sanitizeEmailHtml,
     isValidEmail, 
     isValidUUID, 
     isNonEmptyString,
@@ -1425,11 +1424,16 @@ const APP_BASE_URL_FOR_TEMPLATES = (process.env.APP_BASE_URL || 'http://localhos
 // Renders and sends the account's 'welcome' template to a newly-created
 // client. Fire-and-forget by design (see call sites) — a slow or failed SMTP
 // send must never block or fail client creation itself.
+function optInButtonHtml(optInLink) {
+    return `<a href="${optInLink}" style="display:inline-block;background:#3b82f6;color:#ffffff;padding:14px 28px;border-radius:6px;text-decoration:none;font-weight:600;font-size:15px">Yes, send me the newsletter</a>`;
+}
+
 async function sendWelcomeEmailForClient(client, accountId) {
     const template = db.prepare("SELECT * FROM email_templates WHERE account_id = ? AND type = 'welcome'").get(accountId);
-    if (!template || !template.subject || !template.htmlBody) return { success: false, error: 'No welcome template configured' };
+    if (!template || !template.subject || !template.body) return { success: false, error: 'No welcome template configured' };
 
     const settings = db.prepare("SELECT * FROM settings WHERE account_id = ?").get(accountId);
+    const optInLink = `${APP_BASE_URL_FOR_TEMPLATES}/api/newsletter/confirm/${client.newsletterOptInToken}`;
     const vars = {
         client_name: client.name || '',
         company_name: settings?.name || '',
@@ -1437,11 +1441,12 @@ async function sendWelcomeEmailForClient(client, accountId) {
         company_phone: settings?.phone || '',
         company_email: settings?.email || '',
         site_url: settings?.website || COMPANY_WEBSITE_URL,
-        opt_in_link: `${APP_BASE_URL_FOR_TEMPLATES}/api/newsletter/confirm/${client.newsletterOptInToken}`,
+        opt_in_link: optInLink,
     };
 
-    const subject = renderTemplate(template.subject, vars);
-    const html = renderTemplate(template.htmlBody, vars);
+    const { subject, html } = renderEmailFromPlainTemplate(template.subject, template.body, vars, {
+        ctaHtml: optInButtonHtml(optInLink),
+    });
     return sendTemplated(client.email, subject, html);
 }
 
@@ -1558,7 +1563,7 @@ const VALID_TEMPLATE_TYPES = new Set(['welcome', 'newsletter']);
 
 app.get("/api/templates", authenticateToken, (req, res) => {
     try {
-        const rows = db.prepare("SELECT type, subject, htmlBody, updatedAt FROM email_templates WHERE account_id = ?").all(req.accountId);
+        const rows = db.prepare("SELECT type, subject, body, updatedAt FROM email_templates WHERE account_id = ?").all(req.accountId);
         res.json(rows);
     } catch (error) {
         res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
@@ -1569,23 +1574,25 @@ app.put("/api/templates/:type", authenticateToken, (req, res) => {
     const { type } = req.params;
     if (!VALID_TEMPLATE_TYPES.has(type)) return badRequest(res, "Unknown template type");
 
-    const subject = sanitizeString(req.body?.subject || '');
-    // Rich HTML — deliberately NOT run through sanitizeString (which strips
-    // all tags); sanitizeEmailHtml keeps formatting while stripping anything
-    // dangerous (script tags, event handlers, javascript: URLs).
-    const htmlBody = sanitizeEmailHtml(req.body?.htmlBody || '');
+    // Plain text — deliberately NOT HTML-sanitized or tag-stripped. There's
+    // no HTML-injection surface to defend against here at all: this string
+    // is escaped exactly once, at send time (plainTextToHtml in email.js),
+    // so raw '<'/'>' characters the admin types stay as literal text instead
+    // of being misread as markup and stripped.
+    const subject = String(req.body?.subject ?? '').slice(0, 300);
+    const body = String(req.body?.body ?? '').slice(0, 20000);
 
     try {
         const existing = db.prepare("SELECT id FROM email_templates WHERE account_id = ? AND type = ?").get(req.accountId, type);
         const updatedAt = new Date().toISOString();
         if (existing) {
-            db.prepare("UPDATE email_templates SET subject = ?, htmlBody = ?, updatedAt = ? WHERE id = ?")
-                .run(subject, htmlBody, updatedAt, existing.id);
+            db.prepare("UPDATE email_templates SET subject = ?, body = ?, updatedAt = ? WHERE id = ?")
+                .run(subject, body, updatedAt, existing.id);
         } else {
-            db.prepare("INSERT INTO email_templates (id, type, subject, htmlBody, updatedAt, account_id) VALUES (?, ?, ?, ?, ?, ?)")
-                .run(uuidv4(), type, subject, htmlBody, updatedAt, req.accountId);
+            db.prepare("INSERT INTO email_templates (id, type, subject, body, updatedAt, account_id) VALUES (?, ?, ?, ?, ?, ?)")
+                .run(uuidv4(), type, subject, body, updatedAt, req.accountId);
         }
-        res.json(db.prepare("SELECT type, subject, htmlBody, updatedAt FROM email_templates WHERE account_id = ? AND type = ?").get(req.accountId, type));
+        res.json(db.prepare("SELECT type, subject, body, updatedAt FROM email_templates WHERE account_id = ? AND type = ?").get(req.accountId, type));
     } catch (error) {
         res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
     }
@@ -1596,12 +1603,13 @@ app.post("/api/templates/:type/test", authenticateToken, async (req, res) => {
     if (!VALID_TEMPLATE_TYPES.has(type)) return badRequest(res, "Unknown template type");
     try {
         const template = db.prepare("SELECT * FROM email_templates WHERE account_id = ? AND type = ?").get(req.accountId, type);
-        if (!template || !template.subject || !template.htmlBody) return badRequest(res, "Template is empty — add content before sending a test");
+        if (!template || !template.subject || !template.body) return badRequest(res, "Template is empty — add content before sending a test");
 
         const settings = db.prepare("SELECT * FROM settings WHERE account_id = ?").get(req.accountId);
         const testTo = req.user?.email;
         if (!testTo) return badRequest(res, "No email on your account to send the test to");
 
+        const optInLink = `${APP_BASE_URL_FOR_TEMPLATES}/api/newsletter/confirm/test-token`;
         const vars = {
             client_name: 'Test Recipient',
             company_name: settings?.name || '',
@@ -1609,9 +1617,12 @@ app.post("/api/templates/:type/test", authenticateToken, async (req, res) => {
             company_phone: settings?.phone || '',
             company_email: settings?.email || '',
             site_url: settings?.website || COMPANY_WEBSITE_URL,
-            opt_in_link: `${APP_BASE_URL_FOR_TEMPLATES}/api/newsletter/confirm/test-token`,
+            opt_in_link: optInLink,
         };
-        const result = await sendTemplated(testTo, `[TEST] ${renderTemplate(template.subject, vars)}`, renderTemplate(template.htmlBody, vars));
+        const { subject, html } = renderEmailFromPlainTemplate(template.subject, template.body, vars, {
+            ctaHtml: type === 'welcome' ? optInButtonHtml(optInLink) : null,
+        });
+        const result = await sendTemplated(testTo, `[TEST] ${subject}`, html);
         res.json({ success: result.success, error: result.error });
     } catch (error) {
         res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
@@ -1667,7 +1678,7 @@ app.post("/api/newsletter/broadcast", authenticateToken, (req, res) => {
     const { industryId } = req.body || {};
     try {
         const template = db.prepare("SELECT * FROM email_templates WHERE account_id = ? AND type = 'newsletter'").get(req.accountId);
-        if (!template || !template.subject || !template.htmlBody) {
+        if (!template || !template.subject || !template.body) {
             return badRequest(res, "Your newsletter template is empty — add content in Settings before broadcasting");
         }
 
@@ -1691,6 +1702,7 @@ app.post("/api/newsletter/broadcast", authenticateToken, (req, res) => {
         res.status(202).json({ started: true, recipientCount: recipients.length });
 
         (async () => {
+            let lastRenderedSubject = template.subject;
             for (const client of recipients) {
                 const vars = {
                     client_name: client.name || '',
@@ -1700,8 +1712,8 @@ app.post("/api/newsletter/broadcast", authenticateToken, (req, res) => {
                     company_email: settings?.email || '',
                     site_url: settings?.website || COMPANY_WEBSITE_URL,
                 };
-                const subject = renderTemplate(template.subject, vars);
-                const html = renderTemplate(template.htmlBody, vars);
+                const { subject, html } = renderEmailFromPlainTemplate(template.subject, template.body, vars);
+                lastRenderedSubject = subject;
                 try {
                     await sendTemplated(client.email, subject, html);
                 } catch (e) {
@@ -1713,7 +1725,7 @@ app.post("/api/newsletter/broadcast", authenticateToken, (req, res) => {
             try {
                 db.prepare(
                     "INSERT INTO newsletter_sends (id, industryId, subject, contentSnapshot, recipientCount, sentAt, sentBy, account_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-                ).run(sendId, industryId || null, template.subject, template.htmlBody, recipients.length, sentAt, req.user?.email || null, req.accountId);
+                ).run(sendId, industryId || null, lastRenderedSubject, template.body, recipients.length, sentAt, req.user?.email || null, req.accountId);
                 logger.audit('newsletter_broadcast', { accountId: req.accountId, industryId: industryId || null, recipientCount: recipients.length, sentBy: req.user?.email });
             } catch (e) {
                 console.error('Failed to log newsletter send:', e.message);

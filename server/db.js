@@ -147,7 +147,7 @@ db.exec(`
     id TEXT PRIMARY KEY,
     type TEXT NOT NULL,
     subject TEXT NOT NULL,
-    htmlBody TEXT NOT NULL,
+    body TEXT NOT NULL DEFAULT '',
     updatedAt TEXT NOT NULL,
     account_id TEXT
   );
@@ -252,6 +252,16 @@ safeAddColumn('clients', 'industryId TEXT');
 safeAddColumn('clients', 'newsletterOptIn INTEGER DEFAULT 0');
 safeAddColumn('clients', 'newsletterOptInToken TEXT');
 safeAddColumn('clients', 'newsletterOptedInAt TEXT');
+
+// Upgrade path from an earlier deploy of this feature, which stored the
+// template as raw HTML in an `htmlBody` column. Templates are now plain
+// text (rendered into HTML at send time — see email.js), stored in `body`.
+safeAddColumn('email_templates', 'body TEXT');
+try {
+    db.exec(`UPDATE email_templates SET body = htmlBody WHERE (body IS NULL OR body = '') AND htmlBody IS NOT NULL AND htmlBody != ''`);
+} catch (e) {
+    // htmlBody column doesn't exist on a fresh install — nothing to migrate
+}
 
 safeAddColumn('accounts', 'status TEXT DEFAULT \'active\'');
 safeAddColumn('accounts', 'plan TEXT DEFAULT \'trial\'');
@@ -430,42 +440,20 @@ try {
   console.error("Database seed check error:", e.message);
 }
 
-// Seed default email templates (welcome + blank newsletter) per account
+// Seed default email templates (welcome + blank newsletter) per account.
+// Plain text — the header, footer, and (for the welcome email) the opt-in
+// button are fixed chrome added automatically at send time by
+// wrapEmailShell(), not something stored here. See server/email.js.
 const DEFAULT_WELCOME_SUBJECT = 'Welcome to {{company_name}}!';
-const DEFAULT_WELCOME_HTML = `<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="margin:0;padding:0;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;padding:40px 20px">
-    <tr><td align="center">
-      <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)">
-        <tr><td style="background:#1e293b;padding:28px 36px">
-          <h1 style="margin:0;color:#ffffff;font-size:20px;font-weight:600">{{company_name}}</h1>
-        </td></tr>
-        <tr><td style="padding:36px">
-          <h2 style="margin:0 0 16px;color:#1e293b;font-size:22px">Welcome, {{client_name}}!</h2>
-          <p style="margin:0 0 20px;color:#475569;line-height:1.6">
-            Thank you for choosing {{company_name}}. We're glad to have you with us.
-          </p>
-          <p style="margin:0 0 28px;color:#475569;line-height:1.6">
-            Learn more about us at <a href="{{site_url}}" style="color:#3b82f6">{{site_url}}</a>.
-          </p>
-          <a href="{{opt_in_link}}" style="display:inline-block;background:#3b82f6;color:#ffffff;padding:14px 28px;border-radius:6px;text-decoration:none;font-weight:600;font-size:15px">
-            Yes, send me the newsletter
-          </a>
-        </td></tr>
-        <tr><td style="background:#f1f5f9;padding:20px 36px;color:#94a3b8;font-size:12px">
-          {{company_name}} &middot; {{company_address}} &middot; {{company_phone}} &middot; {{company_email}}
-        </td></tr>
-      </table>
-    </td></tr>
-  </table>
-</body>
-</html>`;
+const DEFAULT_WELCOME_BODY = `Welcome, {{client_name}}!
+
+Thank you for choosing {{company_name}}. We're glad to have you with us.
+
+Learn more about us at {{site_url}}.`;
 
 const insertTemplate = db.prepare(`
-  INSERT INTO email_templates (id, type, subject, htmlBody, updatedAt, account_id)
-  VALUES (@id, @type, @subject, @htmlBody, @updatedAt, @account_id)
+  INSERT INTO email_templates (id, type, subject, body, updatedAt, account_id)
+  VALUES (@id, @type, @subject, @body, @updatedAt, @account_id)
 `);
 
 // Exported so account-creation code paths (register, OAuth signup) can seed
@@ -477,14 +465,14 @@ export function seedDefaultTemplatesForAccount(accountId) {
     if (!hasWelcome) {
       insertTemplate.run({
         id: uuidv4(), type: 'welcome', subject: DEFAULT_WELCOME_SUBJECT,
-        htmlBody: DEFAULT_WELCOME_HTML, updatedAt: new Date().toISOString(), account_id: accountId
+        body: DEFAULT_WELCOME_BODY, updatedAt: new Date().toISOString(), account_id: accountId
       });
     }
     const hasNewsletter = db.prepare("SELECT id FROM email_templates WHERE account_id = ? AND type = 'newsletter'").get(accountId);
     if (!hasNewsletter) {
       insertTemplate.run({
         id: uuidv4(), type: 'newsletter', subject: '',
-        htmlBody: '', updatedAt: new Date().toISOString(), account_id: accountId
+        body: '', updatedAt: new Date().toISOString(), account_id: accountId
       });
     }
   } catch (e) {

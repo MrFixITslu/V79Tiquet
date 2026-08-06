@@ -411,7 +411,8 @@ function IndustriesSection({
 // ── Email Templates (Welcome + Newsletter) ─────────────────────────────────────
 
 const MERGE_FIELD_HINT =
-  "Available: {{client_name}} {{company_name}} {{company_address}} {{company_phone}} {{company_email}} {{site_url}} {{opt_in_link}}";
+  "Available: {{client_name}} {{company_name}} {{company_address}} {{company_phone}} {{company_email}} {{site_url}}" +
+  " — the welcome email also has {{opt_in_link}}, though the button itself is added automatically.";
 
 function TemplatesSection() {
   const [activeType, setActiveType] = useState<EmailTemplateType>("welcome");
@@ -421,7 +422,7 @@ function TemplatesSection() {
   });
   const [loading, setLoading] = useState(true);
   const [subject, setSubject] = useState("");
-  const [htmlBody, setHtmlBody] = useState("");
+  const [body, setBody] = useState("");
   const [saving, setSaving] = useState(false);
   const [savedMsg, setSavedMsg] = useState<string | null>(null);
   const [testMsg, setTestMsg] = useState<string | null>(null);
@@ -445,7 +446,7 @@ function TemplatesSection() {
   useEffect(() => {
     const t = templates[activeType];
     setSubject(t?.subject || "");
-    setHtmlBody(t?.htmlBody || "");
+    setBody(t?.body || "");
     setSavedMsg(null);
     setTestMsg(null);
   }, [activeType, templates]);
@@ -454,7 +455,7 @@ function TemplatesSection() {
     setSaving(true);
     setSavedMsg(null);
     try {
-      const updated = await api.put<EmailTemplate>(`/templates/${activeType}`, { subject, htmlBody });
+      const updated = await api.put<EmailTemplate>(`/templates/${activeType}`, { subject, body });
       setTemplatesState((prev) => ({ ...prev, [activeType]: updated }));
       setSavedMsg("Saved.");
     } catch (e: any) {
@@ -483,6 +484,7 @@ function TemplatesSection() {
         <h3 className="text-lg font-semibold text-slate-900 mb-2">Email Templates</h3>
         <p className="text-sm text-slate-500">
           Edit the welcome email sent to new clients and the newsletter content used for broadcasts.
+          Write plain text — no HTML needed, it's formatted into a branded email automatically.
         </p>
       </div>
       <div className="md:col-span-2 space-y-4">
@@ -515,12 +517,13 @@ function TemplatesSection() {
                 />
               </div>
               <div className="space-y-1">
-                <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest">HTML Content</label>
+                <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest">Message</label>
                 <textarea
-                  value={htmlBody}
-                  onChange={(e) => setHtmlBody(e.target.value)}
+                  value={body}
+                  onChange={(e) => setBody(e.target.value)}
                   rows={12}
-                  className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 outline-none text-xs font-mono resize-y"
+                  placeholder="Write your message here, in plain text — blank lines start a new paragraph."
+                  className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 outline-none text-sm resize-y"
                 />
                 <p className="text-xs text-slate-400 mt-1">{MERGE_FIELD_HINT}</p>
               </div>
@@ -535,7 +538,7 @@ function TemplatesSection() {
                 </button>
                 <button
                   onClick={handleSendTest}
-                  disabled={sendingTest || !subject || !htmlBody}
+                  disabled={sendingTest || !subject || !body}
                   className="px-4 py-2 text-sm font-semibold text-slate-600 border border-slate-200 hover:bg-slate-50 rounded-xl transition-all disabled:opacity-50 flex items-center gap-2"
                 >
                   <Send className="w-4 h-4" />
