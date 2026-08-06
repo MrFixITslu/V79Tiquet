@@ -1395,11 +1395,15 @@ app.post("/api/clients", authenticateToken, (req, res) => {
 // Update client contact info
 app.put("/api/clients/:id", authenticateToken, (req, res) => {
     const { id } = req.params;
-    const { phone, company, notes, email, industryId } = req.body;
+    const { name, phone, company, notes, email, address, industryId } = sanitizeObject(req.body);
+    if (!isNonEmptyString(name)) return badRequest(res, "Name is required");
+    if (email && !isValidEmail(email)) return badRequest(res, "Invalid email format");
     try {
-        db.prepare("UPDATE clients SET phone = ?, company = ?, notes = ?, email = ?, industryId = ? WHERE id = ? AND account_id = ?")
-            .run(phone || null, company || null, notes || null, email || null, industryId || null, id, req.accountId);
-        res.json({ success: true });
+        const result = db.prepare(
+            "UPDATE clients SET name = ?, phone = ?, company = ?, notes = ?, email = ?, address = ?, industryId = ? WHERE id = ? AND account_id = ?"
+        ).run(name, phone || null, company || null, notes || null, email || null, address || null, industryId || null, id, req.accountId);
+        if (result.changes === 0) return res.status(404).json({ error: "Client not found" });
+        res.json(db.prepare("SELECT * FROM clients WHERE id = ?").get(id));
     } catch (error) {
         res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
     }
