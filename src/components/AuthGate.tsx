@@ -48,6 +48,7 @@ export function AuthGate({
           email: settings?.email || me.email,
           phone: settings?.phone || "",
           logoUrl: settings?.logoUrl || "",
+          website: settings?.website || "",
           paymentTerms: settings?.paymentTerms || "Please make payment within 30 days of receiving this invoice.",
           currency: settings?.currency || "USD",
           taxRate: settings?.taxRate || 0,

@@ -155,6 +155,7 @@ export interface BusinessSettings {
   email: string;
   phone: string;
   logoUrl: string;
+  website: string;
   paymentTerms: string;
   currency: string;
   taxRate: number;

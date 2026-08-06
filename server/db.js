@@ -246,6 +246,7 @@ safeAddColumn('users', 'oauth_id TEXT');
 
 safeAddColumn('clients', 'address TEXT');
 safeAddColumn('settings', 'address TEXT');
+safeAddColumn('settings', 'website TEXT');
 
 safeAddColumn('clients', 'industryId TEXT');
 safeAddColumn('clients', 'newsletterOptIn INTEGER DEFAULT 0');

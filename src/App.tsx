@@ -21,6 +21,7 @@ const DEFAULT_SETTINGS: BusinessSettings = {
   email: "",
   phone: "",
   logoUrl: "",
+  website: "",
   paymentTerms: "",
   currency: "USD",
   taxRate: 0,
@@ -61,6 +62,7 @@ export default function App() {
             email: settings?.email || me.email,
             phone: settings?.phone || "",
             logoUrl: settings?.logoUrl || "",
+            website: settings?.website || "",
             paymentTerms: settings?.paymentTerms || DEFAULT_SETTINGS.paymentTerms,
             currency: settings?.currency || "USD",
             taxRate: settings?.taxRate || 0,
@@ -101,14 +103,10 @@ export default function App() {
   }, [activeBusiness]);
 
   const handleUpdateSettings = async (newSettings: BusinessSettings) => {
-    setSettingsState(newSettings);
-    try {
-      await api.put("/settings", newSettings);
-      if (activeBusiness) {
-        setActiveBusiness({ ...activeBusiness, name: newSettings.name, settings: newSettings });
-      }
-    } catch (e) {
-      console.error("Failed to save settings", e);
+    const updated = await api.put<BusinessSettings>("/settings", newSettings);
+    setSettingsState(updated);
+    if (activeBusiness) {
+      setActiveBusiness({ ...activeBusiness, name: updated.name, settings: updated });
     }
   };
 

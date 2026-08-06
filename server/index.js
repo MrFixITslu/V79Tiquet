@@ -203,6 +203,17 @@ const superAdminMiddleware = (req, res, next) => {
 // --- FILE REPOSITORY SETUP ---
 const UPLOADS_ROOT = path.join(__dirname, '..', 'uploads');
 if (!fs.existsSync(UPLOADS_ROOT)) fs.mkdirSync(UPLOADS_ROOT, { recursive: true });
+
+// Business logos are a deliberate, narrow exception to "no unauthenticated
+// static file serving": a logo has to render in a plain <img> tag (which
+// can't send an Authorization header) and, eventually, in outbound emails —
+// both audiences have no JWT at all. Everything else stays behind
+// /api/files/:accountId/*. Kept in its own folder, own route, own strict
+// filename whitelist so this exception can't be leveraged to reach anything
+// else under UPLOADS_ROOT.
+const PUBLIC_LOGOS_DIR = path.join(UPLOADS_ROOT, 'public-logos');
+if (!fs.existsSync(PUBLIC_LOGOS_DIR)) fs.mkdirSync(PUBLIC_LOGOS_DIR, { recursive: true });
+
 // Serve uploaded files statically ONLY IN DEVELOPMENT
 if (!isProduction) {
     app.use('/uploads', express.static(UPLOADS_ROOT));
@@ -1034,26 +1045,94 @@ app.get("/api/settings", authenticateToken, (req, res) => {
 
 // Update business settings
 app.put("/api/settings", authenticateToken, (req, res) => {
-    const { name, address, email, phone, logoUrl, paymentTerms, currency, taxRate } = sanitizeObject(req.body);
+    const { name, address, email, phone, logoUrl, website, paymentTerms, currency, taxRate } = sanitizeObject(req.body);
     try {
         const existing = db.prepare("SELECT id FROM settings WHERE account_id = ?").get(req.accountId);
         if (existing) {
             db.prepare(`
                 UPDATE settings 
-                SET name = ?, address = ?, email = ?, phone = ?, logoUrl = ?, paymentTerms = ?, currency = ?, taxRate = ? 
+                SET name = ?, address = ?, email = ?, phone = ?, logoUrl = ?, website = ?, paymentTerms = ?, currency = ?, taxRate = ? 
                 WHERE account_id = ?
-            `).run(name, address, email, phone, logoUrl, paymentTerms, currency, taxRate, req.accountId);
+            `).run(name, address, email, phone, logoUrl, website, paymentTerms, currency, taxRate, req.accountId);
         } else {
             db.prepare(`
-                INSERT INTO settings (id, name, address, email, phone, logoUrl, paymentTerms, currency, taxRate, account_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `).run(uuidv4(), name, address, email, phone, logoUrl, paymentTerms, currency, taxRate, req.accountId);
+                INSERT INTO settings (id, name, address, email, phone, logoUrl, website, paymentTerms, currency, taxRate, account_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `).run(uuidv4(), name, address, email, phone, logoUrl, website, paymentTerms, currency, taxRate, req.accountId);
         }
 
-        res.json({ success: true });
+        res.json(db.prepare("SELECT * FROM settings WHERE account_id = ?").get(req.accountId));
     } catch (error) {
         res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
     }
+});
+
+// --- Business logo upload (public read — see PUBLIC_LOGOS_DIR comment above) ---
+
+const ALLOWED_LOGO_MIME_TO_EXT = {
+    'image/png': '.png',
+    'image/jpeg': '.jpg',
+    'image/webp': '.webp',
+    'image/gif': '.gif',
+};
+
+const logoUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter: (req, file, cb) => {
+        if (!ALLOWED_LOGO_MIME_TO_EXT[file.mimetype]) {
+            return cb(new Error('Logo must be a PNG, JPEG, WEBP, or GIF image'));
+        }
+        cb(null, true);
+    },
+});
+
+app.post("/api/settings/logo", authenticateToken, uploadLimiter, (req, res) => {
+    logoUpload.single('logo')(req, res, (err) => {
+        if (err) return badRequest(res, err.message || 'Upload failed');
+        if (!req.file) return badRequest(res, 'No logo file provided');
+
+        try {
+            const ext = ALLOWED_LOGO_MIME_TO_EXT[req.file.mimetype];
+            const filename = `${req.accountId}${ext}`;
+
+            // Remove any previous logo for this account, including under a
+            // different extension than the new upload, so old files don't
+            // pile up in a publicly-servable folder.
+            for (const oldExt of Object.values(ALLOWED_LOGO_MIME_TO_EXT)) {
+                const oldPath = path.join(PUBLIC_LOGOS_DIR, `${req.accountId}${oldExt}`);
+                if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+            }
+
+            fs.writeFileSync(path.join(PUBLIC_LOGOS_DIR, filename), req.file.buffer);
+
+            const logoUrl = `/public/logos/${filename}?v=${Date.now()}`;
+            const existing = db.prepare("SELECT id FROM settings WHERE account_id = ?").get(req.accountId);
+            if (existing) {
+                db.prepare("UPDATE settings SET logoUrl = ? WHERE account_id = ?").run(logoUrl, req.accountId);
+            } else {
+                db.prepare("INSERT INTO settings (id, logoUrl, account_id) VALUES (?, ?, ?)").run(uuidv4(), logoUrl, req.accountId);
+            }
+
+            res.json(db.prepare("SELECT * FROM settings WHERE account_id = ?").get(req.accountId));
+        } catch (error) {
+            res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+        }
+    });
+});
+
+// Public, unauthenticated — see PUBLIC_LOGOS_DIR comment above for why this
+// one route is a deliberate exception. Filename is strictly whitelisted
+// (accountId + one of exactly four extensions) so it can only ever resolve
+// inside PUBLIC_LOGOS_DIR — no path traversal surface.
+const LOGO_FILENAME_RE = /^[a-zA-Z0-9-]+\.(png|jpe?g|webp|gif)$/;
+app.get("/public/logos/:filename", (req, res) => {
+    const { filename } = req.params;
+    if (!LOGO_FILENAME_RE.test(filename)) return res.status(400).end();
+    const filePath = path.join(PUBLIC_LOGOS_DIR, filename);
+    if (!fs.existsSync(filePath)) return res.status(404).end();
+    res.set('Cache-Control', 'public, max-age=31536000, immutable');
+    res.sendFile(filePath);
 });
 
 // Get all employees
@@ -1357,7 +1436,7 @@ async function sendWelcomeEmailForClient(client, accountId) {
         company_address: settings?.address || '',
         company_phone: settings?.phone || '',
         company_email: settings?.email || '',
-        site_url: COMPANY_WEBSITE_URL,
+        site_url: settings?.website || COMPANY_WEBSITE_URL,
         opt_in_link: `${APP_BASE_URL_FOR_TEMPLATES}/api/newsletter/confirm/${client.newsletterOptInToken}`,
     };
 
@@ -1529,7 +1608,7 @@ app.post("/api/templates/:type/test", authenticateToken, async (req, res) => {
             company_address: settings?.address || '',
             company_phone: settings?.phone || '',
             company_email: settings?.email || '',
-            site_url: COMPANY_WEBSITE_URL,
+            site_url: settings?.website || COMPANY_WEBSITE_URL,
             opt_in_link: `${APP_BASE_URL_FOR_TEMPLATES}/api/newsletter/confirm/test-token`,
         };
         const result = await sendTemplated(testTo, `[TEST] ${renderTemplate(template.subject, vars)}`, renderTemplate(template.htmlBody, vars));
@@ -1619,7 +1698,7 @@ app.post("/api/newsletter/broadcast", authenticateToken, (req, res) => {
                     company_address: settings?.address || '',
                     company_phone: settings?.phone || '',
                     company_email: settings?.email || '',
-                    site_url: COMPANY_WEBSITE_URL,
+                    site_url: settings?.website || COMPANY_WEBSITE_URL,
                 };
                 const subject = renderTemplate(template.subject, vars);
                 const html = renderTemplate(template.htmlBody, vars);
