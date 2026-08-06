@@ -1451,7 +1451,7 @@ async function sendWelcomeEmailForClient(client, accountId) {
 }
 
 // Create a new client
-app.post("/api/clients", authenticateToken, (req, res) => {
+app.post("/api/clients", authenticateToken, async (req, res) => {
     const { name, company, email, phone, address, industryId } = sanitizeObject(req.body);
     if (!name || !email) return badRequest(res, "Name and email are required");
     if (!isValidEmail(email)) return badRequest(res, "Invalid email format");
@@ -1466,11 +1466,25 @@ app.post("/api/clients", authenticateToken, (req, res) => {
 
         const newClient = db.prepare("SELECT * FROM clients WHERE id = ?").get(id);
 
-        sendWelcomeEmailForClient(newClient, req.accountId)
-            .then(r => console.log(`📧 Welcome email ${r.success ? 'sent' : 'failed'} to ${newClient.email}`))
-            .catch(e => console.error('Welcome email error:', e));
+        // Awaited, not fire-and-forget: this was previously "fire and
+        // forget with a console.log", which meant a failed or skipped
+        // welcome email (e.g. SMTP not configured) was invisible to the
+        // admin — client creation always looked like it fully succeeded
+        // even when no email went anywhere. A single email is small enough
+        // to safely await (unlike the newsletter broadcast, which can be
+        // hundreds) — worst case this adds a second or two to client
+        // creation, not a real cost.
+        let welcomeEmail = { sent: false, skipped: false, error: null };
+        try {
+            const result = await sendWelcomeEmailForClient(newClient, req.accountId);
+            welcomeEmail = { sent: !!result.success && !result.skipped, skipped: !!result.skipped, error: result.error || null };
+            console.log(`📧 Welcome email ${result.skipped ? 'skipped (SMTP not configured)' : result.success ? 'sent' : 'failed'} to ${newClient.email}`);
+        } catch (e) {
+            welcomeEmail = { sent: false, skipped: false, error: e.message };
+            console.error('Welcome email error:', e);
+        }
 
-        res.status(201).json({ ...newClient, jobs: [], totalJobs: 0, activeJobs: 0, totalRevenue: 0 });
+        res.status(201).json({ ...newClient, jobs: [], totalJobs: 0, activeJobs: 0, totalRevenue: 0, welcomeEmail });
     } catch (error) {
         res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
     }

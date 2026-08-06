@@ -88,6 +88,10 @@ export interface Client {
   industryId?: string | null;
   newsletterOptIn?: number; // 0 or 1 — stored as SQLite INTEGER
   newsletterOptedInAt?: string | null;
+  // Only present on the response right after creation (see POST
+  // /api/clients) — not a persisted field, just how the server reports
+  // whether the welcome email actually went out.
+  welcomeEmail?: { sent: boolean; skipped: boolean; error: string | null } | null;
 }
 
 export interface Industry {

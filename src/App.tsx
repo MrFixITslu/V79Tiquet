@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Search, Shield, Zap, ChevronDown, UserPlus, Clock, X, Loader2 } from "lucide-react";
 import { JobBoard } from "./components/JobBoard";
 import { Sidebar } from "./components/Sidebar";
@@ -80,6 +80,37 @@ export default function App() {
   // ── Data collections, synced with the backend ──────────────────────────
   const { items: jobs, setItems: setJobs } = useSyncedCollection<Job>("/jobs", authenticated);
   const { items: clients, setItems: setClients } = useSyncedCollection<Client>("/clients", authenticated);
+
+  // Surfaces whether the welcome email on a newly-created client actually
+  // went out. Previously this was invisible — client creation "succeeded"
+  // in the UI even when the email silently failed or was skipped (e.g. SMTP
+  // not configured on the server), so there was no way to tell without
+  // digging through server logs.
+  const [emailNotice, setEmailNotice] = useState<{ message: string; tone: "warning" | "success" } | null>(null);
+  const notifiedClientIdsRef = useRef(new Set<string>());
+
+  useEffect(() => {
+    for (const c of clients) {
+      if (c.welcomeEmail && !notifiedClientIdsRef.current.has(c.id)) {
+        notifiedClientIdsRef.current.add(c.id);
+        if (c.welcomeEmail.skipped) {
+          setEmailNotice({
+            message: `Client "${c.name}" created — welcome email NOT sent (SMTP isn't configured on the server). Set SMTP_HOST/SMTP_USER/SMTP_PASS, or check Settings → Templates → "Send Test to Me".`,
+            tone: "warning",
+          });
+        } else if (!c.welcomeEmail.sent) {
+          setEmailNotice({
+            message: `Client "${c.name}" created — welcome email failed to send${c.welcomeEmail.error ? `: ${c.welcomeEmail.error}` : ""}.`,
+            tone: "warning",
+          });
+        } else {
+          setEmailNotice({ message: `Client "${c.name}" created — welcome email sent.`, tone: "success" });
+        }
+        const timer = setTimeout(() => setEmailNotice(null), 8000);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [clients]);
   const { items: employees, setItems: setEmployees } = useSyncedCollection<Employee>("/employees", authenticated);
   const { items: payrollRecords, setItems: setPayrollRecords } = useSyncedCollection<PayrollRecord>("/payroll", authenticated);
   const { items: users, setItems: setUsers } = useSyncedCollection<AppUser>("/users", authenticated);
@@ -224,6 +255,19 @@ export default function App() {
             </div>
           </div>
         </header>
+
+        {emailNotice && (
+          <div
+            className={`px-8 py-2.5 text-sm font-medium flex items-center justify-between ${
+              emailNotice.tone === "warning" ? "bg-amber-50 text-amber-800 border-b border-amber-200" : "bg-emerald-50 text-emerald-800 border-b border-emerald-200"
+            }`}
+          >
+            <span>{emailNotice.message}</span>
+            <button onClick={() => setEmailNotice(null)} className="text-current opacity-60 hover:opacity-100 ml-4">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
 
         <div className="flex-1 overflow-auto p-8">
           {activeTab === "dashboard" && <Dashboard jobs={jobs} />}

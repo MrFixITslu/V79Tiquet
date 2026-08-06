@@ -211,7 +211,15 @@ export function plainTextToHtml(text) {
     const escaped = escapeHtml(text);
     const linked = escaped.replace(
         /(https?:\/\/[^\s<]+)/g,
-        (url) => `<a href="${url}" style="color:#3b82f6;text-decoration:underline">${url}</a>`
+        (url) => {
+            // Don't swallow trailing punctuation into the link — "at
+            // {{site_url}}." (a period ending the sentence) was turning into
+            // a literal link to ".../duckdns.org." with the period as part
+            // of the URL, which 404s for most sites and just looks wrong.
+            const trailingPunct = url.match(/[.,;:!?)\]}"']+$/)?.[0] || '';
+            const cleanUrl = trailingPunct ? url.slice(0, -trailingPunct.length) : url;
+            return `<a href="${cleanUrl}" style="color:#3b82f6;text-decoration:underline">${cleanUrl}</a>${trailingPunct}`;
+        }
     );
     return `<div style="color:#475569;line-height:1.6;white-space:pre-line">${linked}</div>`;
 }
