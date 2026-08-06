@@ -17,7 +17,9 @@ import {
   Send,
   Sparkles,
   FileSpreadsheet,
-  CheckSquare
+  CheckSquare,
+  Pencil,
+  Check
 } from "lucide-react";
 
 export function JobDetailModal({
@@ -39,6 +41,26 @@ export function JobDetailModal({
   const [showDocPreview, setShowDocPreview] = useState(false);
   const [docType, setDocType] = useState<"estimate" | "work_order" | "invoice">("invoice");
   const [newNote, setNewNote] = useState("");
+  const [editingAmount, setEditingAmount] = useState(false);
+  const [amountDraft, setAmountDraft] = useState(job.amount != null ? String(job.amount) : "");
+
+  const handleSaveAmount = () => {
+    const trimmed = amountDraft.trim();
+    if (trimmed === "") {
+      onUpdate({ ...job, amount: undefined });
+      setEditingAmount(false);
+      return;
+    }
+    const parsed = parseFloat(trimmed);
+    if (isNaN(parsed) || parsed < 0) return;
+    onUpdate({ ...job, amount: parsed });
+    setEditingAmount(false);
+  };
+
+  const handleCancelAmount = () => {
+    setAmountDraft(job.amount != null ? String(job.amount) : "");
+    setEditingAmount(false);
+  };
 
   const handleSaveNotes = () => {
     onUpdate({ ...job, invoiceNotes });
@@ -56,9 +78,15 @@ export function JobDetailModal({
     setNewNote("");
   };
 
-  // Find full client details
+  // Find full client details. Client.company can legitimately be null (a
+  // client with no company name on file) even though the type says
+  // `string` — the DB stores an empty company as NULL. Without the `?.`
+  // here, any job with no directly-linked clientId (common for jobs still
+  // in Estimation, created before a client is picked) would throw trying
+  // to call .toLowerCase() on that null for every non-matching client in
+  // the list, crashing the whole modal to a blank screen.
   const clientDetails = clients.find(
-    (c) => c.id === job.clientId || c.company.toLowerCase() === job.client.toLowerCase()
+    (c) => c.id === job.clientId || c.company?.toLowerCase() === job.client?.toLowerCase()
   );
 
   const getDocTitle = () => {
@@ -120,9 +148,38 @@ export function JobDetailModal({
               <p className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-1 flex items-center gap-1">
                 <DollarSign className="w-3 h-3" /> Amount
               </p>
-              <p className="font-semibold text-slate-900 flex items-center">
-                {job.amount ? `${settings.currency === "XCD" ? "EC$" : "$"}${job.amount.toLocaleString()}` : "TBD"}
-              </p>
+              {editingAmount ? (
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    autoFocus
+                    value={amountDraft}
+                    onChange={(e) => setAmountDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") handleSaveAmount();
+                      if (e.key === "Escape") handleCancelAmount();
+                    }}
+                    placeholder="0.00"
+                    className="w-full px-2 py-1 bg-white border border-slate-300 rounded-lg text-sm font-semibold text-slate-900 outline-none focus:ring-2 focus:ring-indigo-500/20"
+                  />
+                  <button onClick={handleSaveAmount} className="p-1 text-emerald-600 hover:bg-emerald-50 rounded-lg shrink-0">
+                    <Check className="w-4 h-4" />
+                  </button>
+                  <button onClick={handleCancelAmount} className="p-1 text-slate-400 hover:bg-slate-100 rounded-lg shrink-0">
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => setEditingAmount(true)}
+                  className="font-semibold text-slate-900 flex items-center gap-1.5 group w-full text-left"
+                >
+                  {job.amount ? `${settings.currency === "XCD" ? "EC$" : "$"}${job.amount.toLocaleString()}` : "TBD"}
+                  <Pencil className="w-3 h-3 text-slate-300 group-hover:text-slate-500 transition-colors" />
+                </button>
+              )}
             </div>
             <div className="bg-slate-50 p-4 rounded-xl border border-slate-100">
               <p className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-1 flex items-center gap-1">

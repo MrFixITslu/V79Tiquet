@@ -28,11 +28,16 @@ export function Clients({ clients, setClients, jobs, industries }: ClientsProps)
   const [editingClient, setEditingClient] = useState<Client | null>(null);
   const [selectedClient, setSelectedClient] = useState<Client | null>(null);
 
+  // Same null-company issue as JobDetailModal: a client with no company on
+  // file comes back as company: null despite the type saying string. This
+  // filter runs unconditionally on every render (not just on search), so
+  // without the `?.` a single such client crashed the entire page, not just
+  // a modal.
   const filteredClients = clients.filter(
     (c) =>
       c.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.company.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.email.toLowerCase().includes(searchQuery.toLowerCase())
+      c.company?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      c.email?.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
   const handleDelete = (id: string) => {
