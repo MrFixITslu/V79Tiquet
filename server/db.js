@@ -255,12 +255,62 @@ safeAddColumn('clients', 'newsletterOptedInAt TEXT');
 
 // Upgrade path from an earlier deploy of this feature, which stored the
 // template as raw HTML in an `htmlBody` column. Templates are now plain
-// text (rendered into HTML at send time — see email.js), stored in `body`.
+// text (rendered into HTML at send time — see email.js). Copying the old
+// HTML verbatim into `body` would be actively harmful, not just stale: the
+// new pipeline escapes `body` as plain text before rendering it (correct
+// for genuine plain text, since there's no longer any HTML-injection
+// surface to defend against) — so raw HTML surviving the migration would
+// get its own tags escaped into visible text, and then the auto-linker
+// would find the still-readable URL inside an old (now inert, escaped)
+// href="..." and wrap it in a second, real link, corrupting the quotes at
+// the boundary. Strip tags on migration instead: it's a rough plain-text
+// approximation of what they had, not a full loss, and it's safe to run
+// through the new pipeline. The admin can polish it via Settings after.
 safeAddColumn('email_templates', 'body TEXT');
+const stripTags = (html) => html
+    .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n\s*\n\s*\n+/g, '\n\n')
+    .trim();
+const updateTemplateBody = db.prepare(`UPDATE email_templates SET body = ? WHERE id = ?`);
+
 try {
-    db.exec(`UPDATE email_templates SET body = htmlBody WHERE (body IS NULL OR body = '') AND htmlBody IS NOT NULL AND htmlBody != ''`);
+    const needsMigration = db.prepare(
+        `SELECT id, htmlBody FROM email_templates WHERE (body IS NULL OR body = '') AND htmlBody IS NOT NULL AND htmlBody != ''`
+    ).all();
+    for (const row of needsMigration) {
+        updateTemplateBody.run(stripTags(row.htmlBody), row.id);
+    }
+    if (needsMigration.length > 0) {
+        console.log(`Migrated ${needsMigration.length} email template(s) from HTML to plain text — review in Settings, formatting will be rough.`);
+    }
 } catch (e) {
     // htmlBody column doesn't exist on a fresh install — nothing to migrate
+}
+
+// Separate try/catch on purpose: this must still run even if the block
+// above throws (e.g. a fresh install with no htmlBody column at all) — a
+// failure in one migration step should never silently skip the other.
+try {
+    // Self-healing for accounts that already ran the earlier (buggy) version
+    // of this migration, which copied htmlBody into body VERBATIM — so body
+    // is no longer empty, but still contains raw HTML tags. Genuine plain
+    // text should never contain a literal <table>/<html>/<!DOCTYPE — if it
+    // does, it's leftover raw markup from the old migration, not something
+    // an admin typed.
+    const looksLikeHtml = db.prepare(
+        `SELECT id, body FROM email_templates WHERE body LIKE '%<html%' OR body LIKE '%<!DOCTYPE%' OR body LIKE '%<table%' OR body LIKE '%</td>%'`
+    ).all();
+    for (const row of looksLikeHtml) {
+        updateTemplateBody.run(stripTags(row.body), row.id);
+    }
+    if (looksLikeHtml.length > 0) {
+        console.log(`Cleaned ${looksLikeHtml.length} email template(s) still containing raw HTML from the earlier migration — review in Settings.`);
+    }
+} catch (e) {
+    console.error('Email template HTML-cleanup migration error:', e.message);
 }
 
 safeAddColumn('accounts', 'status TEXT DEFAULT \'active\'');
