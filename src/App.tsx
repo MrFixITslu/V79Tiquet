@@ -11,6 +11,7 @@ import { Invoices } from "./components/Invoices";
 import { Clients } from "./components/Clients";
 import { Settings } from "./components/Settings";
 import { AuthGate } from "./components/AuthGate";
+import { ResetPasswordPage } from "./components/ResetPasswordPage";
 import { Job, Employee, PayrollRecord, AppUser, Client, BusinessSettings, AuthenticatedUser, Business, Industry } from "./types";
 import { api, getToken, setToken } from "./api";
 import { useSyncedCollection } from "./useSyncedCollection";
@@ -27,10 +28,19 @@ const DEFAULT_SETTINGS: BusinessSettings = {
   taxRate: 0,
 };
 
+// No router in this app — matched by hand since it's the only deep link
+// this app needs. /reset-password or /reset-password/<token>.
+function matchResetPasswordPath(pathname: string): { matched: boolean; token: string | null } {
+  const parts = pathname.split("/").filter(Boolean);
+  if (parts[0] !== "reset-password") return { matched: false, token: null };
+  return { matched: true, token: parts[1] || null };
+}
+
 export default function App() {
   const [currentUser, setCurrentUser] = useState<AuthenticatedUser | null>(null);
   const [activeBusiness, setActiveBusiness] = useState<Business | null>(null);
   const [restoringSession, setRestoringSession] = useState(true);
+  const [resetPasswordRoute, setResetPasswordRoute] = useState(() => matchResetPasswordPath(window.location.pathname));
 
   const [activeTab, setActiveTab] = useState("dashboard");
   const [isQuickActionsOpen, setIsQuickActionsOpen] = useState(false);
@@ -153,6 +163,18 @@ export default function App() {
     setActiveBusiness(null);
   };
 
+  if (resetPasswordRoute.matched) {
+    return (
+      <ResetPasswordPage
+        token={resetPasswordRoute.token}
+        onBackToLogin={() => {
+          window.history.pushState({}, "", "/");
+          setResetPasswordRoute({ matched: false, token: null });
+        }}
+      />
+    );
+  }
+
   if (restoringSession) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center">
@@ -162,7 +184,15 @@ export default function App() {
   }
 
   if (!authenticated) {
-    return <AuthGate onAuthComplete={handleAuthComplete} />;
+    return (
+      <AuthGate
+        onAuthComplete={handleAuthComplete}
+        onForgotPassword={() => {
+          window.history.pushState({}, "", "/reset-password");
+          setResetPasswordRoute({ matched: true, token: null });
+        }}
+      />
+    );
   }
 
   return (

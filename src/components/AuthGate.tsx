@@ -7,8 +7,10 @@ type Step = "login" | "register" | "2fa";
 
 export function AuthGate({
   onAuthComplete,
+  onForgotPassword,
 }: {
   onAuthComplete: (user: AuthenticatedUser, activeBusiness: Business) => void;
+  onForgotPassword: () => void;
 }) {
   const [step, setStep] = useState<Step>("login");
   const [loading, setLoading] = useState(false);
@@ -137,6 +139,15 @@ export function AuthGate({
             <form onSubmit={handleLogin} className="space-y-4">
               <Field label="Email" type="email" required value={email} onChange={setEmail} placeholder="you@company.com" />
               <Field label="Password" type="password" required value={password} onChange={setPassword} placeholder="••••••••" />
+              <div className="text-right -mt-2">
+                <button
+                  type="button"
+                  onClick={onForgotPassword}
+                  className="text-xs text-indigo-600 font-semibold hover:underline cursor-pointer"
+                >
+                  Forgot password?
+                </button>
+              </div>
               <SubmitButton loading={loading} label="Sign In" />
               <p className="text-center text-xs text-slate-400 mt-4">
                 Don't have a workspace?{" "}

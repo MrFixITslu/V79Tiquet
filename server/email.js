@@ -111,6 +111,52 @@ export async function sendPortalLink(clientEmail, jobTitle, secureToken) {
 }
 
 /**
+ * Send a password reset link to a user (agent/admin account, not a client
+ * portal). Called from POST /api/auth/forgot-password. The token itself is
+ * generated and hashed for storage by the caller — this function only
+ * builds and sends the email.
+ */
+export async function sendPasswordReset(userEmail, resetToken) {
+    const resetUrl = `${APP_BASE_URL}/reset-password/${resetToken}`;
+    const subject  = 'Reset your V79 TIQUET password';
+
+    const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;padding:40px 20px">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+        <tr><td style="background:#1e293b;padding:28px 36px">
+          <h1 style="margin:0;color:#ffffff;font-size:20px;font-weight:600">V79 Tick-It</h1>
+        </td></tr>
+        <tr><td style="padding:36px">
+          <h2 style="margin:0 0 16px;color:#1e293b;font-size:22px">Reset your password</h2>
+          <p style="margin:0 0 20px;color:#475569;line-height:1.6">
+            We received a request to reset the password on your account. This link expires in 30 minutes.
+            If you didn't request this, you can safely ignore this email — your password won't change.
+          </p>
+          <a href="${resetUrl}" style="display:inline-block;background:#3b82f6;color:#ffffff;padding:14px 28px;border-radius:6px;text-decoration:none;font-weight:600;font-size:15px">
+            Reset Password →
+          </a>
+          <p style="margin:24px 0 0;color:#94a3b8;font-size:13px">
+            Or copy this link: <span style="color:#3b82f6">${resetUrl}</span>
+          </p>
+        </td></tr>
+        <tr><td style="background:#f1f5f9;padding:20px 36px;color:#94a3b8;font-size:12px">
+          This is an automated message from V79 Tick-It. Please do not reply to this email.
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+
+    return send(userEmail, subject, html);
+}
+
+/**
  * Notify the client when their job status changes.
  * Called automatically on job PUT if the status field changed.
  */

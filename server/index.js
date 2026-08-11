@@ -4,7 +4,7 @@ import cors from "cors";
 import http from "http";
 import { WebSocketServer } from "ws";
 import db, { dbDir, seedDefaultTemplatesForAccount } from "./db.js";
-import { sendPortalLink, sendStatusUpdate, sendTemplated, renderEmailFromPlainTemplate } from "./email.js";
+import { sendPortalLink, sendStatusUpdate, sendTemplated, renderEmailFromPlainTemplate, sendPasswordReset } from "./email.js";
 import { registerOAuthRoutes } from "./oauth.js";
 import { v4 as uuidv4 } from "uuid";
 import jwt from "jsonwebtoken";
@@ -457,6 +457,84 @@ app.post("/api/auth/login/2fa", (req, res) => {
         delete user.twoFactorSecret;
         res.json({ token, user });
     });
+});
+
+// --- FORGOT PASSWORD ---
+// Two-step flow: request a reset link, then submit a new password with the
+// token from that link. Deliberately returns the same generic success
+// message whether or not the email exists, an OAuth-only account, or a
+// currently-locked account — anything else would let an attacker enumerate
+// which emails have accounts on this workspace.
+app.post("/api/auth/forgot-password", async (req, res) => {
+    const { email } = sanitizeObject(req.body);
+    const genericResponse = { message: "If an account exists for that email, a reset link has been sent." };
+
+    if (!email || !isValidEmail(email)) return res.json(genericResponse);
+
+    try {
+        const user = db.prepare("SELECT id, email, password_hash FROM users WHERE email = ?").get(email);
+
+        // Silently no-op for: no such user, or an OAuth-only account (no
+        // password_hash to reset). Same response either way.
+        if (user && user.password_hash) {
+            const rawToken = crypto.randomBytes(32).toString('hex');
+            const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+            const expires = new Date(Date.now() + 30 * 60 * 1000).toISOString(); // 30 min
+
+            db.prepare("UPDATE users SET reset_token_hash = ?, reset_token_expires = ? WHERE id = ?")
+              .run(tokenHash, expires, user.id);
+
+            try {
+                await sendPasswordReset(user.email, rawToken);
+            } catch (mailErr) {
+                logger.error(`Failed to send password reset email to ${user.email}: ${mailErr.message}`);
+            }
+
+            logger.audit('password_reset_requested', { userId: user.id, email: user.email });
+        }
+
+        res.json(genericResponse);
+    } catch (e) {
+        logger.error(`Forgot-password error: ${e.message}`);
+        // Still generic — don't leak internal errors through this endpoint either.
+        res.json(genericResponse);
+    }
+});
+
+app.post("/api/auth/reset-password", async (req, res) => {
+    const { token, password } = sanitizeObject(req.body);
+    if (!token || !password) return badRequest(res, "Token and new password are required");
+
+    const pwError = validatePassword(password);
+    if (pwError) return badRequest(res, pwError);
+
+    try {
+        const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+        const user = db.prepare(
+            "SELECT id, email, reset_token_expires FROM users WHERE reset_token_hash = ?"
+        ).get(tokenHash);
+
+        if (!user) return res.status(400).json({ error: "Invalid or expired reset link" });
+        if (!user.reset_token_expires || new Date(user.reset_token_expires) < new Date()) {
+            // Clear the stale token so it can't be tried again once expired.
+            db.prepare("UPDATE users SET reset_token_hash = NULL, reset_token_expires = NULL WHERE id = ?").run(user.id);
+            return res.status(400).json({ error: "Invalid or expired reset link" });
+        }
+
+        const hashedPassword = await bcrypt.hash(password, 12);
+        db.prepare(`
+            UPDATE users
+            SET password_hash = ?, reset_token_hash = NULL, reset_token_expires = NULL,
+                failed_login_attempts = 0, locked_until = NULL
+            WHERE id = ?
+        `).run(hashedPassword, user.id);
+
+        logger.audit('password_reset_completed', { userId: user.id, email: user.email });
+        res.json({ message: "Password has been reset. You can now log in." });
+    } catch (e) {
+        logger.error(`Reset-password error: ${e.message}`);
+        res.status(500).json({ error: "Internal Server Error" });
+    }
 });
 
 app.get("/api/auth/me", authenticateToken, (req, res) => {

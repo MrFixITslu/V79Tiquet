@@ -244,6 +244,13 @@ safeAddColumn('users', 'twoFactorEnabled INTEGER DEFAULT 0');
 safeAddColumn('users', 'oauth_provider TEXT');
 safeAddColumn('users', 'oauth_id TEXT');
 
+// Forgot-password flow. Only the SHA-256 hash of the reset token is stored —
+// the raw token exists only in the emailed link, same principle as a
+// password hash. A leaked DB row therefore can't be replayed as a valid
+// reset link.
+safeAddColumn('users', 'reset_token_hash TEXT');
+safeAddColumn('users', 'reset_token_expires TEXT');
+
 safeAddColumn('clients', 'address TEXT');
 safeAddColumn('settings', 'address TEXT');
 safeAddColumn('settings', 'website TEXT');
