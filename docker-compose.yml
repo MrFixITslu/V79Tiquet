@@ -40,10 +40,46 @@ services:
       start_period: 20s
     networks:
       - proxy_network
+      - tiquet_internal
+    # NOTE: not yet reading DB_HOST/DB_PORT/etc below — the app still runs on
+    # SQLite (DATABASE_PATH above) until the data-access layer migration and
+    # validated data migration are both complete. Postgres is being stood up
+    # here ahead of time, additively, alongside the existing DB, so it can be
+    # reached, seeded, and tested without any cutover risk to production.
+    depends_on:
+      tiquet-postgres:
+        condition: service_healthy
+
+  tiquet-postgres:
+    image: postgres:16-alpine
+    container_name: tiquet-postgres
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - POSTGRES_DB=${DB_NAME:-tiquet}
+      - POSTGRES_USER=${DB_USER:-tiquet_app}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
+    # No `ports:` mapping — Postgres is reachable only from other containers
+    # on tiquet_internal (i.e. v79-tiquet-manager). It is never exposed to
+    # proxy_network or the host. If you need to inspect it manually from the
+    # host during migration testing, temporarily add "127.0.0.1:5432:5432"
+    # (bind to loopback only, never "5432:5432" / 0.0.0.0) and remove it
+    # again afterward.
+    volumes:
+      - tiquet_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-tiquet_app} -d ${DB_NAME:-tiquet}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - tiquet_internal
 
 volumes:
   tiquet_data:
   tiquet_uploads:
+  tiquet_pg_data:
 
 networks:
   proxy_network:
@@ -51,3 +87,11 @@ networks:
     # to. Verify with `docker network ls` on the server — if NPM's compose
     # file defines it under a different name, change it here to match.
     external: true
+  tiquet_internal:
+    # Private network for the app <-> Postgres only. internal:true means
+    # Docker gives this network no default route to the outside world at
+    # all — Postgres has no path in or out except to containers also on
+    # this network (i.e. v79-tiquet-manager), independent of any firewall
+    # rules. v79-tiquet-manager stays reachable externally via its separate
+    # proxy_network attachment above.
+    internal: true
