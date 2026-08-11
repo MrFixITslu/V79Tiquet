@@ -54,6 +54,6 @@ USER appuser
 EXPOSE 3050
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
-    CMD wget -qO- "http://localhost:${PORT:-3050}/health" || exit 1
+    CMD wget -qO- "http://127.0.0.1:${PORT:-3050}/health" || exit 1
 
 CMD ["node", "server/index.js"]

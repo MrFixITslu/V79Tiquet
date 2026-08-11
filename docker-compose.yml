@@ -26,7 +26,14 @@ services:
       - tiquet_data:/app/data
       - tiquet_uploads:/app/uploads
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3050/health"]
+      # Use 127.0.0.1, not localhost: Alpine/musl resolves "localhost" to the
+      # IPv6 loopback (::1) first, and BusyBox wget doesn't fall back to IPv4
+      # on ECONNREFUSED — so this check was failing even though the app
+      # (bound to 0.0.0.0) was reachable fine from anywhere outside the
+      # container, including Nginx Proxy Manager. See v79-tiquet-manager
+      # incident 2026-08-11: "Up (unhealthy)" for 4 days with a fully healthy
+      # app underneath.
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3050/health"]
       interval: 30s
       timeout: 10s
       retries: 3
