@@ -21,6 +21,7 @@ import crypto from "crypto";
 import multer from "multer";
 import { registerStripeRoutes } from "./stripe.js";
 import { registerHealthCheck } from "./healthcheck.js";
+import { sendPaidEvent, generateEventId } from "./gatewayClient.js";
 import { logger } from "./logger.js";
 import { 
     sanitizeString, 
@@ -665,6 +666,23 @@ const updateJobStage = (id, newStatus, accountId, userName = "System") => {
         WHERE id = ? AND account_id = ?
     `).run(newStatus, JSON.stringify(timeLogs), timerStartedAt, assignedTo, id, accountId);
 
+    // 4b. FFPRO2 Gateway: a job just became genuinely PAID (not completed,
+    // not invoiced — this only fires on the actual paid transition, and
+    // only once per job since the guard below requires the PREVIOUS status
+    // to not already be 'paid'). Mark it 'pending' synchronously, in the
+    // same write pass, before any network call is attempted — so this
+    // record survives even if the process crashes immediately after. The
+    // actual HTTP delivery happens afterward, off the request path, and can
+    // never fail this function or the payment confirmation that called it.
+    if (newStatus === 'paid' && job.status !== 'paid') {
+        const eventId = generateEventId();
+        db.prepare("UPDATE jobs SET ffproSyncStatus = 'pending', ffproEventId = ? WHERE id = ? AND account_id = ?")
+            .run(eventId, id, accountId);
+        triggerFfproSync(id, accountId).catch((err) => {
+            logger.error(`[FFPRO Gateway] Unexpected error syncing job ${id}: ${err.message}`);
+        });
+    }
+
     // 5. Activity Log
     db.prepare("INSERT INTO activity_logs (id, job_id, action, timestamp, user, account_id) VALUES (?, ?, ?, ?, ?, ?)")
         .run(uuidv4(), id, `Stage advanced to ${newStatus}${assignedTo !== job.assignedTo ? ` and auto-assigned to ${assignedTo}` : ''}`, now, userName, accountId);
@@ -687,6 +705,42 @@ const updateJobStage = (id, newStatus, accountId, userName = "System") => {
 
     return { ...job, status: newStatus, timeLogs, timerStartedAt, assignedTo };
 };
+
+// Delivers (or re-delivers) a job's paid event to FFPRO2. Always reads the
+// job fresh from the DB rather than trusting a passed-in object, since this
+// is also called later by the retry sweep, potentially long after the
+// original updateJobStage() call. Never throws — failures just leave
+// ffproSyncStatus as 'pending' for the next sweep to pick up.
+async function triggerFfproSync(jobId, accountId) {
+    const job = db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(jobId, accountId);
+    if (!job || job.status !== 'paid' || !job.ffproEventId) return;
+
+    const settings = db.prepare("SELECT currency FROM settings WHERE account_id = ?").get(accountId);
+    const delivered = await sendPaidEvent(job, accountId, settings);
+
+    if (delivered) {
+        db.prepare("UPDATE jobs SET ffproSyncStatus = 'sent' WHERE id = ? AND account_id = ?").run(jobId, accountId);
+    }
+    // else: leave as 'pending' — the periodic sweep below will retry it.
+}
+
+// Periodic sweep: catches any job whose FFPRO2 delivery didn't succeed via
+// the inline retries in gatewayClient.js (e.g. FFPRO2 was down for longer
+// than those cover). Mirrors the existing wsHeartbeat setInterval pattern
+// elsewhere in this file rather than introducing a queue/worker system.
+const FFPRO_SWEEP_INTERVAL_MS = 5 * 60 * 1000; // every 5 minutes
+setInterval(() => {
+    try {
+        const pending = db.prepare("SELECT id, account_id FROM jobs WHERE ffproSyncStatus = 'pending'").all();
+        for (const row of pending) {
+            triggerFfproSync(row.id, row.account_id).catch((err) => {
+                logger.error(`[FFPRO Gateway] Sweep retry failed for job ${row.id}: ${err.message}`);
+            });
+        }
+    } catch (err) {
+        logger.error(`[FFPRO Gateway] Sweep query failed: ${err.message}`);
+    }
+}, FFPRO_SWEEP_INTERVAL_MS);
 
 // --- API ROUTES (PROTECTED) ---
 

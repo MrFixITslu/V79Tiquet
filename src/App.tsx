@@ -319,7 +319,7 @@ export default function App() {
             <Invoices jobs={jobs} setJobs={setJobs} employees={employees} clients={clients} settings={settings} />
           )}
           {activeTab === "settings" && (
-            <Settings settings={settings} setSettings={handleUpdateSettings} industries={industries} setIndustries={setIndustries} />
+            <Settings settings={settings} setSettings={handleUpdateSettings} industries={industries} setIndustries={setIndustries} workspaceId={activeBusiness!.id} />
           )}
           {activeTab === "new-request" && (
             <div className="max-w-4xl mx-auto">

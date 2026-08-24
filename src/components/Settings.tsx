@@ -23,11 +23,13 @@ export function Settings({
   setSettings,
   industries,
   setIndustries,
+  workspaceId,
 }: {
   settings: BusinessSettings;
   setSettings: (settings: BusinessSettings) => void | Promise<void>;
   industries: Industry[];
   setIndustries: React.Dispatch<React.SetStateAction<Industry[]>>;
+  workspaceId: string;
 }) {
   // Fields edit a local draft, not the live `settings` prop — Save commits it,
   // Discard reverts it. (Previously every keystroke fired an immediate PUT
@@ -218,6 +220,10 @@ export function Settings({
           </div>
         </div>
       </div>
+
+      <div className="h-px bg-slate-200" />
+
+      <IntegrationsSection workspaceId={workspaceId} />
 
       <div className="h-px bg-slate-200" />
 
@@ -654,6 +660,61 @@ function NewsletterSection({ industries }: { industries: Industry[] }) {
                 ))}
               </div>
             )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Integrations ─────────────────────────────────────────────────────────
+// Read-only display of this workspace's ID so an admin can copy it into
+// FFPRO2 → Settings → Gateway. This account_id IS the "Workspace Number"
+// the gateway integration expects — nothing else needs to be configured
+// here for that to work; delivery is driven entirely by FFPRO_GATEWAY_URL /
+// FFPRO_GATEWAY_SECRET in this server's own environment (see env.example).
+function IntegrationsSection({ workspaceId }: { workspaceId: string }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(workspaceId);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard API unavailable/denied — the ID is still selectable text.
+    }
+  };
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
+      <div className="md:col-span-1">
+        <h3 className="text-lg font-semibold text-slate-900 mb-2">Integrations</h3>
+        <p className="text-sm text-slate-500">
+          Connect this workspace to other tools. Paid jobs can automatically post as income
+          in Fire Finance Pro.
+        </p>
+      </div>
+      <div className="md:col-span-2">
+        <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm space-y-3">
+          <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest">
+            FFPRO2 Workspace Number
+          </label>
+          <p className="text-xs text-slate-400">
+            Paste this into FFPRO2 → Settings → Gateway to connect it. A job here only creates
+            income there once it's marked <span className="font-semibold text-slate-500">Paid</span>.
+          </p>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono text-slate-700 select-all overflow-x-auto">
+              {workspaceId}
+            </code>
+            <button
+              type="button"
+              onClick={handleCopy}
+              className="px-4 py-2 text-xs font-bold uppercase tracking-wider text-white bg-slate-900 hover:bg-slate-800 rounded-xl transition-all shrink-0"
+            >
+              {copied ? "Copied" : "Copy"}
+            </button>
           </div>
         </div>
       </div>

@@ -235,6 +235,18 @@ safeAddColumn('jobs', 'deliverables TEXT');
 safeAddColumn('jobs', 'timerStartedAt TEXT');
 safeAddColumn('jobs', 'stageAssignments TEXT');
 safeAddColumn('jobs', 'timeLogs TEXT');
+// FFPRO2 Gateway: tracks whether this job's PAID event has been delivered
+// to FFPRO2 as income yet. NULL = not applicable (job never reached paid,
+// or gateway wasn't configured at the time). 'pending' is written BEFORE
+// the delivery attempt — so even a crash right after marking a job paid
+// still leaves a durable, retryable record — and flips to 'sent' only once
+// FFPRO2 actually confirms it processed the event.
+safeAddColumn('jobs', "ffproSyncStatus TEXT");
+// The same eventId must be reused across every retry attempt for a given
+// job — that's what lets FFPRO2's idempotency check recognize "this is the
+// same payment being redelivered" rather than a new one. Generated once,
+// the moment the job is marked paid, and reused for every retry after.
+safeAddColumn('jobs', "ffproEventId TEXT");
 
 safeAddColumn('users', 'failed_login_attempts INTEGER DEFAULT 0');
 safeAddColumn('users', 'locked_until TEXT');
@@ -352,6 +364,7 @@ try {
     CREATE INDEX IF NOT EXISTS idx_newsletter_sends_account ON newsletter_sends(account_id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_newsletter_token ON clients(newsletterOptInToken) WHERE newsletterOptInToken IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oauth ON users (oauth_provider, oauth_id) WHERE oauth_provider IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_jobs_ffpro_sync_status ON jobs(ffproSyncStatus) WHERE ffproSyncStatus = 'pending';
   `);
 } catch (e) {
   console.warn("Index creation warning:", e.message);
