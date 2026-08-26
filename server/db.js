@@ -271,6 +271,18 @@ safeAddColumn('clients', 'industryId TEXT');
 safeAddColumn('clients', 'newsletterOptIn INTEGER DEFAULT 0');
 safeAddColumn('clients', 'newsletterOptInToken TEXT');
 safeAddColumn('clients', 'newsletterOptedInAt TEXT');
+// Website lead capture (website2026 contact form → V79Tiquet client, via
+// /api/public/intake). leadSource identifies where the client came from;
+// leadStatus is only meaningful when leadSource is set, and is left alone
+// on repeat submissions from an already-known client so it doesn't clobber
+// a status staff has since changed manually.
+safeAddColumn('clients', 'leadSource TEXT');
+safeAddColumn('clients', 'leadStatus TEXT');
+// Idempotency key for the intake endpoint: the caller (website2026) can
+// supply the same eventId on a retry after a network failure, and the
+// intake handler will recognize it and return the original result instead
+// of creating a second job for the same form submission.
+safeAddColumn('jobs', 'intakeEventId TEXT');
 
 // Upgrade path from an earlier deploy of this feature, which stored the
 // template as raw HTML in an `htmlBody` column. Templates are now plain
@@ -365,6 +377,8 @@ try {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_newsletter_token ON clients(newsletterOptInToken) WHERE newsletterOptInToken IS NOT NULL;
     CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oauth ON users (oauth_provider, oauth_id) WHERE oauth_provider IS NOT NULL;
     CREATE INDEX IF NOT EXISTS idx_jobs_ffpro_sync_status ON jobs(ffproSyncStatus) WHERE ffproSyncStatus = 'pending';
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_intake_event ON jobs(intakeEventId) WHERE intakeEventId IS NOT NULL;
+    CREATE INDEX IF NOT EXISTS idx_clients_email_account ON clients(account_id, email);
   `);
 } catch (e) {
   console.warn("Index creation warning:", e.message);

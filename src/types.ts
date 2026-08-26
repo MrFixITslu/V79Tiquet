@@ -84,10 +84,18 @@ export interface Client {
   email: string;
   phone: string;
   address: string;
+  notes?: string | null;
   createdAt: string;
   industryId?: string | null;
   newsletterOptIn?: number; // 0 or 1 — stored as SQLite INTEGER
   newsletterOptedInAt?: string | null;
+  // Set when this client originated from an external intake (currently
+  // just "website" — the website2026 contact form) rather than being
+  // entered directly by staff. Null/undefined for normal staff-created clients.
+  leadSource?: string | null;
+  // 'New' when first captured; staff can change this once they've
+  // reviewed/actioned the lead. Only meaningful when leadSource is set.
+  leadStatus?: string | null;
   // Only present on the response right after creation (see POST
   // /api/clients) — not a persisted field, just how the server reports
   // whether the welcome email actually went out.

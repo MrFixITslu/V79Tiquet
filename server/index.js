@@ -934,16 +934,62 @@ const requireIntakeSecret = (req, res, next) => {
 
 app.post("/api/public/intake", intakeLimiter, requireIntakeSecret, (req, res) => {
     const accountId = process.env.INTAKE_ACCOUNT_ID || "default_account";
+
+    // Hard safety check: INTAKE_ACCOUNT_ID must be a real, existing account
+    // — never trusted blindly. Without this, a misconfigured value (most
+    // commonly the 8-character TRUNCATED workspace ID shown in the app
+    // header, e.g. "4864426e", instead of the full UUID account_id) would
+    // silently create every website lead under an account that doesn't
+    // exist. That's not a visible failure: the request still returns
+    // 200/201, so nothing looks broken — the leads just vanish into a
+    // phantom account_id that no logged-in user can ever see, and it can
+    // stay that way indefinitely with nobody noticing. Reject loudly
+    // instead, so a bad config is caught immediately rather than silently
+    // losing every lead forever.
+    const accountExists = db.prepare("SELECT 1 FROM accounts WHERE id = ?").get(accountId);
+    if (!accountExists) {
+        logger.error(`[Intake] INTAKE_ACCOUNT_ID ("${accountId}") does not match any real account — rejecting to avoid silently orphaning lead data. If you copied this from the app header, that display is truncated to 8 characters; use the full Workspace ID from Settings → Integrations instead.`);
+        return res.status(503).json({ error: "Gateway is misconfigured. This has been logged for the site administrator." });
+    }
+
     const body = sanitizeObject(req.body || {});
-    const { name, company, email, phone, employees, biggestChallenge, message, source } = body;
+    const { name, company, email, phone, employees, biggestChallenge, message, source, eventId } = body;
 
     if (!isNonEmptyString(name, 200)) return badRequest(res, "name is required.");
     if (!isNonEmptyString(company, 200)) return badRequest(res, "company is required.");
     if (!isValidEmail(email)) return badRequest(res, "A valid email is required.");
+    if (eventId !== undefined && eventId !== null && !isNonEmptyString(String(eventId), 255)) {
+        return badRequest(res, "eventId is invalid.");
+    }
+
+    // Idempotency: a retry of the exact same form submission (same eventId)
+    // must not create a second job. website2026 generates this once per
+    // submission attempt and reuses it on retry.
+    if (eventId) {
+        const existingJob = db.prepare("SELECT id FROM jobs WHERE intakeEventId = ? AND account_id = ?").get(String(eventId), accountId);
+        if (existingJob) {
+            // Look up the client the same way the create path below does —
+            // by email then phone, NOT by the job's stored client name
+            // string. Name-based lookup here would be wrong in two ways:
+            // it can match the wrong client if two clients share a name,
+            // and it returns nothing at all if staff have since renamed the
+            // client (e.g. fixed a typo), even though a real match exists.
+            let existingClient = null;
+            if (email) {
+                existingClient = db.prepare("SELECT id FROM clients WHERE LOWER(email) = LOWER(?) AND account_id = ?").get(email, accountId);
+            }
+            if (!existingClient && phone) {
+                existingClient = db.prepare("SELECT id FROM clients WHERE phone = ? AND account_id = ?").get(phone, accountId);
+            }
+            logger.info(`[Intake] Duplicate eventId ${eventId} — returning existing job ${existingJob.id} without creating another.`);
+            return res.status(200).json({ success: true, action: "already_processed", jobId: existingJob.id, clientId: existingClient?.id || null });
+        }
+    }
 
     const id = uuidv4();
     const secureToken = uuidv4();
     const title = `Website Inquiry — ${company}`.slice(0, 300);
+    const now = new Date().toISOString();
 
     const descriptionParts = [];
     if (message) descriptionParts.push(message.trim());
@@ -953,22 +999,26 @@ app.post("/api/public/intake", intakeLimiter, requireIntakeSecret, (req, res) =>
     descriptionParts.push(`Submitted via ${source || "website2026"} contact form.`);
     const description = descriptionParts.join("\n\n").slice(0, 5000);
 
+    const MAX_NOTES_LENGTH = 20000;
+    const trimNotes = (notes) => (notes.length > MAX_NOTES_LENGTH ? notes.slice(notes.length - MAX_NOTES_LENGTH) : notes);
+
     try {
         db.prepare(`
-            INSERT INTO jobs (id, title, client, description, status, createdAt, priority, clientEmail, secureToken, depositPaid, account_id, timerStartedAt, timeLogs)
-            VALUES (@id, @title, @client, @description, @status, @createdAt, @priority, @clientEmail, @secureToken, 0, @account_id, @timerStartedAt, '[]')
+            INSERT INTO jobs (id, title, client, description, status, createdAt, priority, clientEmail, secureToken, depositPaid, account_id, timerStartedAt, timeLogs, intakeEventId)
+            VALUES (@id, @title, @client, @description, @status, @createdAt, @priority, @clientEmail, @secureToken, 0, @account_id, @timerStartedAt, '[]', @intakeEventId)
         `).run({
             id,
             title,
             client: name,
             description,
             status: "request",
-            createdAt: new Date().toISOString(),
+            createdAt: now,
             priority: "medium",
             clientEmail: email,
             secureToken,
             account_id: accountId,
-            timerStartedAt: new Date().toISOString()
+            timerStartedAt: now,
+            intakeEventId: eventId ? String(eventId) : null
         });
 
         const insertTag = db.prepare('INSERT INTO job_tags (job_id, tag, account_id) VALUES (?, ?, ?)');
@@ -979,29 +1029,66 @@ app.post("/api/public/intake", intakeLimiter, requireIntakeSecret, (req, res) =>
             id: uuidv4(),
             job_id: id,
             action: "Job created from website contact form",
-            timestamp: new Date().toISOString(),
+            timestamp: now,
             user: "Website Intake",
             account_id: accountId
         });
 
-        // Auto-create/update client profile, same behavior as the authenticated job-creation route
-        const existingClient = db.prepare("SELECT id FROM clients WHERE name = ? AND account_id = ?").get(name, accountId);
+        // Client dedup: email first (case-insensitive — the same person
+        // rarely types their email with different casing, but browsers/
+        // autofill sometimes do), then phone as a fallback. Matching by
+        // name (the previous behavior) was fragile — two different people
+        // can share a name, and the same person can spell theirs
+        // differently between submissions.
+        let existingClient = null;
+        if (email) {
+            existingClient = db.prepare("SELECT id, notes, leadSource FROM clients WHERE LOWER(email) = LOWER(?) AND account_id = ?").get(email, accountId);
+        }
+        if (!existingClient && phone) {
+            existingClient = db.prepare("SELECT id, notes, leadSource FROM clients WHERE phone = ? AND account_id = ?").get(phone, accountId);
+        }
+
+        let clientId;
+        let action;
         if (existingClient) {
-            db.prepare("UPDATE clients SET email = ? WHERE id = ?").run(email, existingClient.id);
+            // Known person submitting another inquiry: preserve the existing
+            // client record (never overwritten wholesale), append this new
+            // inquiry to their notes, and leave leadSource/leadStatus alone
+            // — retroactively relabeling an established client as a fresh
+            // "website lead" would misrepresent how they actually came in,
+            // and clobbering a status staff has since set (e.g. "Converted")
+            // back to anything would lose real work.
+            clientId = existingClient.id;
+            action = "updated";
+            const appended = (message || "").trim()
+                ? `\n\n---\n[${now}] New website inquiry:\n${message.trim()}`
+                : `\n\n---\n[${now}] New website inquiry submitted (no message included).`;
+            const newNotes = trimNotes((existingClient.notes || "") + appended);
+            db.prepare("UPDATE clients SET email = ?, notes = ? WHERE id = ?").run(email, newNotes, clientId);
         } else {
-            db.prepare("INSERT INTO clients (id, name, email, phone, company, notes, createdAt, account_id) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)")
-                .run(uuidv4(), name, email, phone || null, company, new Date().toISOString(), accountId);
+            // New person: create the client, clearly marked as a website
+            // lead using dedicated fields so it's identifiable in Client
+            // Management without reading raw notes text, while the notes
+            // field itself preserves the original inquiry verbatim.
+            clientId = uuidv4();
+            action = "created";
+            const initialNotes = trimNotes(
+                `Lead Source: Website\nLead Status: New\n\n[${now}] Original inquiry:\n${(message || "(no message included)").trim()}`
+            );
+            db.prepare(
+                "INSERT INTO clients (id, name, email, phone, company, notes, createdAt, account_id, leadSource, leadStatus) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            ).run(clientId, name, email, phone || null, company, initialNotes, now, accountId, "website", "New");
         }
 
         try {
             const jobFolder = ensureJobFolder(accountId, name, id);
-            fs.writeFileSync(path.join(jobFolder, 'README.md'), `# Project: ${title}\nClient: ${name}\nJob ID: ${id}\nCreated: ${new Date().toISOString()}\n\nThis folder contains all files, quotes, invoices, and logs for this project.\n`);
+            fs.writeFileSync(path.join(jobFolder, 'README.md'), `# Project: ${title}\nClient: ${name}\nJob ID: ${id}\nCreated: ${now}\n\nThis folder contains all files, quotes, invoices, and logs for this project.\n`);
         } catch (folderErr) {
             console.error('Could not create job folder for intake job:', folderErr.message);
         }
 
-        logger.info(`[Intake] Job ${id} created from website contact form for account ${accountId}`);
-        res.status(201).json({ success: true, jobId: id });
+        logger.info(`[Intake] Job ${id} created from website contact form for account ${accountId}; client ${action}.`);
+        res.status(201).json({ success: true, action, jobId: id, clientId });
     } catch (error) {
         console.error("[Intake] Failed to create job:", error);
         res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
@@ -2412,6 +2499,22 @@ const wsHeartbeat = setInterval(() => {
     });
 }, 30000);
 wss.on("close", () => clearInterval(wsHeartbeat));
+
+// Boot-time sanity check for the website intake gateway: if it's
+// configured (INTAKE_SECRET set) but INTAKE_ACCOUNT_ID doesn't match any
+// real account, every website lead would silently vanish into a phantom
+// account_id — no error, no visible symptom, just leads that never arrive
+// anywhere a real person can see them. Warn loudly at startup rather than
+// waiting for the first real submission to hit the same check in the route
+// handler; either way it's rejected, but this makes a bad config visible
+// immediately in the server logs instead of only after a lead is lost.
+if (process.env.INTAKE_SECRET) {
+    const configuredAccountId = process.env.INTAKE_ACCOUNT_ID || "default_account";
+    const accountExists = db.prepare("SELECT 1 FROM accounts WHERE id = ?").get(configuredAccountId);
+    if (!accountExists) {
+        logger.error(`[Intake] STARTUP WARNING: INTAKE_ACCOUNT_ID ("${configuredAccountId}") does not match any real account. The website lead-capture gateway will reject every request until this is fixed. If you copied this value from the app header (e.g. "Workspace: 4864426e"), that display is truncated to 8 characters — copy the FULL Workspace ID from Settings → Integrations instead.`);
+    }
+}
 
 server.listen(PORT, '0.0.0.0', () => {
     logger.info(`Backend server running on port ${PORT} in ${isProduction ? 'production' : 'development'} mode (HTTP + WS)`);

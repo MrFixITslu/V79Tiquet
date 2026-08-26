@@ -126,7 +126,14 @@ export function Clients({ clients, setClients, jobs, industries }: ClientsProps)
                         {client.name.charAt(0)}
                       </div>
                       <div>
-                        <div className="font-semibold text-slate-900">{client.name}</div>
+                        <div className="font-semibold text-slate-900 flex items-center gap-2">
+                          {client.name}
+                          {client.leadSource === "website" && (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wide bg-emerald-100 text-emerald-700">
+                              Website Lead
+                            </span>
+                          )}
+                        </div>
                         <div className="text-sm text-slate-500 flex items-center gap-1">
                           <Building2 className="w-3 h-3" />
                           {client.company}
@@ -366,7 +373,14 @@ function ClientDetailModal({
               {client.name.charAt(0)}
             </div>
             <div>
-              <h3 className="text-2xl font-bold text-slate-900">{client.name}</h3>
+              <h3 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
+                {client.name}
+                {client.leadSource === "website" && (
+                  <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-bold uppercase tracking-wide bg-emerald-100 text-emerald-700">
+                    Website Lead{client.leadStatus ? ` · ${client.leadStatus}` : ""}
+                  </span>
+                )}
+              </h3>
               <p className="text-slate-500 flex items-center gap-1.5 mt-0.5">
                 <Building2 className="w-4 h-4" />
                 {client.company}
@@ -420,6 +434,18 @@ function ClientDetailModal({
               {client.newsletterOptIn ? "Newsletter: Subscribed" : "Newsletter: Not subscribed"}
             </span>
           </div>
+
+          {client.notes && (
+            <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
+              <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-2">
+                <History className="w-3 h-3" />
+                Notes
+              </div>
+              <div className="text-sm text-slate-700 whitespace-pre-wrap leading-relaxed max-h-64 overflow-y-auto">
+                {client.notes}
+              </div>
+            </div>
+          )}
 
           <div className="space-y-4">
             <div className="flex items-center justify-between">

@@ -1,117 +1,143 @@
-# V79Tiquet → FFPRO2 Gateway Integration (V79Tiquet side)
+# V79 Website → V79Tiquet Lead Capture Integration (V79Tiquet side)
 
-When a job is marked **Paid** — and only then — this sends its amount to
-FFPRO2 as income under V79D — Vision79 Digital.
+When a visitor submits the Contact Us form on the V79 website, they're
+automatically created as a Client in Client Management here — clearly
+marked as a website lead, with their original message preserved.
 
-## Changed / new files
+## Important: most of this endpoint already existed
+
+`POST /api/public/intake` was built in an earlier session for this exact
+purpose (shared-secret auth, rate limiting, field validation — all already
+solid). This change **upgrades its behavior**, it doesn't replace it:
 
 | File | What changed |
 |---|---|
-| `server/db.js` | Added `jobs.ffproSyncStatus`, `jobs.ffproEventId` columns + a partial index for the retry sweep |
-| `server/gatewayClient.js` | **New.** Outbound client: builds the payload, sends it, retries with backoff, never throws |
-| `server/index.js` | Hooked the trigger into `updateJobStage()` at the `'paid'` transition; added the periodic retry sweep |
-| `src/App.tsx` | Threads `activeBusiness.id` through to `<Settings>` as `workspaceId` |
-| `src/components/Settings.tsx` | Added an "Integrations" section showing the full Workspace ID with copy-to-clipboard |
-| `env.example` | Documents `FFPRO_GATEWAY_URL` / `FFPRO_GATEWAY_SECRET` |
+| `server/db.js` | Added `clients.leadSource`, `clients.leadStatus`, `jobs.intakeEventId` (+ unique index) |
+| `server/index.js` | Rewrote the client-matching logic in `/api/public/intake` (see below); everything else about the route — auth, rate limiting, job creation — is unchanged |
+| `src/types.ts` | Added `leadSource`/`leadStatus`/`notes` to the `Client` interface |
+| `src/components/Clients.tsx` | Added a "Website Lead" badge (list + detail view) and a Notes section — **`notes` was previously never rendered anywhere in the UI**, so the preserved inquiry would have been invisible without querying the database directly |
 
-No `docker-compose.yml` change needed — it already uses `env_file: .env`, so anything you add to `.env` reaches the container automatically.
+## What actually changed in the endpoint's behavior
 
-## PAID event implementation
+**Before:** matched an existing client by exact **name** string. Two
+different people sharing a name would collide; the same person spelling
+theirs differently (or via autofill) would create a duplicate. No lead
+marking on the client at all — only the associated job got a "Website
+Lead" tag. The original message went into the job's description only,
+never onto the client record. A network retry created a second job.
 
-**Trigger point:** `updateJobStage(id, 'paid', accountId, ...)` inside
-`server/index.js`. This is the single, already-guarded place a job becomes
-genuinely paid — manually setting `status: 'paid'` via the normal job-update
-route was already blocked server-side before this change (`"Job status
-cannot be manually moved to 'Paid'"`), and the only caller of
-`updateJobStage(..., 'paid', ...)` in the whole codebase is
-`POST /api/portal/:token/pay-final`. The hook lives inside `updateJobStage`
-itself (not just that one route), so any future code path that calls it with
-`'paid'` is automatically covered too.
+**Now:**
+- Matches an existing client by **email** (case-insensitive) first, then
+  **phone** as a fallback — per the task's requirement, not by name.
+- **New person** → client created with `leadSource: 'website'`,
+  `leadStatus: 'New'`, and `notes` seeded with the original inquiry.
+- **Existing client** (by email/phone) → the existing record is preserved
+  as-is; the new inquiry is **appended** to `notes` with a timestamp,
+  keeping full history. `leadSource`/`leadStatus` are deliberately **not**
+  touched on an update — retroactively relabeling an established client as
+  a fresh "website lead" would misrepresent how they actually came in, and
+  overwriting a status staff already changed (e.g. after converting them)
+  would lose real work.
+- **Idempotent retries**: the caller can send the same `eventId` on a retry
+  after a network failure. A duplicate `eventId` returns the original
+  result (`action: "already_processed"`) instead of creating a second job.
+  Enforced by a `UNIQUE` index on `jobs.intakeEventId`, not just application
+  logic.
+- Response now includes `action` (`"created"` / `"updated"` /
+  `"already_processed"`) and `clientId`, in addition to the existing
+  `success`/`jobId` fields — purely additive, nothing removed.
 
-**Does NOT fire on:** job creation, `in-progress`, `review`, `invoiced`, or
-`completed`. Verified directly — pushed a real job through all four of
-those statuses and confirmed `ffproSyncStatus` stayed `null` throughout.
+## No new environment variables
 
-**Durability:** the moment a job is marked paid, `ffproSyncStatus` is set to
-`'pending'` in the same synchronous DB write — *before* any network call is
-attempted. So even a process crash immediately after payment confirmation
-still leaves a retryable record; nothing is silently lost.
+Reuses the existing `INTAKE_SECRET` / `INTAKE_ACCOUNT_ID` — no Docker or
+`.env` changes needed on this side.
 
-## API endpoint (outbound)
+## Database migration
+
+Automatic, same `CREATE TABLE IF NOT EXISTS` / `safeAddColumn` pattern
+already used throughout `server/db.js`. Just deploy and restart.
+
+## API endpoint (unchanged path/auth, upgraded behavior)
 
 ```
-POST {FFPRO_GATEWAY_URL}/api/gateway/webhooks/tiquet/paid
-X-Gateway-Secret: {FFPRO_GATEWAY_SECRET}
+POST /api/public/intake
+X-Intake-Secret: <INTAKE_SECRET>
 Content-Type: application/json
 
 {
-  "eventId": "<uuid, generated once per job, reused on every retry>",
-  "workspaceNumber": "<this account's own account_id>",
-  "jobId": "<job.id>",
-  "jobTitle": "<job.title>",
-  "amount": <job.amount>,
-  "currency": "<settings.currency, default USD>",
-  "paidAt": "<ISO timestamp>",
-  "paymentReference": "<job.id>",
-  "customer": { "name": "<job.client>" }
+  "eventId": "uuid, generated once per submission, reused on retry",
+  "name": "...", "company": "...", "email": "...", "phone": "...",
+  "employees": "optional", "biggestChallenge": "optional",
+  "message": "optional — preserved verbatim in the client's notes",
+  "source": "optional, defaults to 'website2026'"
 }
 ```
 
-## Authentication method
+Responses: `201` new job+client, `200 { action: "already_processed" }` for
+a duplicate `eventId`, `400` validation failure, `401` bad/missing secret.
 
-Shared secret in the `X-Gateway-Secret` header — the exact same pattern
-already used by this app's own `website2026 → V79Tiquet` intake webhook
-(`INTAKE_SECRET`, constant-time comparison). `workspaceNumber` is simply
-this account's own `account_id` — there is nothing extra to configure on
-this side for "which workspace"; every account already has one, shown in
-Settings → Integrations for copying into FFPRO2.
+## Post-delivery self-audit — bug found and fixed
 
-## Retry behavior
+After the initial delivery, a dedicated re-audit of this code specifically
+(prompted by a request to check the work rather than assume it was correct)
+found one real bug: the **idempotent-duplicate-return branch** (when a
+retry arrives with an `eventId` that's already been processed) was still
+looking up the client by the old **name**-based match, even though the
+*creation* path had already been correctly upgraded to email/phone
+matching. This meant a retried submission could return the wrong
+`clientId` — or `null` — if two clients shared a name, or if staff had
+renamed the client since it was created.
 
-1. On the paid transition: mark `ffproSyncStatus = 'pending'` synchronously, then attempt delivery.
-2. Inline retries: up to 2 retries with backoff (2s, then 8s) within that same attempt.
-3. If still failing after that: left as `'pending'`. A periodic sweep (`setInterval`, every 5 minutes — mirrors the existing `wsHeartbeat` pattern already in this file rather than adding new infrastructure) finds every job still `'pending'` and retries it.
-4. A 4xx response (bad payload, bad secret, unknown/disabled workspace) is treated as **permanent** — logged once, not retried, since retrying an unfixable rejection forever is pointless. A 5xx or network error is treated as **transient** and left `'pending'` for the sweep.
-5. **The Tiquet payment itself never fails or blocks on any of this** — `sendPaidEvent()` never throws, and `updateJobStage()` fires it without awaiting.
+**Fixed** to use the same email-then-phone lookup as the creation path.
+**Verified directly**: created a client, renamed it via direct DB access
+(reproducing exactly the scenario that broke the old code), then retried
+the same `eventId` — confirmed the correct `clientId` now comes back
+regardless of the rename.
 
-## Idempotency
+## Critical: INTAKE_ACCOUNT_ID must be the FULL Workspace ID, not the header's truncated display
 
-Every retry of the same job reuses the exact same `ffproEventId` — generated
-once, stored on the job row, never regenerated. FFPRO2 enforces uniqueness
-on `(provider, workspace_number, jobId:eventId)` at the database level, so
-however many times a delivery gets retried, at most one income transaction
-is ever created. Verified directly: sent the same event twice and confirmed
-FFPRO2 returned `alreadyProcessed: true` on the second one with no duplicate.
+The app header shows `Workspace: {id.slice(0, 8)}` — an 8-character
+**truncated** prefix of the real `account_id` (e.g. `4864426e`), separate
+from the full copyable ID in Settings → Integrations. Setting
+`INTAKE_ACCOUNT_ID` to the truncated value would not match any real
+account.
 
-## Environment variables
+**This is now a hard-rejected condition, not a silent one.** Before this
+fix, that misconfiguration would have caused every website lead to be
+created under a phantom `account_id` that no logged-in user could ever
+see — the request would still return `200`/`201`, so nothing would look
+broken; the leads would simply vanish with no error anywhere. Now:
 
-```
-FFPRO_GATEWAY_URL=https://your-ffpro2-domain.example.com
-FFPRO_GATEWAY_SECRET=<same value as FFPRO2's TIQUET_GATEWAY_SECRET>
-```
+- **At boot**: if `INTAKE_SECRET` is configured but `INTAKE_ACCOUNT_ID`
+  doesn't match a real row in `accounts`, a clear error is logged
+  immediately on startup — don't wait for a real lead to discover this.
+- **Per request**: the same check runs before any data is touched; a
+  mismatch returns `503` and creates nothing.
 
-Both unset → the integration is simply inactive, no error, no retries
-attempted. This is the expected state for any deployment that hasn't
-configured it.
+**Verified directly**, using the exact truncated value from this
+requirement: booted with `INTAKE_ACCOUNT_ID=4864426e` → confirmed the
+startup warning fires and a real submission is rejected with `503` and
+creates zero rows. Fixed the value to a real account → confirmed the
+startup warning disappears and submissions succeed. Also verified the
+**recovery path**: a lead submitted while misconfigured is safely queued
+`pending` on the website2026 side (not lost, not falsely marked delivered)
+and is automatically delivered — with no re-submission needed — the moment
+the accountId is corrected, since `503` isn't in the "permanent failure"
+range website2026's retry logic treats as unfixable.
+
+**To get the correct value**: open V79Tiquet → Settings → Integrations and
+copy the full Workspace ID shown there (not the header).
 
 ## Testing
 
-Verified with a real, running instance of both apps — not just this app in
-isolation:
+Verified against a real running instance, not just reviewed:
 
-1. Registered a real account, got its real `account_id`
-2. Registered that ID as the Workspace Number in a real FFPRO2 instance
-3. Created a real job, hit the real `pay-final` portal endpoint
-4. Confirmed the income appeared in FFPRO2 automatically — correct amount, vendor, and business label — with no manual steps
-5. Sent the same event twice → confirmed no duplicate
-6. Pushed a second job through every non-paid status → confirmed `ffproSyncStatus` never left `null`
-7. `npm test` (existing `tests/security.test.cjs` + `tests/e2e.test.cjs`, 23 tests) — all still passing after these changes
-8. `npm run lint` (`tsc --noEmit`) and `npm run build` (`vite build`) — both clean
+1. **New lead** → confirmed `leadSource: "website"`, `leadStatus: "New"`, and the exact inquiry text in `notes`
+2. **Same email, different `eventId`** → confirmed same `clientId` returned, client count stayed at 1, both inquiries present in `notes` history
+3. **Exact retry of a previous `eventId`** → confirmed `action: "already_processed"`, job count did not increase
+4. Wrong secret → 401; missing required field → 400; invalid email → 400
+5. Existing test suite (`npm test`, 23 tests) — all still passing
 
 ## Docker considerations
 
-`server/gatewayClient.js` is picked up automatically by the existing
-`COPY server/ ./server/` in the Dockerfile — no Dockerfile change needed.
-`docker-compose.yml` already uses `env_file: .env` for this service, so the
-two new env vars reach the container as soon as they're in `.env` — no
-compose change needed either.
+None — no Dockerfile or `docker-compose.yml` changes needed on this side.
