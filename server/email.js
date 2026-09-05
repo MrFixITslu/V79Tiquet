@@ -328,3 +328,53 @@ export function renderEmailFromPlainTemplate(subjectTemplate, bodyTemplate, vars
 export async function sendTemplated(to, subject, html) {
     return send(to, subject, html);
 }
+
+/**
+ * Send an invitation email to a newly added teammate with their temporary password.
+ */
+export async function sendUserInvite(userEmail, name, role, tempPassword) {
+    const loginUrl = APP_BASE_URL;
+    const subject  = "You've been invited to V79 TIQUET";
+
+    const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;padding:40px 20px">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+        <tr><td style="background:#1e293b;padding:28px 36px">
+          <h1 style="margin:0;color:#ffffff;font-size:20px;font-weight:600">V79 TIQUET</h1>
+        </td></tr>
+        <tr><td style="padding:36px">
+          <h2 style="margin:0 0 16px;color:#1e293b;font-size:22px">Team Invitation</h2>
+          <p style="margin:0 0 16px;color:#475569;line-height:1.6">
+            Hi ${escapeHtml(name)},
+          </p>
+          <p style="margin:0 0 20px;color:#475569;line-height:1.6">
+            You've been added as a <strong>${escapeHtml(role)}</strong> on your team's V79 TIQUET workspace.
+          </p>
+          <div style="background:#f1f5f9;border-radius:8px;padding:20px;margin-bottom:24px;font-family:monospace;font-size:14px;color:#334155">
+            <div><strong>Email:</strong> ${escapeHtml(userEmail)}</div>
+            <div style="margin-top:8px"><strong>Temporary Password:</strong> ${escapeHtml(tempPassword)}</div>
+          </div>
+          <p style="margin:0 0 24px;color:#64748b;font-size:13px;line-height:1.5">
+            You will be asked to set a new password on your first login.
+          </p>
+          <a href="${loginUrl}" style="display:inline-block;background:#3b82f6;color:#ffffff;padding:14px 28px;border-radius:6px;text-decoration:none;font-weight:600;font-size:15px">
+            Sign In to Workspace →
+          </a>
+        </td></tr>
+        <tr><td style="background:#f1f5f9;padding:20px 36px;color:#94a3b8;font-size:12px">
+          This is an automated message from V79 TIQUET. Please do not reply to this email.
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
+
+    return send(userEmail, subject, html);
+}
+

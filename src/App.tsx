@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Search, Shield, Zap, ChevronDown, UserPlus, Clock, X, Loader2 } from "lucide-react";
+import { Search, Shield, Zap, ChevronDown, UserPlus, Clock, X, Loader2, Menu } from "lucide-react";
 import { JobBoard } from "./components/JobBoard";
 import { Sidebar } from "./components/Sidebar";
 import { JobRequestForm } from "./components/JobRequestForm";
@@ -12,6 +12,9 @@ import { Clients } from "./components/Clients";
 import { Settings } from "./components/Settings";
 import { AuthGate } from "./components/AuthGate";
 import { ResetPasswordPage } from "./components/ResetPasswordPage";
+import { ClientPortal } from "./components/ClientPortal";
+import { CommandPalette } from "./components/CommandPalette";
+import { JobDetailModal } from "./components/JobDetailModal";
 import { Job, Employee, PayrollRecord, AppUser, Client, BusinessSettings, AuthenticatedUser, Business, Industry } from "./types";
 import { api, getToken, setToken } from "./api";
 import { useSyncedCollection } from "./useSyncedCollection";
@@ -36,16 +39,26 @@ function matchResetPasswordPath(pathname: string): { matched: boolean; token: st
   return { matched: true, token: parts[1] || null };
 }
 
+function matchPortalPath(pathname: string): { matched: boolean; token: string | null } {
+  const parts = pathname.split("/").filter(Boolean);
+  if (parts[0] !== "portal") return { matched: false, token: null };
+  return { matched: true, token: parts[1] || null };
+}
+
 export default function App() {
   const [currentUser, setCurrentUser] = useState<AuthenticatedUser | null>(null);
   const [activeBusiness, setActiveBusiness] = useState<Business | null>(null);
   const [restoringSession, setRestoringSession] = useState(true);
   const [resetPasswordRoute, setResetPasswordRoute] = useState(() => matchResetPasswordPath(window.location.pathname));
+  const [portalRoute] = useState(() => matchPortalPath(window.location.pathname));
 
   const [activeTab, setActiveTab] = useState("dashboard");
   const [isQuickActionsOpen, setIsQuickActionsOpen] = useState(false);
   const [isNewClientModalOpen, setIsNewClientModalOpen] = useState(false);
   const [isLogTimeModalOpen, setIsLogTimeModalOpen] = useState(false);
+  const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
+  const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+  const [selectedJobForModal, setSelectedJobForModal] = useState<Job | null>(null);
 
   const authenticated = !!currentUser && !!activeBusiness;
 
@@ -163,6 +176,10 @@ export default function App() {
     setActiveBusiness(null);
   };
 
+  if (portalRoute.matched && portalRoute.token) {
+    return <ClientPortal token={portalRoute.token} />;
+  }
+
   if (resetPasswordRoute.matched) {
     return (
       <ResetPasswordPage
@@ -203,21 +220,35 @@ export default function App() {
         businessName={settings.name || activeBusiness!.name}
         onSwitchBusiness={handleLogout}
         onLogout={handleLogout}
+        jobCount={jobs.filter((j) => j.status !== "completed" && j.status !== "paid").length}
+        openInvoiceCount={jobs.filter((j) => j.status === "invoiced").length}
+        isOpenMobile={isMobileSidebarOpen}
+        onCloseMobile={() => setIsMobileSidebarOpen(false)}
       />
 
       <main className="flex-1 flex flex-col overflow-hidden">
-        <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-8 z-10">
-          <div className="flex items-center gap-4">
-            <div className="flex items-center bg-slate-100 rounded-xl px-3 py-2 w-80 border border-slate-200">
-              <Search className="w-4 h-4 text-slate-400" />
-              <input
-                type="text"
-                placeholder="Search jobs, clients, or files..."
-                className="bg-transparent border-none outline-none ml-2 text-sm w-full text-slate-700"
-              />
-            </div>
+        <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-4 sm:px-8 z-10">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setIsMobileSidebarOpen(true)}
+              className="p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-xl lg:hidden cursor-pointer"
+              title="Open Navigation Menu"
+            >
+              <Menu className="w-5 h-5" />
+            </button>
 
-            <div className="hidden lg:flex items-center gap-1 bg-indigo-50 border border-indigo-100 px-3 py-1.5 rounded-full text-[10px] font-bold text-indigo-700 uppercase tracking-wide">
+            <button
+              onClick={() => setIsCommandPaletteOpen(true)}
+              className="flex items-center bg-slate-100 hover:bg-slate-200/70 rounded-xl px-3 py-2 w-64 sm:w-80 border border-slate-200 transition-colors cursor-pointer text-left group"
+            >
+              <Search className="w-4 h-4 text-slate-400 group-hover:text-slate-600 transition-colors shrink-0" />
+              <span className="ml-2 text-xs sm:text-sm text-slate-500 truncate flex-1">Search jobs, clients, actions...</span>
+              <kbd className="hidden sm:inline-block text-[10px] font-mono font-bold text-slate-400 bg-white border border-slate-200 px-1.5 py-0.5 rounded shadow-2xs">
+                ⌘K
+              </kbd>
+            </button>
+
+            <div className="hidden xl:flex items-center gap-1 bg-indigo-50 border border-indigo-100 px-3 py-1.5 rounded-full text-[10px] font-bold text-indigo-700 uppercase tracking-wide">
               <Shield className="w-3.5 h-3.5" />
               Workspace: {activeBusiness!.id.slice(0, 8)}
             </div>
@@ -388,6 +419,36 @@ export default function App() {
               )
             );
             setIsLogTimeModalOpen(false);
+          }}
+        />
+      )}
+
+      {/* Global Keyboard-Driven Command Palette */}
+      <CommandPalette
+        isOpen={isCommandPaletteOpen}
+        onClose={() => setIsCommandPaletteOpen(false)}
+        jobs={jobs}
+        clients={clients}
+        onSelectTab={(tab) => setActiveTab(tab)}
+        onSelectJob={(job) => {
+          setSelectedJobForModal(job);
+        }}
+        onSelectClient={() => {
+          setActiveTab("clients");
+        }}
+      />
+
+      {/* Direct Job Detail Modal when activated via Command Palette */}
+      {selectedJobForModal && (
+        <JobDetailModal
+          job={selectedJobForModal}
+          employees={employees}
+          clients={clients}
+          settings={settings}
+          onClose={() => setSelectedJobForModal(null)}
+          onUpdate={(updatedJob) => {
+            setJobs(jobs.map((j) => (j.id === updatedJob.id ? updatedJob : j)));
+            setSelectedJobForModal(updatedJob);
           }}
         />
       )}

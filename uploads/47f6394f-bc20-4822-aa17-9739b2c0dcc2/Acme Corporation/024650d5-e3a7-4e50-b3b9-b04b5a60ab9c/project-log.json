@@ -1,0 +1,23 @@
+[
+  {
+    "type": "job_created",
+    "action": "Job created",
+    "user": "e2e_user_1788636394948@example.com",
+    "details": {
+      "title": "Full Website Redesign",
+      "client": "Acme Corporation",
+      "status": "estimation",
+      "amount": 4500
+    },
+    "timestamp": "2026-09-05T19:26:35.599Z"
+  },
+  {
+    "type": "message",
+    "action": "Message sent by Client",
+    "user": "Client",
+    "details": {
+      "content": "Excited for this project!"
+    },
+    "timestamp": "2026-09-05T19:26:35.617Z"
+  }
+]

@@ -1,6 +1,6 @@
 const http = require('http');
 
-const BASE_URL = process.env.API_URL || 'http://127.0.0.1:3001';
+const BASE_URL = process.env.API_URL || 'http://127.0.0.1:3000';
 
 function request(method, path, body = null, headers = {}) {
   return new Promise((resolve, reject) => {
@@ -114,6 +114,15 @@ async function runE2ETests() {
         updateJob.status === 200 && updateJob.body && updateJob.body.status === 'in-progress',
         `Updated job status to in-progress (Got: ${updateJob.status})`
       );
+
+      const markPaid = await request('PUT', `/api/jobs/${job.id}`, {
+        ...updateJob.body,
+        status: 'paid'
+      }, authHeader);
+      assert(
+        markPaid.status === 200 && markPaid.body && markPaid.body.status === 'paid',
+        `Marked job as paid by invoice manager (Got: ${markPaid.status})`
+      );
     }
 
     // 3. Client Portal Access Flow
@@ -132,6 +141,10 @@ async function runE2ETests() {
         content: 'Excited for this project!'
       });
       assert(clientMsg.status === 201, `Client sent message via portal chat (Got: ${clientMsg.status})`);
+
+      // Test Job Deletion
+      const deleteJob = await request('DELETE', `/api/jobs/${job.id}`, null, authHeader);
+      assert(deleteJob.status === 200 && deleteJob.body && deleteJob.body.success, `Deleted job successfully (Got: ${deleteJob.status})`);
     }
 
     // 4. Business Settings & Stripe Plans Flow

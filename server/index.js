@@ -1,10 +1,11 @@
 import 'dotenv/config';
+import { createServer as createViteServer } from "vite";
 import express from "express";
 import cors from "cors";
 import http from "http";
 import { WebSocketServer } from "ws";
 import db, { dbDir, seedDefaultTemplatesForAccount } from "./db.js";
-import { sendPortalLink, sendStatusUpdate, sendTemplated, renderEmailFromPlainTemplate, sendPasswordReset } from "./email.js";
+import { sendPortalLink, sendStatusUpdate, sendTemplated, renderEmailFromPlainTemplate, sendPasswordReset, sendUserInvite } from "./email.js";
 import { registerOAuthRoutes } from "./oauth.js";
 import { v4 as uuidv4 } from "uuid";
 import jwt from "jsonwebtoken";
@@ -49,7 +50,7 @@ const app = express();
 // client-supplied X-Forwarded-For values.
 app.set('trust proxy', 1);
 const isProduction = process.env.NODE_ENV === "production";
-const PORT = isProduction ? (process.env.PORT || 8080) : 3001;
+const PORT = 3000;
 
 registerHealthCheck(app);
 
@@ -126,18 +127,8 @@ function broadcastToJob(jobId, payload) {
 // ── Security Middleware ───────────────────────────────────────────────────
 
 app.use(helmet({
-    contentSecurityPolicy: {
-        directives: {
-            defaultSrc: ["'self'"],
-            scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net"],
-            styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
-            imgSrc: ["'self'", "data:", "https:", "http:"],
-            fontSrc: ["'self'", "data:", "https://fonts.gstatic.com"],
-            connectSrc: ["'self'"],
-            objectSrc: ["'none'"],
-            upgradeInsecureRequests: [],
-        },
-    }
+    frameguard: false,
+    contentSecurityPolicy: false,
 }));
 
 app.use(compression());
@@ -877,7 +868,7 @@ app.post("/api/jobs", authenticateToken, (req, res) => {
             }
         }
 
-        const newJob = db.prepare("SELECT * FROM jobs WHERE id = ?").get(id);
+        const newJob = db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(id, req.accountId);
         res.status(201).json({
             ...newJob,
             tags: getJobTags(id),
@@ -1103,11 +1094,6 @@ app.put("/api/jobs/:id", authenticateToken, async (req, res) => {
         const existingJob = db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(id, req.accountId);
         if (!existingJob) return res.status(404).json({ error: "Job not found" });
 
-        // BLOCK manual PAID transition
-        if (status === 'paid' && existingJob.status !== 'paid') {
-            return res.status(403).json({ error: "Job status cannot be manually moved to 'Paid'. This occurs automatically upon payment confirmation." });
-        }
-
         const statusChanged = status && existingJob.status !== status;
         let finalStatus = status || existingJob.status;
         let finalAssignedTo = assignedTo !== undefined ? assignedTo : existingJob.assignedTo;
@@ -1187,7 +1173,7 @@ app.put("/api/jobs/:id", authenticateToken, async (req, res) => {
         // --- NOTIFICATION ---
         // (Handled by updateJobStage for status/assignment changes)
 
-        const updatedJob = db.prepare("SELECT * FROM jobs WHERE id = ?").get(id);
+        const updatedJob = db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(id, req.accountId);
         res.json({
             ...updatedJob,
             tags: getJobTags(id),
@@ -1197,6 +1183,27 @@ app.put("/api/jobs/:id", authenticateToken, async (req, res) => {
             timeLogs: updatedJob.timeLogs ? JSON.parse(updatedJob.timeLogs) : [],
             stageAssignments: updatedJob.stageAssignments ? JSON.parse(updatedJob.stageAssignments) : {}
         });
+    } catch (error) {
+        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+    }
+});
+
+// Delete job endpoint
+app.delete("/api/jobs/:id", authenticateToken, (req, res) => {
+    const { id } = req.params;
+    try {
+        const job = db.prepare("SELECT id FROM jobs WHERE id = ? AND account_id = ?").get(id, req.accountId);
+        if (!job) return res.status(404).json({ error: "Job not found" });
+
+        db.transaction(() => {
+            db.prepare("DELETE FROM job_tags WHERE job_id = ? AND account_id = ?").run(id, req.accountId);
+            db.prepare("DELETE FROM activity_logs WHERE job_id = ? AND account_id = ?").run(id, req.accountId);
+            db.prepare("DELETE FROM job_messages WHERE job_id = ? AND account_id = ?").run(id, req.accountId);
+            db.prepare("DELETE FROM jobs WHERE id = ? AND account_id = ?").run(id, req.accountId);
+        })();
+
+        logger.audit('job_deleted', { accountId: req.accountId, jobId: id });
+        res.json({ success: true });
     } catch (error) {
         res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
     }
@@ -1233,7 +1240,7 @@ app.post("/api/jobs/:id/send-quote", authenticateToken, async (req, res) => {
 
         // Update status to estimation if it was request
         if(job.status === "request") {
-            db.prepare("UPDATE jobs SET status = 'estimation' WHERE id = ?").run(id);
+            db.prepare("UPDATE jobs SET status = 'estimation' WHERE id = ? AND account_id = ?").run(id, req.accountId);
         }
 
         // We can reuse sendPortalLink for now, or imagine adapting it to explicitly say "Quote Approval"
@@ -1501,11 +1508,7 @@ app.post("/api/users", authenticateToken, async (req, res) => {
         `).run(id, name, email, role, hashedPassword, JSON.stringify(Array.isArray(permissions) ? permissions : []), req.accountId);
 
         try {
-            await sendStatusUpdate({
-                to: email,
-                subject: "You've been invited to V79 TIQUET",
-                text: `Hi ${name},\n\nYou've been added as a "${role}" on your team's V79 TIQUET workspace.\n\nSign in at your workspace URL with:\n  Email: ${email}\n  Temporary password: ${tempPassword}\n\nYou'll be asked to set a new password on first login.`
-            });
+            await sendUserInvite(email, name, role, tempPassword);
         } catch (mailErr) {
             logger.error(`Failed to send invite email to ${email}: ${mailErr.message}`);
         }
@@ -2402,16 +2405,24 @@ if (process.env.STRIPE_SECRET_KEY) {
   logger.warn("Stripe routes registered in SIMULATED mode (dev only, no STRIPE_SECRET_KEY set).");
 }
 
-// Serve static frontend files in production
-if (isProduction) {
-    app.use(express.static(path.join(__dirname, '../dist')));
+// Serve frontend
+if (!isProduction) {
+    const vite = await createViteServer({
+        root: path.resolve(__dirname, '..'),
+        server: { middlewareMode: true },
+        appType: "spa",
+    });
+    app.use(vite.middlewares);
+} else {
+    const distPath = path.join(__dirname, '../dist');
+    app.use(express.static(distPath));
     // Only fall back to the SPA shell for real page routes. Without the
     // /api exclusion here, any unmatched /api/* request (typo'd endpoint,
     // stale frontend build calling a removed route, etc.) would silently
     // return a 200 HTML page instead of a 404 — masking real API errors
     // as if they succeeded.
     app.get(/^(?!\/api\/).*/, (req, res) => {
-        res.sendFile(path.join(__dirname, '../dist/index.html'));
+        res.sendFile(path.join(distPath, 'index.html'));
     });
     app.use('/api', (req, res) => {
         res.status(404).json({ error: 'Not found' });

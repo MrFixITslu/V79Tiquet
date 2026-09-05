@@ -31,7 +31,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
   const res = await fetch(`/api${path}`, { ...options, headers });
 
-  if (res.status === 401 || res.status === 403) {
+  if (res.status === 401) {
     setToken(null);
     // Let the app fall back to the login screen; don't throw a raw fetch
     // error for what is really "your session is no longer valid."

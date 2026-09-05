@@ -1,6 +1,6 @@
 const http = require('http');
 
-const BASE_URL = process.env.API_URL || 'http://127.0.0.1:3001';
+const BASE_URL = process.env.API_URL || 'http://127.0.0.1:3000';
 
 function request(method, path, body = null, headers = {}) {
   return new Promise((resolve, reject) => {
