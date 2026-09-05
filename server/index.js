@@ -50,7 +50,10 @@ const app = express();
 // client-supplied X-Forwarded-For values.
 app.set('trust proxy', 1);
 const isProduction = process.env.NODE_ENV === "production";
-const PORT = 3000;
+const PRIMARY_PORT = 3000;
+const SECONDARY_PORT = (process.env.PORT && parseInt(process.env.PORT, 10) !== 3000 && parseInt(process.env.PORT, 10) !== 8080)
+    ? parseInt(process.env.PORT, 10)
+    : 3050;
 
 registerHealthCheck(app);
 
@@ -2453,7 +2456,24 @@ const server = http.createServer(app);
 // Two ways to authenticate a connection, mirroring the REST auth model:
 //   - Client portal: ?token=<job.secureToken>            (no login — the link IS the credential)
 //   - Staff:          ?jobId=<id>&auth=<jwt>              (must belong to the job's account)
-const wss = new WebSocketServer({ server, path: "/ws" });
+const wss = new WebSocketServer({ noServer: true });
+
+function handleWsUpgrade(request, socket, head) {
+    try {
+        const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
+        if (url.pathname === "/ws") {
+            wss.handleUpgrade(request, socket, head, (ws) => {
+                wss.emit("connection", ws, request);
+            });
+        } else {
+            socket.destroy();
+        }
+    } catch (_) {
+        socket.destroy();
+    }
+}
+
+server.on("upgrade", handleWsUpgrade);
 
 wss.on("connection", (ws, req) => {
     try {
@@ -2527,13 +2547,28 @@ if (process.env.INTAKE_SECRET) {
     }
 }
 
-server.listen(PORT, '0.0.0.0', () => {
-    logger.info(`Backend server running on port ${PORT} in ${isProduction ? 'production' : 'development'} mode (HTTP + WS)`);
+server.listen(PRIMARY_PORT, '0.0.0.0', () => {
+    logger.info(`Backend server running on primary port ${PRIMARY_PORT} in ${isProduction ? 'production' : 'development'} mode (HTTP + WS)`);
 }).on('error', (err) => {
     if (err.code === 'EADDRINUSE') {
-        logger.error(`Port ${PORT} is already in use.`);
+        logger.error(`Port ${PRIMARY_PORT} is already in use.`);
         process.exit(1);
     } else {
-        logger.error(`Server error: ${err.message}`);
+        logger.error(`Server error on port ${PRIMARY_PORT}: ${err.message}`);
     }
 });
+
+let secondaryServer = null;
+if (SECONDARY_PORT && SECONDARY_PORT !== PRIMARY_PORT) {
+    secondaryServer = http.createServer(app);
+    secondaryServer.on("upgrade", handleWsUpgrade);
+    secondaryServer.listen(SECONDARY_PORT, '0.0.0.0', () => {
+        logger.info(`Backend server also running on port ${SECONDARY_PORT} in ${isProduction ? 'production' : 'development'} mode (HTTP + WS)`);
+    }).on('error', (err) => {
+        if (err.code === 'EADDRINUSE') {
+            logger.warn(`Port ${SECONDARY_PORT} is already in use or unavailable.`);
+        } else {
+            logger.warn(`Secondary server error on port ${SECONDARY_PORT}: ${err.message}`);
+        }
+    });
+}
