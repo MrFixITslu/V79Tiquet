@@ -4,7 +4,7 @@
 import db from "./db.js";
 
 export const registerHealthCheck = (app) => {
-    app.get('/health', (req, res) => {
+    const handleHealth = (req, res) => {
         try {
             // Check DB connection
             const result = db.prepare("SELECT 1").get();
@@ -21,7 +21,10 @@ export const registerHealthCheck = (app) => {
                 error: e.message
             });
         }
-    });
+    };
+
+    app.get('/health', handleHealth);
+    app.get('/api/health', handleHealth);
 
     // Deeper readiness probe: liveness (/health) just confirms the process
     // is up; this confirms the app can actually serve requests (DB
