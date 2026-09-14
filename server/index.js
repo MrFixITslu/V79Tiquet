@@ -112,14 +112,40 @@ app.use(helmet({
 app.use(compression());
 
 // Lockdown CORS to allowlist in production
-const allowedOrigins = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim()) : ['http://localhost:3000', 'http://127.0.0.1:3000'];
+const defaultAllowedOrigins = [
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+  'http://localhost:3050',
+  'http://127.0.0.1:3050',
+  'https://tiquet.v79sl.com',
+  'http://tiquet.v79sl.com',
+  'https://v79sl.com',
+  'http://v79sl.com'
+];
+const envOrigins = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim()) : [];
+const allowedOrigins = Array.from(new Set([...defaultAllowedOrigins, ...envOrigins]));
+
+function isAllowedOrigin(origin) {
+  if (!origin) return true;
+  const clean = origin.trim().toLowerCase();
+  if (allowedOrigins.some(o => o.toLowerCase() === clean)) return true;
+  try {
+    const url = new URL(origin);
+    const host = url.hostname.toLowerCase();
+    if (host === 'v79sl.com' || host.endsWith('.v79sl.com') || host === 'localhost' || host === '127.0.0.1') {
+      return true;
+    }
+  } catch (_) {}
+  return false;
+}
+
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin) || !isProduction) {
+    if (!origin || !isProduction || isAllowedOrigin(origin)) {
       callback(null, true);
     } else {
-      logger.warn(`CORS blocked request from origin: ${origin}`);
-      callback(new Error('Not allowed by CORS'));
+      logger.warn(`CORS non-whitelisted origin: ${origin}`);
+      callback(null, false);
     }
   },
   credentials: true

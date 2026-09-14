@@ -30,13 +30,19 @@ import { seedDefaultTemplatesForAccount } from './db.js';
 import { logger }    from './logger.js';
 
 const JWT_SECRET     = process.env.JWT_SECRET || 'dev_jwt_secret_v79_tickit';
-const GOOGLE_ID      = process.env.GOOGLE_CLIENT_ID;
 const APPLE_ID       = process.env.APPLE_CLIENT_ID;
 const FACEBOOK_ID    = process.env.FACEBOOK_APP_ID;
 const FACEBOOK_SECRET= process.env.FACEBOOK_APP_SECRET;
 const APP_BASE_URL   = (process.env.APP_BASE_URL || 'http://localhost:3000').replace(/\/$/, '');
 
-const googleClient = GOOGLE_ID ? new OAuth2Client(GOOGLE_ID) : null;
+function getGoogleClientId() {
+    return (process.env.GOOGLE_CLIENT_ID || process.env.VITE_GOOGLE_CLIENT_ID || '').trim();
+}
+
+function getGoogleClient() {
+    const id = getGoogleClientId();
+    return id ? new OAuth2Client(id) : null;
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -134,16 +140,21 @@ export function registerOAuthRoutes(app) {
         const credential = safeStr(req.body?.credential, 8192);
         if (!credential) return res.status(400).json({ error: 'Missing credential' });
 
-        if (!googleClient) {
-            return res.status(503).json({ error: 'Google login is not configured on this server' });
+        const activeGoogleId = getGoogleClientId();
+        const client = getGoogleClient();
+        if (!activeGoogleId || !client) {
+            return res.status(503).json({
+                error: 'Google login is not configured on this server. Please configure GOOGLE_CLIENT_ID in your environment.'
+            });
         }
 
         try {
-            const ticket = await googleClient.verifyIdToken({
+            const ticket = await client.verifyIdToken({
                 idToken:  credential,
-                audience: GOOGLE_ID,
+                audience: activeGoogleId,
             });
-            const { sub: googleId, email, name, email_verified } = ticket.getPayload();
+            const payload = ticket.getPayload();
+            const { sub: googleId, email, name, email_verified, picture } = payload || {};
 
             if (!email_verified) {
                 return res.status(400).json({ error: 'Your Google email address is not verified' });
@@ -160,7 +171,13 @@ export function registerOAuthRoutes(app) {
             }
 
             logger.audit('oauth_login', { provider: 'google', userId: user.id });
-            res.json({ token: result.token, user: result.user });
+            res.json({
+                token: result.token,
+                user: {
+                    ...result.user,
+                    photoUrl: picture || null,
+                }
+            });
 
         } catch (err) {
             logger.error('Google OAuth verification failed', { error: err.message });
@@ -258,9 +275,11 @@ export function registerOAuthRoutes(app) {
      * Returns the Google Client ID (safe to expose publicly).
      */
     app.get('/api/auth/google/config', (_req, res) => {
+        const activeGoogleId = getGoogleClientId();
         res.json({
-            clientId:   GOOGLE_ID || null,
-            configured: !!GOOGLE_ID,
+            clientId:   activeGoogleId || null,
+            configured: !!activeGoogleId,
+            domain:     'tiquet.v79sl.com',
         });
     });
 

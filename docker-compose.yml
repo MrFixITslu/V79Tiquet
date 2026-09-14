@@ -16,6 +16,8 @@ services:
       - DB_USER=${DB_USER:-tiquet_app}
       - DB_PASSWORD=${DB_PASSWORD}
       - DATABASE_PATH=/app/data/tiquet.db
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - APP_BASE_URL=${APP_BASE_URL:-https://tiquet.v79sl.com}
     expose:
       - "3050"
     volumes:

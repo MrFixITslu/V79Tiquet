@@ -107,9 +107,18 @@ async function runSecurityTests() {
     );
 
     // 5. Public Client Portal Link Protection
-    console.log('\n[5/5] Testing Public Client Portal Link Security...');
+    console.log('\n[5/6] Testing Public Client Portal Link Security...');
     const invalidPortal = await request('GET', '/api/portal/invalid-token-123456');
     assert(invalidPortal.status === 404, `Invalid portal token returned 404 (Got: ${invalidPortal.status})`);
+
+    // 6. Google OAuth Endpoints
+    console.log('\n[6/6] Testing Google OAuth Endpoints...');
+    const googleConfig = await request('GET', '/api/auth/google/config');
+    assert(googleConfig.status === 200, `Google OAuth config endpoint reachable with 200 (Got: ${googleConfig.status})`);
+    assert(googleConfig.body && typeof googleConfig.body.configured === 'boolean', `Google OAuth config returns configured boolean status`);
+
+    const badGoogleLogin = await request('POST', '/api/auth/google', { credential: 'fake-invalid-jwt-token' });
+    assert(badGoogleLogin.status === 401 || badGoogleLogin.status === 503, `Unauthorized or unconfigured Google token rejected safely (Got: ${badGoogleLogin.status})`);
 
   } catch (err) {
     console.error('Security test runner error:', err);

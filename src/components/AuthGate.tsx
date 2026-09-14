@@ -1,7 +1,8 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { Briefcase, Shield, ArrowRight, Loader2, KeyRound } from "lucide-react";
 import { AuthenticatedUser, Business } from "../types";
 import { api, setToken, ApiError } from "../api";
+import { GoogleAuthButton } from "./GoogleAuthButton";
 
 type Step = "login" | "register" | "2fa";
 
@@ -15,6 +16,34 @@ export function AuthGate({
   const [step, setStep] = useState<Step>("login");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Google OAuth state
+  const [googleClientId, setGoogleClientId] = useState<string | null>(
+    (import.meta.env.VITE_GOOGLE_CLIENT_ID as string) || null
+  );
+
+  useEffect(() => {
+    api.get<{ clientId: string | null; configured: boolean }>("/auth/google/config")
+      .then((res) => {
+        if (res.clientId) {
+          setGoogleClientId(res.clientId);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const handleGoogleSuccess = async (credential: string) => {
+    setError(null);
+    setLoading(true);
+    try {
+      const res = await api.post<{ token: string; user: any }>("/auth/google", { credential });
+      await finishLogin(res.token);
+    } catch (e: any) {
+      setError(e instanceof ApiError ? e.message : (e?.message || "Google sign-in failed. Please try again."));
+    } finally {
+      setLoading(false);
+    }
+  };
 
   // Login fields
   const [email, setEmail] = useState("");
@@ -31,14 +60,15 @@ export function AuthGate({
   const finishLogin = async (token: string) => {
     setToken(token);
     try {
-      const me = await api.get<{ id: string; name: string; email: string; role: string; account_id: string }>("/auth/me");
+      const me = await api.get<{ id: string; name: string; email: string; role: string; account_id: string; oauth_provider?: string; picture?: string; photoUrl?: string }>("/auth/me");
       const settings = await api.get<any>("/settings");
 
       const user: AuthenticatedUser = {
         id: me.id,
         name: me.name,
         email: me.email,
-        provider: "email",
+        photoUrl: me.photoUrl || me.picture,
+        provider: (me.oauth_provider as any) || (me.id ? "google" : "email"),
       };
       const business: Business = {
         id: me.account_id,
@@ -136,42 +166,78 @@ export function AuthGate({
           )}
 
           {step === "login" && (
-            <form onSubmit={handleLogin} className="space-y-4">
-              <Field label="Email" type="email" required value={email} onChange={setEmail} placeholder="you@company.com" />
-              <Field label="Password" type="password" required value={password} onChange={setPassword} placeholder="••••••••" />
-              <div className="text-right -mt-2">
-                <button
-                  type="button"
-                  onClick={onForgotPassword}
-                  className="text-xs text-indigo-600 font-semibold hover:underline cursor-pointer"
-                >
-                  Forgot password?
-                </button>
+            <div className="space-y-4">
+              <GoogleAuthButton
+                clientId={googleClientId}
+                onSuccess={handleGoogleSuccess}
+                onError={(msg) => setError(msg)}
+                loading={loading}
+                onClientConfigured={(id) => setGoogleClientId(id)}
+              />
+
+              <div className="relative flex items-center justify-center my-2">
+                <div className="border-t border-slate-200 w-full" />
+                <span className="bg-white px-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider whitespace-nowrap">
+                  or sign in with email
+                </span>
+                <div className="border-t border-slate-200 w-full" />
               </div>
-              <SubmitButton loading={loading} label="Sign In" />
-              <p className="text-center text-xs text-slate-400 mt-4">
-                Don't have a workspace?{" "}
-                <button type="button" onClick={() => { setStep("register"); setError(null); }} className="text-indigo-600 font-bold hover:underline cursor-pointer">
-                  Create one
-                </button>
-              </p>
-            </form>
+
+              <form onSubmit={handleLogin} className="space-y-4">
+                <Field label="Email" type="email" required value={email} onChange={setEmail} placeholder="you@company.com" />
+                <Field label="Password" type="password" required value={password} onChange={setPassword} placeholder="••••••••" />
+                <div className="text-right -mt-2">
+                  <button
+                    type="button"
+                    onClick={onForgotPassword}
+                    className="text-xs text-indigo-600 font-semibold hover:underline cursor-pointer"
+                  >
+                    Forgot password?
+                  </button>
+                </div>
+                <SubmitButton loading={loading} label="Sign In" />
+                <p className="text-center text-xs text-slate-400 mt-4">
+                  Don't have a workspace?{" "}
+                  <button type="button" onClick={() => { setStep("register"); setError(null); }} className="text-indigo-600 font-bold hover:underline cursor-pointer">
+                    Create one
+                  </button>
+                </p>
+              </form>
+            </div>
           )}
 
           {step === "register" && (
-            <form onSubmit={handleRegister} className="space-y-4">
-              <Field label="Your Name" required value={regName} onChange={setRegName} placeholder="Jane Doe" />
-              <Field label="Company Name" required value={regCompany} onChange={setRegCompany} placeholder="Acme Design Co." />
-              <Field label="Email" type="email" required value={regEmail} onChange={setRegEmail} placeholder="you@company.com" />
-              <Field label="Password" type="password" required value={regPassword} onChange={setRegPassword} placeholder="At least 8 characters" />
-              <SubmitButton loading={loading} label="Create Workspace" />
-              <p className="text-center text-xs text-slate-400 mt-4">
-                Already have a workspace?{" "}
-                <button type="button" onClick={() => { setStep("login"); setError(null); }} className="text-indigo-600 font-bold hover:underline cursor-pointer">
-                  Sign in
-                </button>
-              </p>
-            </form>
+            <div className="space-y-4">
+              <GoogleAuthButton
+                clientId={googleClientId}
+                onSuccess={handleGoogleSuccess}
+                onError={(msg) => setError(msg)}
+                loading={loading}
+                onClientConfigured={(id) => setGoogleClientId(id)}
+              />
+
+              <div className="relative flex items-center justify-center my-2">
+                <div className="border-t border-slate-200 w-full" />
+                <span className="bg-white px-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider whitespace-nowrap">
+                  or register with email
+                </span>
+                <div className="border-t border-slate-200 w-full" />
+              </div>
+
+              <form onSubmit={handleRegister} className="space-y-4">
+                <Field label="Your Name" required value={regName} onChange={setRegName} placeholder="Jane Doe" />
+                <Field label="Company Name" required value={regCompany} onChange={setRegCompany} placeholder="Acme Design Co." />
+                <Field label="Email" type="email" required value={regEmail} onChange={setRegEmail} placeholder="you@company.com" />
+                <Field label="Password" type="password" required value={regPassword} onChange={setRegPassword} placeholder="At least 8 characters" />
+                <SubmitButton loading={loading} label="Create Workspace" />
+                <p className="text-center text-xs text-slate-400 mt-4">
+                  Already have a workspace?{" "}
+                  <button type="button" onClick={() => { setStep("login"); setError(null); }} className="text-indigo-600 font-bold hover:underline cursor-pointer">
+                    Sign in
+                  </button>
+                </p>
+              </form>
+            </div>
           )}
 
           {step === "2fa" && (
