@@ -75,11 +75,26 @@ export async function runMigration(options = {}) {
   console.log('[Migration] Connected to PostgreSQL.');
 
   try {
-    // 4. Apply schema DDL (all statements are IF NOT EXISTS)
-    console.log('[Migration] Ensuring PostgreSQL schema and all columns are up to date...');
-    const schemaSql = fs.readFileSync(path.resolve('server/schema.sql'), 'utf8');
-    await client.query(schemaSql);
-    await client.query('ALTER TABLE email_templates ADD COLUMN IF NOT EXISTS htmlbody TEXT;');
+    // 4. Apply schema DDL if not already applied
+    const tblCheck = await client.query("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'");
+    if (tblCheck.rows.length === 0) {
+      console.log('[Migration] Initialising PostgreSQL schema from server/schema.sql...');
+      const schemaSql = fs.readFileSync(path.resolve('server/schema.sql'), 'utf8');
+      await client.query(schemaSql);
+      console.log('[Migration] Schema initialisation complete.');
+    } else {
+      console.log('[Migration] PostgreSQL schema already present, running column integrity checks...');
+    }
+
+    try {
+      await client.query('ALTER TABLE email_templates ADD COLUMN IF NOT EXISTS htmlbody TEXT;');
+      await client.query('ALTER TABLE email_templates ALTER COLUMN body DROP NOT NULL;');
+      await client.query('ALTER TABLE email_templates ALTER COLUMN body SET DEFAULT \'\';');
+      await client.query('ALTER TABLE email_templates ALTER COLUMN subject DROP NOT NULL;');
+      await client.query('ALTER TABLE email_templates ALTER COLUMN subject SET DEFAULT \'\';');
+    } catch (e) {
+      // Ignored if pg-mem or already applied
+    }
     console.log('[Migration] Schema verification complete.');
 
     // 5. Read all table row counts from SQLite
@@ -165,12 +180,14 @@ export async function runMigration(options = {}) {
 
       // 3. Migrate each row safely
       for (const row of rows) {
-        // Special case for email_templates: synchronize body and htmlbody/htmlBody
+        // Special case for email_templates: synchronize body and htmlbody/htmlBody, guarantee non-null
         if (table === 'email_templates') {
-          if (row.htmlBody && !row.body) row.body = row.htmlBody;
-          if (row.htmlbody && !row.body) row.body = row.htmlbody;
-          if (row.body && !row.htmlbody) row.htmlbody = row.body;
-          if (row.body && !row.htmlBody) row.htmlBody = row.body;
+          const bodyVal = row.body ?? row.htmlbody ?? row.htmlBody ?? '';
+          const htmlVal = row.htmlbody ?? row.htmlBody ?? row.body ?? '';
+          row.body = bodyVal;
+          row.htmlbody = htmlVal;
+          if (row.htmlBody !== undefined) row.htmlBody = htmlVal;
+          if (row.subject === undefined || row.subject === null) row.subject = '';
         }
 
         const rawKeys = Object.keys(row);
@@ -187,7 +204,16 @@ export async function runMigration(options = {}) {
           seenCols.add(lower);
 
           cols.push(lower === 'user' ? '"user"' : lower);
-          values.push(row[k]);
+          let val = row[k];
+          if (table === 'email_templates') {
+            if (lower === 'body' && (val === null || val === undefined)) {
+              val = row.htmlbody || row.htmlBody || '';
+            }
+            if (lower === 'htmlbody' && (val === null || val === undefined)) {
+              val = row.body || '';
+            }
+          }
+          values.push(val);
         }
 
         const quotedCols = cols.join(', ');

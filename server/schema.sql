@@ -194,14 +194,18 @@ CREATE INDEX IF NOT EXISTS idx_industries_account ON industries(account_id);
 CREATE TABLE IF NOT EXISTS email_templates (
     id TEXT PRIMARY KEY,
     type TEXT NOT NULL,
-    subject TEXT NOT NULL,
-    body TEXT NOT NULL DEFAULT '',
+    subject TEXT DEFAULT '',
+    body TEXT DEFAULT '',
     htmlbody TEXT,
     updatedAt TEXT NOT NULL,
     account_id TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_templates_account_type ON email_templates(account_id, type);
 ALTER TABLE email_templates ADD COLUMN IF NOT EXISTS htmlbody TEXT;
+ALTER TABLE email_templates ALTER COLUMN body DROP NOT NULL;
+ALTER TABLE email_templates ALTER COLUMN body SET DEFAULT '';
+ALTER TABLE email_templates ALTER COLUMN subject DROP NOT NULL;
+ALTER TABLE email_templates ALTER COLUMN subject SET DEFAULT '';
 
 -- 15. Newsletter Sends
 CREATE TABLE IF NOT EXISTS newsletter_sends (
