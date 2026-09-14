@@ -19,7 +19,7 @@ export function AuthGate({
 
   // Google OAuth state
   const [googleClientId, setGoogleClientId] = useState<string | null>(
-    (import.meta.env.VITE_GOOGLE_CLIENT_ID as string) || null
+    ((import.meta as any).env?.VITE_GOOGLE_CLIENT_ID as string) || null
   );
 
   useEffect(() => {

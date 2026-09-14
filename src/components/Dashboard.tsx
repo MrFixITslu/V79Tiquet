@@ -19,16 +19,28 @@ import {
   DollarSign,
   TrendingUp,
   Layers,
+  FileText,
+  Activity,
+  ArrowUpRight,
 } from "lucide-react";
 import { D3PieChartWidget } from "./D3PieChartWidget";
 
 export function Dashboard({ jobs }: { jobs: Job[] }) {
+  const activeJobs = jobs.filter(
+    (j) => j.status === "in-progress" || j.status === "request" || j.status === "estimation" || j.status === "review"
+  );
   const inProgressJobs = jobs.filter((j) => j.status === "in-progress");
   const completedJobs = jobs.filter((j) => j.status === "completed" || j.status === "paid");
-  const highPriorityJobs = jobs.filter((j) => j.priority === "high");
+  const pendingInvoicedJobs = jobs.filter((j) => j.status === "invoiced");
+  
   const totalRevenue = jobs
-    .filter((j) => j.status === "paid")
+    .filter((j) => j.status === "paid" || j.status === "completed")
     .reduce((sum, j) => sum + (j.amount || 0), 0);
+
+  const pendingInvoicesAmount = pendingInvoicedJobs.reduce(
+    (sum, j) => sum + (j.amount || 0),
+    0
+  );
 
   const priorityData = [
     { name: "High", count: jobs.filter((j) => j.priority === "high").length, fill: "#ef4444" },
@@ -53,45 +65,108 @@ export function Dashboard({ jobs }: { jobs: Job[] }) {
         <div className="flex items-center gap-3">
           <div className="px-3.5 py-1.5 rounded-xl bg-slate-100 border border-slate-200 text-xs font-semibold text-slate-700 flex items-center gap-2">
             <span className="w-2 h-2 rounded-full bg-emerald-500" />
-            <span>{jobs.length} Active System Jobs</span>
+            <span>{jobs.length} Total System Jobs</span>
           </div>
         </div>
       </div>
 
-      {/* KPI Metric Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5">
-        <StatCard
-          icon={<Briefcase className="w-5 h-5 text-indigo-600" />}
-          label="Total Pipeline"
-          value={jobs.length}
-          subtext="All active job records"
-          bgColor="bg-indigo-50"
-          borderColor="border-indigo-100"
-        />
-        <StatCard
-          icon={<Clock className="w-5 h-5 text-purple-600" />}
-          label="In Progress"
-          value={inProgressJobs.length}
-          subtext="Active production stage"
-          bgColor="bg-purple-50"
-          borderColor="border-purple-100"
-        />
-        <StatCard
-          icon={<CheckCircle2 className="w-5 h-5 text-emerald-600" />}
-          label="Delivered & Paid"
-          value={completedJobs.length}
-          subtext="Finalized assignments"
-          bgColor="bg-emerald-50"
-          borderColor="border-emerald-100"
-        />
-        <StatCard
-          icon={<DollarSign className="w-5 h-5 text-amber-600" />}
-          label="Confirmed Revenue"
-          value={`$${totalRevenue.toLocaleString()}`}
-          subtext="Deposits & paid invoices"
-          bgColor="bg-amber-50"
-          borderColor="border-amber-100"
-        />
+      {/* Summary Row: Total Revenue, Active Jobs, and Pending Invoices */}
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+        {/* Total Revenue Card */}
+        <div className="bg-white p-6 rounded-2xl border border-emerald-100 shadow-xs hover:shadow-md transition-shadow relative overflow-hidden flex flex-col justify-between">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 border border-emerald-100 flex items-center justify-center">
+                <DollarSign className="w-5 h-5" />
+              </div>
+              <div>
+                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider block">Total Revenue</span>
+                <span className="text-[11px] text-emerald-600 font-semibold flex items-center gap-1">
+                  <TrendingUp className="w-3 h-3" /> Confirmed & Settled
+                </span>
+              </div>
+            </div>
+            <div className="w-8 h-8 rounded-lg bg-slate-50 border border-slate-100 flex items-center justify-center text-slate-400">
+              <ArrowUpRight className="w-4 h-4 text-emerald-500" />
+            </div>
+          </div>
+          <div className="mt-5">
+            <p className="text-3xl font-black text-slate-900 tracking-tight">
+              ${totalRevenue.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
+            </p>
+            <div className="flex items-center gap-2 mt-2 text-xs text-slate-500">
+              <span className="inline-flex items-center gap-1 font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-100 text-[11px]">
+                {completedJobs.length} Paid & Completed
+              </span>
+              <span>Across all client accounts</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Active Jobs Card */}
+        <div className="bg-white p-6 rounded-2xl border border-indigo-100 shadow-xs hover:shadow-md transition-shadow relative overflow-hidden flex flex-col justify-between">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 border border-indigo-100 flex items-center justify-center">
+                <Activity className="w-5 h-5" />
+              </div>
+              <div>
+                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider block">Active Jobs</span>
+                <span className="text-[11px] text-indigo-600 font-semibold flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 animate-pulse" /> Live in Pipeline
+                </span>
+              </div>
+            </div>
+            <div className="w-8 h-8 rounded-lg bg-slate-50 border border-slate-100 flex items-center justify-center text-slate-400">
+              <Briefcase className="w-4 h-4 text-indigo-500" />
+            </div>
+          </div>
+          <div className="mt-5">
+            <div className="flex items-baseline gap-2">
+              <span className="text-3xl font-black text-slate-900 tracking-tight">{activeJobs.length}</span>
+              <span className="text-xs font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-md border border-indigo-100">
+                {inProgressJobs.length} In Progress
+              </span>
+            </div>
+            <div className="flex items-center gap-2 mt-2 text-xs text-slate-500">
+              <span className="inline-flex items-center gap-1 font-semibold text-slate-700 bg-slate-100 px-2 py-0.5 rounded-md text-[11px]">
+                {jobs.filter((j) => j.priority === "high" && (j.status === "in-progress" || j.status === "review")).length} High Priority
+              </span>
+              <span>Currently in development & review</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Pending Invoices Card */}
+        <div className="bg-white p-6 rounded-2xl border border-amber-100 shadow-xs hover:shadow-md transition-shadow relative overflow-hidden flex flex-col justify-between">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2.5">
+              <div className="w-10 h-10 rounded-xl bg-amber-50 text-amber-600 border border-amber-100 flex items-center justify-center">
+                <FileText className="w-5 h-5" />
+              </div>
+              <div>
+                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider block">Pending Invoices</span>
+                <span className="text-[11px] text-amber-600 font-semibold flex items-center gap-1">
+                  <Clock className="w-3 h-3" /> Awaiting Payment
+                </span>
+              </div>
+            </div>
+            <div className="w-8 h-8 rounded-lg bg-slate-50 border border-slate-100 flex items-center justify-center text-slate-400">
+              <AlertCircle className="w-4 h-4 text-amber-500" />
+            </div>
+          </div>
+          <div className="mt-5">
+            <p className="text-3xl font-black text-slate-900 tracking-tight">
+              ${pendingInvoicesAmount.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
+            </p>
+            <div className="flex items-center gap-2 mt-2 text-xs text-slate-500">
+              <span className="inline-flex items-center gap-1 font-semibold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-md border border-amber-100 text-[11px]">
+                {pendingInvoicedJobs.length} {pendingInvoicedJobs.length === 1 ? 'Invoice' : 'Invoices'}
+              </span>
+              <span>Issued & awaiting client remittance</span>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Visual Data & D3 Charts */}
