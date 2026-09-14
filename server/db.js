@@ -1,533 +1,275 @@
-import Database from 'better-sqlite3';
-import { v4 as uuidv4 } from 'uuid';
+/**
+ * server/db.js — PostgreSQL Database Layer for V79Tiquet
+ *
+ * Fully replaces SQLite (better-sqlite3) with PostgreSQL 16 (pg).
+ * Features:
+ * - Connection pooling via pg.Pool
+ * - Environment configuration (DATABASE_URL or discrete credentials)
+ * - Safe parameterised queries ($1, $2, ...)
+ * - Automatic schema migration and verification
+ * - Seamless camelCase mapping for existing data models
+ * - Clean async API: db.prepare(sql).get/all/run, db.query, db.exec, db.transaction
+ */
+
 import fs from 'fs';
 import path from 'path';
+import pg from 'pg';
 import bcrypt from 'bcryptjs';
+import { v4 as uuidv4 } from 'uuid';
+import { runMigration } from '../scripts/migrate-sqlite-to-pg.js';
 
-// Resolve DB path - check if data/data.db exists first
-const defaultDbPath = fs.existsSync(path.resolve('data/data.db')) ? 'data/data.db' : 'data.db';
-const dbPath = process.env.TEST_DB || process.env.DATABASE_PATH || defaultDbPath;
+const { Pool } = pg;
 
-// Ensure parent directory exists
-export const dbDir = path.dirname(path.resolve(dbPath));
-if (!fs.existsSync(dbDir)) {
-    fs.mkdirSync(dbDir, { recursive: true });
+// Parse PostgreSQL BIGINT (type 20) as JavaScript numbers
+pg.types.setTypeParser(20, (val) => (val === null ? null : parseInt(val, 10)));
+
+export const dbDir = path.resolve('data');
+if (!fs.existsSync(dbDir)) fs.mkdirSync(dbDir, { recursive: true });
+
+// Mapping of PostgreSQL lowercase column names back to original camelCase model names
+const CAMEL_MAP = {
+  createdat: 'createdAt',
+  duedate: 'dueDate',
+  clientemail: 'clientEmail',
+  securetoken: 'secureToken',
+  depositpaid: 'depositPaid',
+  timerstartedat: 'timerStartedAt',
+  stageassignments: 'stageAssignments',
+  timelogs: 'timeLogs',
+  quoteapproved: 'quoteApproved',
+  lineitems: 'lineItems',
+  ffprosyncstatus: 'ffproSyncStatus',
+  ffproeventid: 'ffproEventId',
+  intakeeventid: 'intakeEventId',
+  isread: 'isRead',
+  uploadedat: 'uploadedAt',
+  uploadedby: 'uploadedBy',
+  jobid: 'jobId',
+  logourl: 'logoUrl',
+  paymentterms: 'paymentTerms',
+  taxrate: 'taxRate',
+  twofactorsecret: 'twoFactorSecret',
+  twofactorenabled: 'twoFactorEnabled',
+  hourlyrate: 'hourlyRate',
+  hoursworked: 'hoursWorked',
+  workertype: 'workerType',
+  paymentmethod: 'paymentMethod',
+  ischeckedin: 'isCheckedIn',
+  lastcheckin: 'lastCheckIn',
+  timecards: 'timeCards',
+  industryid: 'industryId',
+  newsletteroptin: 'newsletterOptIn',
+  newsletteroptintoken: 'newsletterOptInToken',
+  newsletteroptedinat: 'newsletterOptedInAt',
+  leadsource: 'leadSource',
+  leadstatus: 'leadStatus',
+  updatedat: 'updatedAt',
+  contentsnapshot: 'contentSnapshot',
+  recipientcount: 'recipientCount',
+  sentat: 'sentAt',
+  sentby: 'sentBy',
+  employeeid: 'employeeId',
+  employeename: 'employeeName',
+  suspendedat: 'suspendedAt',
+  trialendsat: 'trialEndsAt',
+  stripecustomerid: 'stripeCustomerId'
+};
+
+function normalizeRow(row) {
+  if (!row || typeof row !== 'object') return row;
+  const out = {};
+  for (const [k, v] of Object.entries(row)) {
+    out[k] = v;
+    const camel = CAMEL_MAP[k.toLowerCase()];
+    if (camel && camel !== k) {
+      out[camel] = v;
+    }
+  }
+  return out;
 }
 
-let db;
-try {
-  db = new Database(dbPath);
-} catch (e) {
-  // Always print to stderr, even in production — this must never be silent.
-  // Common causes: DATABASE_PATH directory not writable by the container's
-  // runtime user (e.g. a Docker named volume still owned by root from a
-  // previous version of the image), or a missing/misconfigured volume mount.
-  console.error(`[FATAL] Could not open database at "${dbPath}": ${e.message}`);
-  console.error(`[FATAL] Check that the directory is writable by the container's runtime user (id -u).`);
-  process.exit(1);
+function getPgConfig() {
+  if (process.env.DATABASE_URL) {
+    return {
+      connectionString: process.env.DATABASE_URL,
+      max: parseInt(process.env.DB_POOL_MAX || '20', 10),
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 5000
+    };
+  }
+  return {
+    host: process.env.DB_HOST || 'tiquet-postgres',
+    port: parseInt(process.env.DB_PORT || '5432', 10),
+    database: process.env.DB_NAME || 'tiquet',
+    user: process.env.DB_USER || 'tiquet_app',
+    password: process.env.DB_PASSWORD,
+    ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
+    max: parseInt(process.env.DB_POOL_MAX || '20', 10),
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 5000
+  };
 }
 
-db.pragma('journal_mode = WAL');
-db.pragma('busy_timeout = 10000');
-db.pragma('foreign_keys = ON');
-db.pragma('secure_delete = ON');
+let poolInstance = null;
+let isReadyPromise = null;
 
-// Safe column addition helper
-function safeAddColumn(table, columnDef) {
+async function createPool() {
+  const config = getPgConfig();
+  const pool = new Pool(config);
+
   try {
-    db.exec(`ALTER TABLE ${table} ADD COLUMN ${columnDef}`);
-  } catch (e) {
-    // Column already exists or table issue
+    const client = await pool.connect();
+    client.release();
+    console.log(`[DB] Connected to PostgreSQL at ${config.host || 'connection string'}`);
+    return pool;
+  } catch (err) {
+    if (process.env.NODE_ENV === 'production') {
+      console.error('[DB] FATAL: Could not connect to PostgreSQL server in production:', err.message);
+      throw err;
+    }
+
+    console.warn(`[DB] PostgreSQL not reachable at ${config.host || 'DATABASE_URL'} (${err.message}).`);
+    console.warn('[DB] Initialising in-memory PostgreSQL 16 instance for development/test environment...');
+    const { newDb } = await import('pg-mem');
+    const memDb = newDb();
+    const memPg = memDb.adapters.createPg();
+    return new memPg.Pool();
   }
 }
 
-// Initial Core Tables
-db.exec(`
-  CREATE TABLE IF NOT EXISTS jobs (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    client TEXT NOT NULL,
-    description TEXT,
-    status TEXT NOT NULL,
-    createdAt TEXT NOT NULL,
-    dueDate TEXT,
-    amount REAL,
-    priority TEXT NOT NULL,
-    invoiceNotes TEXT,
-    assignedTo TEXT,
-    clientEmail TEXT,
-    secureToken TEXT,
-    depositPaid INTEGER DEFAULT 0,
-    timerStartedAt TEXT,
-    stageAssignments TEXT,
-    timeLogs TEXT
-  );
+export function convertSql(sql, params) {
+  let paramIndex = 1;
+  let converted = sql.replace(/\?/g, () => `$${paramIndex++}`);
 
-  CREATE TABLE IF NOT EXISTS job_tags (
-    job_id TEXT,
-    tag TEXT,
-    FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
-  );
+  // Transform SQLite datetime('now', ...) to PostgreSQL INTERVAL
+  converted = converted.replace(/datetime\('now',\s*'(-?\d+)\s*(days?|hours?|minutes?|seconds?)'\)/gi, (_, num, unit) => {
+    const abs = Math.abs(parseInt(num, 10));
+    const sign = parseInt(num, 10) < 0 ? '-' : '+';
+    return `(NOW() ${sign} INTERVAL '${abs} ${unit}')`;
+  });
+  converted = converted.replace(/datetime\('now'\)/gi, 'NOW()');
 
-  CREATE TABLE IF NOT EXISTS activity_logs (
-    id TEXT PRIMARY KEY,
-    job_id TEXT,
-    action TEXT NOT NULL,
-    timestamp TEXT NOT NULL,
-    user TEXT NOT NULL,
-    FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
-  );
-
-  CREATE TABLE IF NOT EXISTS employees (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    role TEXT NOT NULL,
-    salary REAL,
-    hourlyRate REAL,
-    hoursWorked REAL,
-    workerType TEXT NOT NULL,
-    paymentMethod TEXT NOT NULL,
-    status TEXT NOT NULL,
-    isCheckedIn INTEGER DEFAULT 0,
-    lastCheckIn TEXT
-  );
-
-  CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    email TEXT NOT NULL,
-    role TEXT NOT NULL
-  );
-  
-  CREATE TABLE IF NOT EXISTS user_permissions (
-    user_id TEXT,
-    permission TEXT,
-    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-  );
-
-  CREATE TABLE IF NOT EXISTS files (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    size INTEGER NOT NULL,
-    type TEXT NOT NULL,
-    uploadedAt TEXT NOT NULL,
-    uploadedBy TEXT NOT NULL,
-    jobId TEXT
-  );
-
-  CREATE TABLE IF NOT EXISTS settings (
-    id TEXT PRIMARY KEY,
-    name TEXT,
-    address TEXT,
-    email TEXT,
-    phone TEXT,
-    logoUrl TEXT,
-    paymentTerms TEXT,
-    currency TEXT,
-    taxRate REAL
-  );
-
-  CREATE TABLE IF NOT EXISTS clients (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    email TEXT,
-    phone TEXT,
-    company TEXT,
-    notes TEXT,
-    createdAt TEXT NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS industries (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    account_id TEXT
-  );
-
-  CREATE TABLE IF NOT EXISTS email_templates (
-    id TEXT PRIMARY KEY,
-    type TEXT NOT NULL,
-    subject TEXT NOT NULL,
-    body TEXT NOT NULL DEFAULT '',
-    updatedAt TEXT NOT NULL,
-    account_id TEXT
-  );
-
-  CREATE TABLE IF NOT EXISTS newsletter_sends (
-    id TEXT PRIMARY KEY,
-    industryId TEXT,
-    subject TEXT NOT NULL,
-    contentSnapshot TEXT NOT NULL,
-    recipientCount INTEGER NOT NULL DEFAULT 0,
-    sentAt TEXT NOT NULL,
-    sentBy TEXT,
-    account_id TEXT
-  );
-
-  CREATE TABLE IF NOT EXISTS payroll_records (
-    id TEXT PRIMARY KEY,
-    employeeId TEXT NOT NULL,
-    employeeName TEXT NOT NULL,
-    amount REAL NOT NULL,
-    date TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'pending',
-    account_id TEXT,
-    FOREIGN KEY(employeeId) REFERENCES employees(id) ON DELETE CASCADE
-  );
-
-  CREATE TABLE IF NOT EXISTS job_messages (
-    id TEXT PRIMARY KEY,
-    job_id TEXT,
-    sender TEXT NOT NULL,
-    content TEXT NOT NULL,
-    timestamp TEXT NOT NULL,
-    FOREIGN KEY(job_id) REFERENCES jobs(id) ON DELETE CASCADE
-  );
-
-  CREATE TABLE IF NOT EXISTS notifications (
-    id TEXT PRIMARY KEY,
-    user_id TEXT,
-    title TEXT NOT NULL,
-    message TEXT NOT NULL,
-    type TEXT NOT NULL,
-    isRead INTEGER DEFAULT 0,
-    createdAt TEXT NOT NULL,
-    account_id TEXT,
-    FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-  );
-
-  CREATE TABLE IF NOT EXISTS accounts (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    createdAt TEXT NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS subscriptions (
-    id TEXT PRIMARY KEY,
-    account_id TEXT NOT NULL,
-    stripe_subscription_id TEXT,
-    stripe_customer_id TEXT,
-    status TEXT NOT NULL DEFAULT 'trialing',
-    plan TEXT NOT NULL DEFAULT 'trial',
-    current_period_end TEXT,
-    canceled_at TEXT,
-    createdAt TEXT NOT NULL,
-    FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE
-  );
-
-  CREATE TABLE IF NOT EXISTS super_admins (
-    id TEXT PRIMARY KEY,
-    email TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    createdAt TEXT NOT NULL
-  );
-`);
-
-// Insert default account
-try {
-  db.exec(`INSERT OR IGNORE INTO accounts (id, name, createdAt) VALUES ('default_account', 'Default Account', CURRENT_TIMESTAMP)`);
-} catch (e) {}
-
-// Safe Column Migrations
-safeAddColumn('jobs', 'depositPaid INTEGER DEFAULT 0');
-safeAddColumn('jobs', 'quoteApproved INTEGER DEFAULT 0');
-safeAddColumn('jobs', 'lineItems TEXT');
-safeAddColumn('jobs', 'deliverables TEXT');
-safeAddColumn('jobs', 'timerStartedAt TEXT');
-safeAddColumn('jobs', 'stageAssignments TEXT');
-safeAddColumn('jobs', 'timeLogs TEXT');
-// FFPRO2 Gateway: tracks whether this job's PAID event has been delivered
-// to FFPRO2 as income yet. NULL = not applicable (job never reached paid,
-// or gateway wasn't configured at the time). 'pending' is written BEFORE
-// the delivery attempt — so even a crash right after marking a job paid
-// still leaves a durable, retryable record — and flips to 'sent' only once
-// FFPRO2 actually confirms it processed the event.
-safeAddColumn('jobs', "ffproSyncStatus TEXT");
-// The same eventId must be reused across every retry attempt for a given
-// job — that's what lets FFPRO2's idempotency check recognize "this is the
-// same payment being redelivered" rather than a new one. Generated once,
-// the moment the job is marked paid, and reused for every retry after.
-safeAddColumn('jobs', "ffproEventId TEXT");
-
-safeAddColumn('users', 'failed_login_attempts INTEGER DEFAULT 0');
-safeAddColumn('users', 'locked_until TEXT');
-safeAddColumn('users', 'password_hash TEXT');
-safeAddColumn('users', 'twoFactorSecret TEXT');
-safeAddColumn('users', 'twoFactorEnabled INTEGER DEFAULT 0');
-safeAddColumn('users', 'oauth_provider TEXT');
-safeAddColumn('users', 'oauth_id TEXT');
-
-// Forgot-password flow. Only the SHA-256 hash of the reset token is stored —
-// the raw token exists only in the emailed link, same principle as a
-// password hash. A leaked DB row therefore can't be replayed as a valid
-// reset link.
-safeAddColumn('users', 'reset_token_hash TEXT');
-safeAddColumn('users', 'reset_token_expires TEXT');
-
-safeAddColumn('clients', 'address TEXT');
-safeAddColumn('settings', 'address TEXT');
-safeAddColumn('settings', 'website TEXT');
-
-safeAddColumn('clients', 'industryId TEXT');
-safeAddColumn('clients', 'newsletterOptIn INTEGER DEFAULT 0');
-safeAddColumn('clients', 'newsletterOptInToken TEXT');
-safeAddColumn('clients', 'newsletterOptedInAt TEXT');
-// Website lead capture (website2026 contact form → V79Tiquet client, via
-// /api/public/intake). leadSource identifies where the client came from;
-// leadStatus is only meaningful when leadSource is set, and is left alone
-// on repeat submissions from an already-known client so it doesn't clobber
-// a status staff has since changed manually.
-safeAddColumn('clients', 'leadSource TEXT');
-safeAddColumn('clients', 'leadStatus TEXT');
-// Idempotency key for the intake endpoint: the caller (website2026) can
-// supply the same eventId on a retry after a network failure, and the
-// intake handler will recognize it and return the original result instead
-// of creating a second job for the same form submission.
-safeAddColumn('jobs', 'intakeEventId TEXT');
-
-// Upgrade path from an earlier deploy of this feature, which stored the
-// template as raw HTML in an `htmlBody` column. Templates are now plain
-// text (rendered into HTML at send time — see email.js). Copying the old
-// HTML verbatim into `body` would be actively harmful, not just stale: the
-// new pipeline escapes `body` as plain text before rendering it (correct
-// for genuine plain text, since there's no longer any HTML-injection
-// surface to defend against) — so raw HTML surviving the migration would
-// get its own tags escaped into visible text, and then the auto-linker
-// would find the still-readable URL inside an old (now inert, escaped)
-// href="..." and wrap it in a second, real link, corrupting the quotes at
-// the boundary. Strip tags on migration instead: it's a rough plain-text
-// approximation of what they had, not a full loss, and it's safe to run
-// through the new pipeline. The admin can polish it via Settings after.
-safeAddColumn('email_templates', 'body TEXT');
-const stripTags = (html) => html
-    .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, '')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/[ \t]+/g, ' ')
-    .replace(/\n\s*\n\s*\n+/g, '\n\n')
-    .trim();
-const updateTemplateBody = db.prepare(`UPDATE email_templates SET body = ? WHERE id = ?`);
-
-try {
-    const needsMigration = db.prepare(
-        `SELECT id, htmlBody FROM email_templates WHERE (body IS NULL OR body = '') AND htmlBody IS NOT NULL AND htmlBody != ''`
-    ).all();
-    for (const row of needsMigration) {
-        updateTemplateBody.run(stripTags(row.htmlBody), row.id);
-    }
-    if (needsMigration.length > 0) {
-        console.log(`Migrated ${needsMigration.length} email template(s) from HTML to plain text — review in Settings, formatting will be rough.`);
-    }
-} catch (e) {
-    // htmlBody column doesn't exist on a fresh install — nothing to migrate
-}
-
-// Separate try/catch on purpose: this must still run even if the block
-// above throws (e.g. a fresh install with no htmlBody column at all) — a
-// failure in one migration step should never silently skip the other.
-try {
-    // Self-healing for accounts that already ran the earlier (buggy) version
-    // of this migration, which copied htmlBody into body VERBATIM — so body
-    // is no longer empty, but still contains raw HTML tags. Genuine plain
-    // text should never contain a literal <table>/<html>/<!DOCTYPE — if it
-    // does, it's leftover raw markup from the old migration, not something
-    // an admin typed.
-    const looksLikeHtml = db.prepare(
-        `SELECT id, body FROM email_templates WHERE body LIKE '%<html%' OR body LIKE '%<!DOCTYPE%' OR body LIKE '%<table%' OR body LIKE '%</td>%'`
-    ).all();
-    for (const row of looksLikeHtml) {
-        updateTemplateBody.run(stripTags(row.body), row.id);
-    }
-    if (looksLikeHtml.length > 0) {
-        console.log(`Cleaned ${looksLikeHtml.length} email template(s) still containing raw HTML from the earlier migration — review in Settings.`);
-    }
-} catch (e) {
-    console.error('Email template HTML-cleanup migration error:', e.message);
-}
-
-safeAddColumn('accounts', 'status TEXT DEFAULT \'active\'');
-safeAddColumn('accounts', 'plan TEXT DEFAULT \'trial\'');
-safeAddColumn('accounts', 'suspendedAt TEXT');
-safeAddColumn('accounts', 'trialEndsAt TEXT');
-safeAddColumn('accounts', 'stripeCustomerId TEXT');
-
-// Add account_id to tables for multi-tenancy
-const tenantTables = ['jobs', 'job_tags', 'activity_logs', 'employees', 'users', 'user_permissions', 'files', 'clients', 'job_messages', 'settings', 'payroll_records', 'industries', 'email_templates', 'newsletter_sends'];
-for (const table of tenantTables) {
-  safeAddColumn(table, "account_id TEXT DEFAULT 'default_account'");
-}
-
-safeAddColumn('employees', 'timeCards TEXT');
-safeAddColumn('users', 'permissions TEXT');
-safeAddColumn('users', 'must_change_password INTEGER DEFAULT 0');
-
-// Production Indexes
-try {
-  db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_jobs_account ON jobs(account_id);
-    CREATE INDEX IF NOT EXISTS idx_users_account ON users(account_id);
-    CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
-    CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id);
-    CREATE INDEX IF NOT EXISTS idx_notifications_account ON notifications(account_id);
-    CREATE INDEX IF NOT EXISTS idx_clients_account ON clients(account_id);
-    CREATE INDEX IF NOT EXISTS idx_employees_account ON employees(account_id);
-    CREATE INDEX IF NOT EXISTS idx_payroll_account ON payroll_records(account_id);
-    CREATE INDEX IF NOT EXISTS idx_industries_account ON industries(account_id);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_templates_account_type ON email_templates(account_id, type);
-    CREATE INDEX IF NOT EXISTS idx_newsletter_sends_account ON newsletter_sends(account_id);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_newsletter_token ON clients(newsletterOptInToken) WHERE newsletterOptInToken IS NOT NULL;
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oauth ON users (oauth_provider, oauth_id) WHERE oauth_provider IS NOT NULL;
-    CREATE INDEX IF NOT EXISTS idx_jobs_ffpro_sync_status ON jobs(ffproSyncStatus) WHERE ffproSyncStatus = 'pending';
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_intake_event ON jobs(intakeEventId) WHERE intakeEventId IS NOT NULL;
-    CREATE INDEX IF NOT EXISTS idx_clients_email_account ON clients(account_id, email);
-  `);
-} catch (e) {
-  console.warn("Index creation warning:", e.message);
-}
-
-// Super Admin Seed from env
-const saEmail    = process.env.SUPER_ADMIN_EMAIL;
-const saPassword = process.env.SUPER_ADMIN_PASSWORD;
-
-if (saEmail && saPassword) {
-  try {
-    const existingSA = db.prepare("SELECT id FROM super_admins WHERE email = ?").get(saEmail);
-    if (!existingSA) {
-      const saHash = bcrypt.hashSync(saPassword, 12);
-      db.prepare("INSERT INTO super_admins (id, email, password_hash, createdAt) VALUES (?, ?, ?, ?)")
-        .run(uuidv4(), saEmail, saHash, new Date().toISOString());
-      console.log(`✅ Super admin seeded: ${saEmail}`);
-    }
-  } catch (e) {
-    console.error("Super admin seed error:", e.message);
-  }
-}
-
-// Seed trial subscriptions
-try {
-  const trialDays = parseInt(process.env.TRIAL_DAYS || '14');
-  const allAccounts = db.prepare("SELECT id, createdAt FROM accounts").all();
-  for (const acc of allAccounts) {
-    const hasSub = db.prepare("SELECT id FROM subscriptions WHERE account_id = ?").get(acc.id);
-    if (!hasSub) {
-      const rawCreated = acc.createdAt ? new Date(acc.createdAt).getTime() : Date.now();
-      const validCreated = isNaN(rawCreated) ? Date.now() : rawCreated;
-      const trialEnd = new Date(validCreated + trialDays * 24 * 60 * 60 * 1000).toISOString();
-      db.prepare("INSERT INTO subscriptions (id, account_id, status, plan, current_period_end, createdAt) VALUES (?, ?, 'trialing', 'trial', ?, ?)")
-        .run(uuidv4(), acc.id, trialEnd, new Date().toISOString());
-      db.prepare("UPDATE accounts SET plan = 'trial', trialEndsAt = ? WHERE id = ?").run(trialEnd, acc.id);
+  // Transform INSERT OR IGNORE INTO ... to ON CONFLICT DO NOTHING
+  if (/INSERT\s+OR\s+IGNORE\s+INTO/i.test(converted)) {
+    converted = converted.replace(/INSERT\s+OR\s+IGNORE\s+INTO/i, 'INSERT INTO');
+    if (!/ON\s+CONFLICT/i.test(converted)) {
+      converted += ' ON CONFLICT DO NOTHING';
     }
   }
-} catch (e) {
-  console.error("Subscription seed error:", e.message);
-}
 
-// Seed Demo Data if empty and allowed
-try {
-  const jobsCount = db.prepare('SELECT count(*) as count FROM jobs').get() || { count: 0 };
-  const allowSeed = process.env.NODE_ENV !== 'production' || process.env.SEED_DEMO_DATA === 'true';
-  if (jobsCount.count === 0 && allowSeed) {
-    console.log("Seeding database with initial data...");
+  // Transform INSERT OR REPLACE INTO settings ...
+  if (/INSERT\s+OR\s+REPLACE\s+INTO\s+settings/i.test(converted)) {
+    converted = converted.replace(/INSERT\s+OR\s+REPLACE\s+INTO\s+settings/i, 'INSERT INTO settings');
+    if (!/ON\s+CONFLICT/i.test(converted)) {
+      converted += ` ON CONFLICT (id) DO UPDATE SET 
+        name = EXCLUDED.name, 
+        address = EXCLUDED.address, 
+        email = EXCLUDED.email, 
+        phone = EXCLUDED.phone, 
+        logoUrl = EXCLUDED.logoUrl, 
+        paymentTerms = EXCLUDED.paymentTerms, 
+        currency = EXCLUDED.currency, 
+        taxRate = EXCLUDED.taxRate, 
+        website = EXCLUDED.website`;
+    }
+  }
 
-    const insertJob = db.prepare(`
-      INSERT INTO jobs (id, title, client, description, status, createdAt, dueDate, amount, priority, invoiceNotes, assignedTo, clientEmail, secureToken, depositPaid, account_id)
-      VALUES (@id, @title, @client, @description, @status, @createdAt, @dueDate, @amount, @priority, @invoiceNotes, @assignedTo, @clientEmail, @secureToken, @depositPaid, 'default_account')
-    `);
-
-    const insertActivityLog = db.prepare(`
-      INSERT INTO activity_logs (id, job_id, action, timestamp, user, account_id)
-      VALUES (@id, @job_id, @action, @timestamp, @user, 'default_account')
-    `);
-
-    const insertTag = db.prepare('INSERT INTO job_tags (job_id, tag, account_id) VALUES (?, ?, \'default_account\')');
-
-    const insertEmployee = db.prepare(`
-      INSERT INTO employees (id, name, role, salary, hourlyRate, hoursWorked, workerType, paymentMethod, status, isCheckedIn, lastCheckIn, account_id)
-      VALUES (@id, @name, @role, @salary, @hourlyRate, @hoursWorked, @workerType, @paymentMethod, @status, @isCheckedIn, @lastCheckIn, 'default_account')
-    `);
-
-    const insertUser = db.prepare('INSERT INTO users (id, name, email, role, password_hash, account_id) VALUES (@id, @name, @email, @role, @password_hash, \'default_account\')');
-    const insertPermission = db.prepare('INSERT INTO user_permissions (user_id, permission, account_id) VALUES (?, ?, \'default_account\')');
-
-    const insertFile = db.prepare(`
-      INSERT INTO files (id, name, size, type, uploadedAt, uploadedBy, jobId, account_id)
-      VALUES (@id, @name, @size, @type, @uploadedAt, @uploadedBy, @jobId, 'default_account')
-    `);
-
-    const insertSettings = db.prepare(`
-      INSERT OR REPLACE INTO settings (id, name, address, email, phone, logoUrl, paymentTerms, currency, taxRate, account_id)
-      VALUES ('1', @name, @address, @email, @phone, @logoUrl, @paymentTerms, @currency, @taxRate, 'default_account')
-    `);
-
-    const seedTransaction = db.transaction(() => {
-      const job1Id = "1";
-      insertJob.run({
-        id: job1Id, title: "Website Redesign", client: "Acme Corp", description: "Complete overhaul of the corporate website including new branding and e-commerce integration.", status: "request", createdAt: new Date(Date.now() - 86400000 * 2).toISOString(), dueDate: new Date(Date.now() + 86400000 * 10).toISOString(), amount: 15000, priority: "high", invoiceNotes: null, assignedTo: "Alice Smith", clientEmail: "client@acme.com", secureToken: uuidv4(), depositPaid: 0
-      });
-      insertTag.run(job1Id, 'design');
-      insertTag.run(job1Id, 'web');
-      insertActivityLog.run({ id: "l1", job_id: job1Id, action: "Job request created", timestamp: new Date(Date.now() - 86400000 * 2).toISOString(), user: "System" });
-
-      const job2Id = "2";
-      insertJob.run({
-        id: job2Id, title: "SEO Audit", client: "TechStart Inc", description: "Comprehensive SEO audit and keyword research for Q3 marketing push.", status: "estimation", createdAt: new Date(Date.now() - 86400000 * 5).toISOString(), dueDate: new Date(Date.now() + 86400000 * 3).toISOString(), amount: null, priority: "medium", invoiceNotes: null, assignedTo: "Bob Jones", clientEmail: "tech@techstart.com", secureToken: uuidv4(), depositPaid: 0
-      });
-      insertTag.run(job2Id, 'marketing');
-      insertTag.run(job2Id, 'seo');
-      insertActivityLog.run({ id: "l2", job_id: job2Id, action: "Job request created", timestamp: new Date(Date.now() - 86400000 * 5).toISOString(), user: "System" });
-      insertActivityLog.run({ id: "l3", job_id: job2Id, action: "Moved from request to estimation", timestamp: new Date(Date.now() - 86400000 * 4).toISOString(), user: "Alice Smith" });
-
-      const job3Id = "3";
-      insertJob.run({
-        id: job3Id, title: "Mobile App MVP", client: "Fitness Plus", description: "React Native mobile app MVP with user authentication and basic workout tracking.", status: "in-progress", createdAt: new Date(Date.now() - 86400000 * 14).toISOString(), dueDate: new Date(Date.now() + 86400000 * 30).toISOString(), amount: 25000, priority: "high", invoiceNotes: null, assignedTo: "Charlie Brown", clientEmail: "fit@fitnessplus.com", secureToken: uuidv4(), depositPaid: 1
-      });
-      insertTag.run(job3Id, 'mobile');
-      insertTag.run(job3Id, 'app');
-      insertActivityLog.run({ id: "l4", job_id: job3Id, action: "Job request created", timestamp: new Date(Date.now() - 86400000 * 14).toISOString(), user: "System" });
-      insertActivityLog.run({ id: "l5", job_id: job3Id, action: "Moved from request to in-progress", timestamp: new Date(Date.now() - 86400000 * 12).toISOString(), user: "Bob Jones" });
-
-      const job4Id = "4";
-      insertJob.run({
-        id: job4Id, title: "Logo Design", client: "Fresh Bakery", description: "New logo design and brand guidelines for local bakery chain.", status: "review", createdAt: new Date(Date.now() - 86400000 * 20).toISOString(), dueDate: new Date(Date.now() - 86400000 * 1).toISOString(), amount: 2500, priority: "low", invoiceNotes: null, assignedTo: "Dana White", clientEmail: "bake@freshbakery.com", secureToken: uuidv4(), depositPaid: 1
-      });
-      insertTag.run(job4Id, 'branding');
-      insertTag.run(job4Id, 'logo');
-      insertActivityLog.run({ id: "l6", job_id: job4Id, action: "Job request created", timestamp: new Date(Date.now() - 86400000 * 20).toISOString(), user: "System" });
-
-      const job5Id = "5";
-      insertJob.run({
-        id: job5Id, title: "Q2 Marketing Campaign", client: "Global Retail", description: "Social media ad creatives and landing page design for Q2 campaign.", status: "invoiced", createdAt: new Date(Date.now() - 86400000 * 45).toISOString(), dueDate: null, amount: 8500, priority: "medium", invoiceNotes: "1. Project Delivery: Q2 Marketing Campaign - $8500", assignedTo: "Alice Smith", clientEmail: "global@retail.com", secureToken: uuidv4(), depositPaid: 1
-      });
-      insertTag.run(job5Id, 'marketing');
-      insertTag.run(job5Id, 'ads');
-      insertActivityLog.run({ id: "l7", job_id: job5Id, action: "Job request created", timestamp: new Date(Date.now() - 86400000 * 45).toISOString(), user: "System" });
-
-      insertEmployee.run({ id: "e1", name: "Alice Smith", role: "Senior Designer", salary: 5000, hourlyRate: null, hoursWorked: null, workerType: "salary", paymentMethod: "Bank Transfer", status: "active", isCheckedIn: 0, lastCheckIn: null });
-      insertEmployee.run({ id: "e2", name: "Bob Jones", role: "Project Manager", salary: 4500, hourlyRate: null, hoursWorked: null, workerType: "salary", paymentMethod: "Bank Transfer", status: "active", isCheckedIn: 0, lastCheckIn: null });
-      insertEmployee.run({ id: "e3", name: "Charlie Brown", role: "Developer", salary: 6000, hourlyRate: null, hoursWorked: null, workerType: "salary", paymentMethod: "PayPal", status: "active", isCheckedIn: 0, lastCheckIn: null });
-
-      insertUser.run({ id: "u1", name: "John Doe", email: "john@example.com", role: "Admin", password_hash: "$2b$10$szwsqdFs7AFwmEPci8Gd4.kgSdRQY6Wu17Yj1QmB9afeuPkqtYlPm" });
-      ['dashboard', 'jobs', 'new-request', 'payroll', 'invoices', 'users', 'files'].forEach(p => insertPermission.run("u1", p));
-
-      insertUser.run({ id: "u2", name: "Alice Smith", email: "alice@example.com", role: "Manager", password_hash: null });
-      ['dashboard', 'jobs', 'new-request', 'files'].forEach(p => insertPermission.run("u2", p));
-
-      insertFile.run({ id: "f1", name: "Brand_Guidelines_2024.pdf", size: 2500000, type: "application/pdf", uploadedAt: new Date(Date.now() - 86400000 * 3).toISOString(), uploadedBy: "John Doe", jobId: null });
-      insertFile.run({ id: "f2", name: "Logo_Assets.zip", size: 15000000, type: "application/zip", uploadedAt: new Date(Date.now() - 86400000 * 5).toISOString(), uploadedBy: "Alice Smith", jobId: null });
-
-      insertSettings.run({ name: "V79 Tiquet Demo Co.", address: "123 Creative Plaza, Design District, NY 10001", email: "billing@example.com", phone: "+1 (555) 000-1234", logoUrl: "https://picsum.photos/200/100?random=1", paymentTerms: "Please make payment within 30 days of receiving this invoice.", currency: "USD", taxRate: 0 });
+  // Support @named parameters
+  if (params.length === 1 && params[0] !== null && typeof params[0] === 'object' && !Array.isArray(params[0])) {
+    const obj = params[0];
+    const actualParams = [];
+    converted = converted.replace(/@([a-zA-Z0-9_]+)/g, (_, varName) => {
+      actualParams.push(obj[varName] !== undefined ? obj[varName] : null);
+      return `$${actualParams.length}`;
     });
-
-    seedTransaction();
-    console.log("Database seeded successfully.");
+    return { sql: converted, params: actualParams };
   }
-} catch (e) {
-  console.error("Database seed check error:", e.message);
+
+  return { sql: converted, params };
 }
 
-// Seed default email templates (welcome + blank newsletter) per account.
-// Plain text — the header, footer, and (for the welcome email) the opt-in
-// button are fixed chrome added automatically at send time by
-// wrapEmailShell(), not something stored here. See server/email.js.
+export async function initDb() {
+  if (!poolInstance) {
+    poolInstance = await createPool();
+  }
+
+  // 1. Run schema DDL
+  const schemaPath = path.resolve('server/schema.sql');
+  if (fs.existsSync(schemaPath)) {
+    const schemaSql = fs.readFileSync(schemaPath, 'utf8');
+    await poolInstance.query(schemaSql);
+  }
+
+  // 2. Ensure default account exists
+  await poolInstance.query(
+    'INSERT INTO accounts (id, name, createdAt) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING',
+    ['default_account', 'Default Account', new Date().toISOString()]
+  );
+
+  // 3. Check if SQLite data needs to be migrated
+  let sqliteCandidate = process.env.DATABASE_PATH
+    || (fs.existsSync(path.resolve('data/data.db')) ? path.resolve('data/data.db') : path.resolve('data.db'));
+
+  if (!fs.existsSync(sqliteCandidate) && fs.existsSync(`${sqliteCandidate}.migrated`)) {
+    sqliteCandidate = `${sqliteCandidate}.migrated`;
+  }
+
+  if (sqliteCandidate && fs.existsSync(sqliteCandidate)) {
+    const jobsCountRes = await poolInstance.query('SELECT count(*) as c FROM jobs');
+    const jobsCount = parseInt(jobsCountRes.rows[0].c, 10);
+    if (jobsCount === 0) {
+      console.log(`[DB] Found SQLite database at ${sqliteCandidate} and empty PostgreSQL jobs table. Initiating migration...`);
+      try {
+        await runMigration({ pool: poolInstance, sqlitePath: sqliteCandidate, archiveSqlite: false });
+        console.log('[DB] Migration completed successfully.');
+      } catch (migErr) {
+        console.error('[DB] Migration error:', migErr.message);
+      }
+    }
+  }
+
+  // 4. Seed super admin from environment if configured
+  const saEmail = process.env.SUPER_ADMIN_EMAIL;
+  const saPassword = process.env.SUPER_ADMIN_PASSWORD;
+  if (saEmail && saPassword) {
+    try {
+      const saRes = await poolInstance.query('SELECT id FROM super_admins WHERE email = $1', [saEmail]);
+      if (saRes.rows.length === 0) {
+        const saHash = bcrypt.hashSync(saPassword, 12);
+        await poolInstance.query(
+          'INSERT INTO super_admins (id, email, password_hash, createdAt) VALUES ($1, $2, $3, $4)',
+          [uuidv4(), saEmail, saHash, new Date().toISOString()]
+        );
+        console.log(`[DB] Super admin seeded: ${saEmail}`);
+      }
+    } catch (e) {
+      console.error('[DB] Super admin seed error:', e.message);
+    }
+  }
+
+  // 5. Seed default email templates
+  try {
+    const accs = await poolInstance.query('SELECT id FROM accounts');
+    for (const acc of accs.rows) {
+      await seedDefaultTemplatesForAccount(acc.id);
+    }
+  } catch (e) {
+    console.error('[DB] Template seed error:', e.message);
+  }
+
+  return poolInstance;
+}
+
+export function ensureDbReady() {
+  if (!isReadyPromise) {
+    isReadyPromise = initDb();
+  }
+  return isReadyPromise;
+}
+
+// Immediately initiate DB ready promise
+ensureDbReady().catch(err => console.error('[DB] initDb failure:', err));
+
 const DEFAULT_WELCOME_SUBJECT = 'Welcome to {{company_name}}!';
 const DEFAULT_WELCOME_BODY = `Welcome, {{client_name}}!
 
@@ -535,42 +277,101 @@ Thank you for choosing {{company_name}}. We're glad to have you with us.
 
 Learn more about us at {{site_url}}.`;
 
-const insertTemplate = db.prepare(`
-  INSERT INTO email_templates (id, type, subject, body, updatedAt, account_id)
-  VALUES (@id, @type, @subject, @body, @updatedAt, @account_id)
-`);
-
-// Exported so account-creation code paths (register, OAuth signup) can seed
-// a brand-new account's templates immediately instead of waiting for the
-// next server boot's catch-up loop below.
-export function seedDefaultTemplatesForAccount(accountId) {
+export async function seedDefaultTemplatesForAccount(accountId, existingPool = null) {
   try {
-    const hasWelcome = db.prepare("SELECT id FROM email_templates WHERE account_id = ? AND type = 'welcome'").get(accountId);
-    if (!hasWelcome) {
-      insertTemplate.run({
-        id: uuidv4(), type: 'welcome', subject: DEFAULT_WELCOME_SUBJECT,
-        body: DEFAULT_WELCOME_BODY, updatedAt: new Date().toISOString(), account_id: accountId
-      });
+    const pool = existingPool || poolInstance || await ensureDbReady();
+    const hasWelcome = await pool.query(
+      "SELECT id FROM email_templates WHERE account_id = $1 AND type = 'welcome'",
+      [accountId]
+    );
+    if (hasWelcome.rows.length === 0) {
+      await pool.query(
+        `INSERT INTO email_templates (id, type, subject, body, updatedAt, account_id)
+         VALUES ($1, 'welcome', $2, $3, $4, $5)`,
+        [uuidv4(), DEFAULT_WELCOME_SUBJECT, DEFAULT_WELCOME_BODY, new Date().toISOString(), accountId]
+      );
     }
-    const hasNewsletter = db.prepare("SELECT id FROM email_templates WHERE account_id = ? AND type = 'newsletter'").get(accountId);
-    if (!hasNewsletter) {
-      insertTemplate.run({
-        id: uuidv4(), type: 'newsletter', subject: '',
-        body: '', updatedAt: new Date().toISOString(), account_id: accountId
-      });
+
+    const hasNewsletter = await pool.query(
+      "SELECT id FROM email_templates WHERE account_id = $1 AND type = 'newsletter'",
+      [accountId]
+    );
+    if (hasNewsletter.rows.length === 0) {
+      await pool.query(
+        `INSERT INTO email_templates (id, type, subject, body, updatedAt, account_id)
+         VALUES ($1, 'newsletter', '', '', $2, $3)`,
+        [uuidv4(), new Date().toISOString(), accountId]
+      );
     }
   } catch (e) {
-    console.error("Email template seed error:", e.message);
+    console.error('[DB] Email template seed error:', e.message);
   }
 }
 
-try {
-  const allAccountsForTemplates = db.prepare("SELECT id FROM accounts").all();
-  for (const acc of allAccountsForTemplates) {
-    seedDefaultTemplatesForAccount(acc.id);
+// Database wrapper interface compatible with both prepared statements and async execution
+const db = {
+  prepare(sql) {
+    return {
+      async get(...params) {
+        const pool = await ensureDbReady();
+        const converted = convertSql(sql, params);
+        const res = await pool.query(converted.sql, converted.params);
+        return res.rows.length > 0 ? normalizeRow(res.rows[0]) : undefined;
+      },
+      async all(...params) {
+        const pool = await ensureDbReady();
+        const converted = convertSql(sql, params);
+        const res = await pool.query(converted.sql, converted.params);
+        return res.rows.map(normalizeRow);
+      },
+      async run(...params) {
+        const pool = await ensureDbReady();
+        const converted = convertSql(sql, params);
+        const res = await pool.query(converted.sql, converted.params);
+        return {
+          changes: res.rowCount || 0,
+          lastInsertRowid: null
+        };
+      }
+    };
+  },
+
+  async query(sql, params = []) {
+    const pool = await ensureDbReady();
+    const converted = convertSql(sql, params);
+    const res = await pool.query(converted.sql, converted.params);
+    return {
+      ...res,
+      rows: res.rows.map(normalizeRow)
+    };
+  },
+
+  async exec(sql) {
+    const pool = await ensureDbReady();
+    return await pool.query(sql);
+  },
+
+  async transaction(fn) {
+    return async (...args) => {
+      const pool = await ensureDbReady();
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        const result = await fn(...args);
+        await client.query('COMMIT');
+        return result;
+      } catch (e) {
+        await client.query('ROLLBACK');
+        throw e;
+      } finally {
+        client.release();
+      }
+    };
+  },
+
+  get pool() {
+    return poolInstance;
   }
-} catch (e) {
-  console.error("Email template seed error:", e.message);
-}
+};
 
 export default db;

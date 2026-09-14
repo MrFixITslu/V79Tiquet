@@ -53,22 +53,22 @@ function safeStr(val, max = 255) {
  *
  * @returns {object} users row
  */
-function findOrCreateOAuthUser(provider, oauthId, email, displayName) {
+async function findOrCreateOAuthUser(provider, oauthId, email, displayName) {
     const safeProvider = safeStr(provider, 20);
     const safeOauthId  = safeStr(oauthId,  255);
     const safeEmail    = safeStr(email,     254).toLowerCase();
     const safeName     = safeStr(displayName, 100) || safeEmail.split('@')[0];
 
     // 1 — Match by existing OAuth identity (returning user)
-    const byOauth = db
+    const byOauth = await db
         .prepare("SELECT * FROM users WHERE oauth_provider = ? AND oauth_id = ?")
         .get(safeProvider, safeOauthId);
     if (byOauth) return byOauth;
 
     // 2 — Match by email: link OAuth to an existing password account
-    const byEmail = db.prepare("SELECT * FROM users WHERE email = ?").get(safeEmail);
+    const byEmail = await db.prepare("SELECT * FROM users WHERE email = ?").get(safeEmail);
     if (byEmail) {
-        db.prepare("UPDATE users SET oauth_provider = ?, oauth_id = ? WHERE id = ?")
+        await db.prepare("UPDATE users SET oauth_provider = ?, oauth_id = ? WHERE id = ?")
           .run(safeProvider, safeOauthId, byEmail.id);
         return { ...byEmail, oauth_provider: safeProvider, oauth_id: safeOauthId };
     }
@@ -79,28 +79,26 @@ function findOrCreateOAuthUser(provider, oauthId, email, displayName) {
     const companyName = `${safeName}'s Workspace`;
     const now         = new Date().toISOString();
 
-    db.transaction(() => {
-        db.prepare("INSERT INTO accounts (id, name, createdAt) VALUES (?, ?, ?)")
-          .run(accountId, companyName, now);
-        db.prepare(
-            "INSERT INTO users (id, name, email, role, oauth_provider, oauth_id, account_id, failed_login_attempts) " +
-            "VALUES (?, ?, ?, 'Admin', ?, ?, ?, 0)"
-        ).run(userId, safeName, safeEmail, safeProvider, safeOauthId, accountId);
-        db.prepare("INSERT INTO settings (id, name, email, account_id) VALUES (?, ?, ?, ?)")
-          .run(uuidv4(), companyName, safeEmail, accountId);
-    })();
+    await db.prepare("INSERT INTO accounts (id, name, createdAt) VALUES (?, ?, ?)")
+      .run(accountId, companyName, now);
+    await db.prepare(
+        "INSERT INTO users (id, name, email, role, oauth_provider, oauth_id, account_id, failed_login_attempts) " +
+        "VALUES (?, ?, ?, 'Admin', ?, ?, ?, 0)"
+    ).run(userId, safeName, safeEmail, safeProvider, safeOauthId, accountId);
+    await db.prepare("INSERT INTO settings (id, name, email, account_id) VALUES (?, ?, ?, ?)")
+      .run(uuidv4(), companyName, safeEmail, accountId);
 
-    seedDefaultTemplatesForAccount(accountId);
+    await seedDefaultTemplatesForAccount(accountId);
 
     logger.audit('oauth_user_created', { provider: safeProvider, userId, email: safeEmail, accountId });
-    return db.prepare("SELECT * FROM users WHERE id = ?").get(userId);
+    return await db.prepare("SELECT * FROM users WHERE id = ?").get(userId);
 }
 
 /**
  * Check account suspension, mint a JWT, return the standard auth payload.
  */
-function buildAuthResponse(user) {
-    const account = db.prepare("SELECT status FROM accounts WHERE id = ?").get(user.account_id);
+async function buildAuthResponse(user) {
+    const account = await db.prepare("SELECT status FROM accounts WHERE id = ?").get(user.account_id);
     if (account?.status === 'suspended') {
         return { suspended: true };
     }
@@ -154,8 +152,8 @@ export function registerOAuthRoutes(app) {
                 return res.status(400).json({ error: 'No email address returned from Google' });
             }
 
-            const user   = findOrCreateOAuthUser('google', googleId, email, name);
-            const result = buildAuthResponse(user);
+            const user   = await findOrCreateOAuthUser('google', googleId, email, name);
+            const result = await buildAuthResponse(user);
 
             if (result.suspended) {
                 return res.status(402).json({ error: 'ACCOUNT_SUSPENDED', message: 'Account suspended. Contact support.' });
@@ -217,8 +215,8 @@ export function registerOAuthRoutes(app) {
             // Apple private relay: sub@privaterelay.appleid.com as fallback
             const resolvedEmail = email || `${appleId}@privaterelay.appleid.com`;
 
-            const user   = findOrCreateOAuthUser('apple', appleId, resolvedEmail, displayName);
-            const result = buildAuthResponse(user);
+            const user   = await findOrCreateOAuthUser('apple', appleId, resolvedEmail, displayName);
+            const result = await buildAuthResponse(user);
 
             if (result.suspended) {
                 return res.redirect(`${APP_BASE_URL}/?oauth_error=suspended`);
@@ -295,8 +293,8 @@ export function registerOAuthRoutes(app) {
                 return res.status(400).json({ error: 'No email address returned from Facebook' });
             }
 
-            const user   = findOrCreateOAuthUser('facebook', fbId, email, name);
-            const result = buildAuthResponse(user);
+            const user   = await findOrCreateOAuthUser('facebook', fbId, email, name);
+            const result = await buildAuthResponse(user);
 
             if (result.suspended) {
                 return res.status(402).json({ error: 'ACCOUNT_SUSPENDED', message: 'Account suspended. Contact support.' });

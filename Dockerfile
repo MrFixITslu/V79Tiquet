@@ -43,6 +43,7 @@ RUN apk add --no-cache python3 make g++ && \
     rm -rf /root/.npm /root/.node-gyp
 
 COPY server/ ./server/
+COPY scripts/ ./scripts/
 COPY --from=builder /app/dist ./dist
 
 # Runtime volumes (mounted by docker-compose): /app/data holds the SQLite

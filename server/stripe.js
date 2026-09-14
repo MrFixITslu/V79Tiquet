@@ -33,10 +33,10 @@ export function registerStripeRoutes(app, authenticateToken) {
 
   // ── GET /api/stripe/subscription-status ──────────────────────────────────
   // Auth: return current tenant's subscription
-  app.get('/api/stripe/subscription-status', authenticateToken, (req, res) => {
+  app.get('/api/stripe/subscription-status', authenticateToken, async (req, res) => {
     try {
-      const sub = db.prepare("SELECT * FROM subscriptions WHERE account_id = ? ORDER BY createdAt DESC LIMIT 1").get(req.accountId);
-      const account = db.prepare("SELECT status, plan, trialEndsAt FROM accounts WHERE id = ?").get(req.accountId);
+      const sub = await db.prepare("SELECT * FROM subscriptions WHERE account_id = ? ORDER BY createdAt DESC LIMIT 1").get(req.accountId);
+      const account = await db.prepare("SELECT status, plan, trialEndsAt FROM accounts WHERE id = ?").get(req.accountId);
       if (!sub) return res.json({ status: 'none', plan: 'trial' });
 
       const daysLeft = sub.current_period_end
@@ -81,7 +81,7 @@ export function registerStripeRoutes(app, authenticateToken) {
 
   // ── POST /api/stripe/simulate-subscribe ───────────────────────────────────
   // Simulated: directly activate a subscription for the tenant (replaces webhook)
-  app.post('/api/stripe/simulate-subscribe', authenticateToken, (req, res) => {
+  app.post('/api/stripe/simulate-subscribe', authenticateToken, async (req, res) => {
     const { plan } = req.body;
     if (!PLANS[plan]) return res.status(400).json({ error: 'Invalid plan' });
 
@@ -91,24 +91,24 @@ export function registerStripeRoutes(app, authenticateToken) {
       const fakeCustId = `sim_cus_${uuidv4().replace(/-/g, '').slice(0, 14)}`;
 
       // Upsert subscription record
-      const existing = db.prepare("SELECT id FROM subscriptions WHERE account_id = ?").get(req.accountId);
+      const existing = await db.prepare("SELECT id FROM subscriptions WHERE account_id = ?").get(req.accountId);
       if (existing) {
-        db.prepare(`
+        await db.prepare(`
           UPDATE subscriptions 
           SET stripe_subscription_id = ?, stripe_customer_id = ?, status = 'active', plan = ?, current_period_end = ?, canceled_at = NULL
           WHERE account_id = ?
         `).run(fakeSubId, fakeCustId, plan, periodEnd, req.accountId);
       } else {
-        db.prepare(`
+        await db.prepare(`
           INSERT INTO subscriptions (id, account_id, stripe_subscription_id, stripe_customer_id, status, plan, current_period_end, createdAt)
           VALUES (?, ?, ?, ?, 'active', ?, ?, ?)
         `).run(uuidv4(), req.accountId, fakeSubId, fakeCustId, plan, periodEnd, new Date().toISOString());
       }
 
       // Update account plan
-      db.prepare("UPDATE accounts SET plan = ?, stripeCustomerId = ? WHERE id = ?").run(plan, fakeCustId, req.accountId);
+      await db.prepare("UPDATE accounts SET plan = ?, stripeCustomerId = ? WHERE id = ?").run(plan, fakeCustId, req.accountId);
 
-      const sub = db.prepare("SELECT * FROM subscriptions WHERE account_id = ?").get(req.accountId);
+      const sub = await db.prepare("SELECT * FROM subscriptions WHERE account_id = ?").get(req.accountId);
       res.json({ success: true, subscription: sub, planDetails: PLANS[plan] });
     } catch (e) {
       res.status(500).json({ error: errMsg(e) });
@@ -117,15 +117,15 @@ export function registerStripeRoutes(app, authenticateToken) {
 
   // ── POST /api/stripe/cancel-subscription ─────────────────────────────────
   // Auth: cancel at period end (simulated)
-  app.post('/api/stripe/cancel-subscription', authenticateToken, (req, res) => {
+  app.post('/api/stripe/cancel-subscription', authenticateToken, async (req, res) => {
     try {
-      const sub = db.prepare("SELECT * FROM subscriptions WHERE account_id = ?").get(req.accountId);
+      const sub = await db.prepare("SELECT * FROM subscriptions WHERE account_id = ?").get(req.accountId);
       if (!sub) return res.status(404).json({ error: 'No active subscription found' });
 
       // Simulated: mark as canceled (would call stripe.subscriptions.update with cancel_at_period_end)
-      db.prepare("UPDATE subscriptions SET status = 'canceled', canceled_at = ? WHERE account_id = ?")
+      await db.prepare("UPDATE subscriptions SET status = 'canceled', canceled_at = ? WHERE account_id = ?")
         .run(new Date().toISOString(), req.accountId);
-      db.prepare("UPDATE accounts SET plan = 'trial' WHERE id = ?").run(req.accountId);
+      await db.prepare("UPDATE accounts SET plan = 'trial' WHERE id = ?").run(req.accountId);
 
       res.json({ success: true, message: 'Subscription canceled. Access continues until period end.' });
     } catch (e) {

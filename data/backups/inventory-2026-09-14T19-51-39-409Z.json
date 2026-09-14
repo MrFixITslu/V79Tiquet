@@ -1,0 +1,31 @@
+{
+  "timestamp": "2026-09-14T19-51-39-409Z",
+  "source_db_path": "/app/applet/data.db",
+  "db_backup_path": "/app/applet/data/backups/tiquet-db-backup-2026-09-14T19-51-39-409Z.db",
+  "db_backup_integrity": "ok",
+  "uploads_backup_path": "/app/applet/data/backups/uploads-backup-2026-09-14T19-51-39-409Z.tar.gz",
+  "uploads_file_count": 18,
+  "uploads_bytes": 6606,
+  "row_counts": {
+    "jobs": 5,
+    "job_tags": 10,
+    "activity_logs": 7,
+    "employees": 3,
+    "users": 4,
+    "user_permissions": 11,
+    "files": 2,
+    "settings": 3,
+    "clients": 1,
+    "industries": 0,
+    "email_templates": 6,
+    "newsletter_sends": 0,
+    "payroll_records": 0,
+    "job_messages": 0,
+    "notifications": 0,
+    "accounts": 3,
+    "subscriptions": 1,
+    "super_admins": 0
+  },
+  "data_quality_issues": {},
+  "issue_count": 0
+}

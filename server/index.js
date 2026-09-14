@@ -24,20 +24,9 @@ import { registerStripeRoutes } from "./stripe.js";
 import { registerHealthCheck } from "./healthcheck.js";
 import { sendPaidEvent, generateEventId } from "./gatewayClient.js";
 import { logger } from "./logger.js";
-import { 
-    sanitizeString, 
-    sanitizeObject, 
-    isValidEmail, 
-    isValidUUID, 
-    isNonEmptyString,
-    secureFilePath,
-    validatePassword,
-    badRequest 
-} from "./security.js";
-
+import { sanitizeString, sanitizeObject, isValidEmail, isValidUUID, isNonEmptyString, secureFilePath, validatePassword, badRequest } from "./security.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
 const app = express();
 
 // This app always sits behind a reverse proxy (Nginx Proxy Manager) in
@@ -51,10 +40,7 @@ const app = express();
 app.set('trust proxy', 1);
 const isProduction = process.env.NODE_ENV === "production";
 const PRIMARY_PORT = 3000;
-const SECONDARY_PORT = (process.env.PORT && parseInt(process.env.PORT, 10) !== 3000 && parseInt(process.env.PORT, 10) !== 8080)
-    ? parseInt(process.env.PORT, 10)
-    : 3050;
-
+const SECONDARY_PORT = process.env.PORT && parseInt(process.env.PORT, 10) !== 3000 && parseInt(process.env.PORT, 10) !== 8080 ? parseInt(process.env.PORT, 10) : 3050;
 registerHealthCheck(app);
 
 // JWT secrets: strongly prefer an explicit JWT_SECRET / SUPER_ADMIN_JWT_SECRET
@@ -66,36 +52,29 @@ registerHealthCheck(app);
 // same Docker volume, so it survives restarts/redeploys) so sessions stay
 // valid across restarts even if the operator forgot to set one explicitly.
 function loadOrCreatePersistedSecret(envValue, filename, label) {
-    if (envValue) return envValue;
-
-    const secretPath = path.join(dbDir, filename);
-    try {
-        if (fs.existsSync(secretPath)) {
-            return fs.readFileSync(secretPath, "utf8").trim();
-        }
-        const generated = crypto.randomBytes(64).toString("hex");
-        fs.writeFileSync(secretPath, generated, { mode: 0o600 });
-        console.warn(
-            `[WARN] ${label} was not set — generated and persisted a random one at ${secretPath}. ` +
-            `Set ${label} explicitly in your .env for a fully reproducible deploy (see env.example).`
-        );
-        return generated;
-    } catch (e) {
-        // If we can't even persist a generated secret (e.g. read-only volume),
-        // that's a real configuration problem worth failing loudly on rather
-        // than silently issuing a secret that changes every restart and logs
-        // everyone out.
-        console.error(`[FATAL] ${label} not set and could not persist a generated one at ${secretPath}: ${e.message}`);
-        process.exit(1);
+  if (envValue) return envValue;
+  const secretPath = path.join(dbDir, filename);
+  try {
+    if (fs.existsSync(secretPath)) {
+      return fs.readFileSync(secretPath, "utf8").trim();
     }
+    const generated = crypto.randomBytes(64).toString("hex");
+    fs.writeFileSync(secretPath, generated, {
+      mode: 0o600
+    });
+    console.warn(`[WARN] ${label} was not set — generated and persisted a random one at ${secretPath}. ` + `Set ${label} explicitly in your .env for a fully reproducible deploy (see env.example).`);
+    return generated;
+  } catch (e) {
+    // If we can't even persist a generated secret (e.g. read-only volume),
+    // that's a real configuration problem worth failing loudly on rather
+    // than silently issuing a secret that changes every restart and logs
+    // everyone out.
+    console.error(`[FATAL] ${label} not set and could not persist a generated one at ${secretPath}: ${e.message}`);
+    process.exit(1);
+  }
 }
-
-const JWT_SECRET = isProduction
-    ? loadOrCreatePersistedSecret(process.env.JWT_SECRET, ".jwt_secret", "JWT_SECRET")
-    : (process.env.JWT_SECRET || 'dev_jwt_secret_v79_tickit');
-const SA_JWT_SECRET = isProduction
-    ? loadOrCreatePersistedSecret(process.env.SUPER_ADMIN_JWT_SECRET, ".sa_jwt_secret", "SUPER_ADMIN_JWT_SECRET")
-    : (process.env.SUPER_ADMIN_JWT_SECRET || 'dev_sa_jwt_secret_v79_tickit');
+const JWT_SECRET = isProduction ? loadOrCreatePersistedSecret(process.env.JWT_SECRET, ".jwt_secret", "JWT_SECRET") : process.env.JWT_SECRET || 'dev_jwt_secret_v79_tickit';
+const SA_JWT_SECRET = isProduction ? loadOrCreatePersistedSecret(process.env.SUPER_ADMIN_JWT_SECRET, ".sa_jwt_secret", "SUPER_ADMIN_JWT_SECRET") : process.env.SUPER_ADMIN_JWT_SECRET || 'dev_sa_jwt_secret_v79_tickit';
 
 // ── Real-time chat: WebSocket job-room registry ───────────────────────────
 // Maps jobId -> Set of live ws connections subscribed to that job's chat.
@@ -103,100 +82,104 @@ const SA_JWT_SECRET = isProduction
 // file (after both http.createServer and WebSocketServer exist), but the
 // helpers live here so the REST message routes above can call them.
 const jobSubscribers = new Map();
-
 function subscribeToJob(jobId, ws) {
-    if (!jobSubscribers.has(jobId)) jobSubscribers.set(jobId, new Set());
-    jobSubscribers.get(jobId).add(ws);
+  if (!jobSubscribers.has(jobId)) jobSubscribers.set(jobId, new Set());
+  jobSubscribers.get(jobId).add(ws);
 }
-
 function unsubscribeFromJob(jobId, ws) {
-    const set = jobSubscribers.get(jobId);
-    if (!set) return;
-    set.delete(ws);
-    if (set.size === 0) jobSubscribers.delete(jobId);
+  const set = jobSubscribers.get(jobId);
+  if (!set) return;
+  set.delete(ws);
+  if (set.size === 0) jobSubscribers.delete(jobId);
 }
-
 function broadcastToJob(jobId, payload) {
-    const set = jobSubscribers.get(jobId);
-    if (!set || set.size === 0) return;
-    const data = JSON.stringify(payload);
-    for (const client of set) {
-        if (client.readyState === client.OPEN) {
-            client.send(data);
-        }
+  const set = jobSubscribers.get(jobId);
+  if (!set || set.size === 0) return;
+  const data = JSON.stringify(payload);
+  for (const client of set) {
+    if (client.readyState === client.OPEN) {
+      client.send(data);
     }
+  }
 }
 
 // ── Security Middleware ───────────────────────────────────────────────────
 
 app.use(helmet({
-    frameguard: false,
-    contentSecurityPolicy: false,
+  frameguard: false,
+  contentSecurityPolicy: false
 }));
-
 app.use(compression());
 
 // Lockdown CORS to allowlist in production
-const allowedOrigins = process.env.ALLOWED_ORIGINS 
-    ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim())
-    : ['http://localhost:3000', 'http://127.0.0.1:3000'];
-
+const allowedOrigins = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim()) : ['http://localhost:3000', 'http://127.0.0.1:3000'];
 app.use(cors({
-    origin: (origin, callback) => {
-        if (!origin || allowedOrigins.includes(origin) || !isProduction) {
-            callback(null, true);
-        } else {
-            logger.warn(`CORS blocked request from origin: ${origin}`);
-            callback(new Error('Not allowed by CORS'));
-        }
-    },
-    credentials: true
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin) || !isProduction) {
+      callback(null, true);
+    } else {
+      logger.warn(`CORS blocked request from origin: ${origin}`);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true
 }));
-
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({
+  limit: '1mb'
+}));
 
 // ── Authentication Middleware (declared early — used before rate-limiter setup) ─
 
 const authenticateToken = (req, res, next) => {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
-    if (token == null) return res.status(401).json({ error: "Unauthorized" });
-
-    jwt.verify(token, JWT_SECRET, (err, user) => {
-        if (err) return res.status(403).json({ error: "Forbidden" });
-        req.user = user;
-        req.accountId = user.account_id;
-
-        // ─── Suspension Check ─────────────────────────────────────────────
-        try {
-            const account = db.prepare("SELECT status FROM accounts WHERE id = ?").get(user.account_id);
-            if (account && account.status === 'suspended') {
-                return res.status(402).json({ error: "ACCOUNT_SUSPENDED", message: "This account has been suspended. Please contact support." });
-            }
-        } catch (e) {
-            // Non-fatal: continue if accounts table check fails
-        }
-
-        next();
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+  if (token == null) return res.status(401).json({
+    error: "Unauthorized"
+  });
+  jwt.verify(token, JWT_SECRET, async (err, user) => {
+    if (err) return res.status(403).json({
+      error: "Forbidden"
     });
+    req.user = user;
+    req.accountId = user.account_id;
+
+    // ─── Suspension Check ─────────────────────────────────────────────
+    try {
+      const account = await db.prepare("SELECT status FROM accounts WHERE id = ?").get(user.account_id);
+      if (account && account.status === 'suspended') {
+        return res.status(402).json({
+          error: "ACCOUNT_SUSPENDED",
+          message: "This account has been suspended. Please contact support."
+        });
+      }
+    } catch (e) {
+      // Non-fatal: continue if accounts table check fails
+    }
+    next();
+  });
 };
 
 // --- Super Admin Middleware ---
 const superAdminMiddleware = (req, res, next) => {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
-    if (!token) return res.status(401).json({ error: "Unauthorized" });
-
-    jwt.verify(token, SA_JWT_SECRET, (err, decoded) => {
-        if (err || !decoded.isSuperAdmin) return res.status(403).json({ error: "Forbidden: Super Admin access required" });
-        req.superAdmin = decoded;
-        next();
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+  if (!token) return res.status(401).json({
+    error: "Unauthorized"
+  });
+  jwt.verify(token, SA_JWT_SECRET, (err, decoded) => {
+    if (err || !decoded.isSuperAdmin) return res.status(403).json({
+      error: "Forbidden: Super Admin access required"
     });
+    req.superAdmin = decoded;
+    next();
+  });
 };
 
 // --- FILE REPOSITORY SETUP ---
 const UPLOADS_ROOT = path.join(__dirname, '..', 'uploads');
-if (!fs.existsSync(UPLOADS_ROOT)) fs.mkdirSync(UPLOADS_ROOT, { recursive: true });
+if (!fs.existsSync(UPLOADS_ROOT)) fs.mkdirSync(UPLOADS_ROOT, {
+  recursive: true
+});
 
 // Business logos are a deliberate, narrow exception to "no unauthenticated
 // static file serving": a logo has to render in a plain <img> tag (which
@@ -206,11 +189,13 @@ if (!fs.existsSync(UPLOADS_ROOT)) fs.mkdirSync(UPLOADS_ROOT, { recursive: true }
 // filename whitelist so this exception can't be leveraged to reach anything
 // else under UPLOADS_ROOT.
 const PUBLIC_LOGOS_DIR = path.join(UPLOADS_ROOT, 'public-logos');
-if (!fs.existsSync(PUBLIC_LOGOS_DIR)) fs.mkdirSync(PUBLIC_LOGOS_DIR, { recursive: true });
+if (!fs.existsSync(PUBLIC_LOGOS_DIR)) fs.mkdirSync(PUBLIC_LOGOS_DIR, {
+  recursive: true
+});
 
 // Serve uploaded files statically ONLY IN DEVELOPMENT
 if (!isProduction) {
-    app.use('/uploads', express.static(UPLOADS_ROOT));
+  app.use('/uploads', express.static(UPLOADS_ROOT));
 }
 
 /**
@@ -218,240 +203,317 @@ if (!isProduction) {
  * All file access in production must go through this authenticated route.
  */
 app.get('/api/files/:accountId/*', authenticateToken, (req, res) => {
-    const { accountId } = req.params;
-    const relativePath = req.params[0];
+  const {
+    accountId
+  } = req.params;
+  const relativePath = req.params[0];
 
-    // Auth parity check: token must match requested account's files
-    if (req.accountId !== accountId) {
-        logger.audit('file_access_denied', { 
-            userId: req.user.id, 
-            requestedAccountId: accountId, 
-            actualAccountId: req.accountId 
-        });
-        return res.status(403).json({ error: "Access denied to this account's files" });
-    }
+  // Auth parity check: token must match requested account's files
+  if (req.accountId !== accountId) {
+    logger.audit('file_access_denied', {
+      userId: req.user.id,
+      requestedAccountId: accountId,
+      actualAccountId: req.accountId
+    });
+    return res.status(403).json({
+      error: "Access denied to this account's files"
+    });
+  }
+  const safePath = secureFilePath(UPLOADS_ROOT, accountId, path.join(accountId, relativePath));
+  if (!safePath || !fs.existsSync(safePath)) {
+    return res.status(404).json({
+      error: "File not found"
+    });
+  }
 
-    const safePath = secureFilePath(UPLOADS_ROOT, accountId, path.join(accountId, relativePath));
-    if (!safePath || !fs.existsSync(safePath)) {
-        return res.status(404).json({ error: "File not found" });
-    }
-
-    // Security: Only allow safe file types to be served
-    const ext = path.extname(safePath).toLowerCase();
-    const ALLOWED_EXTS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.csv', '.ppt', '.pptx', '.json', '.txt', '.zip', '.mp4', '.mov'];
-    if (!ALLOWED_EXTS.includes(ext)) {
-        return res.status(403).json({ error: "File type not permitted" });
-    }
-
-    res.sendFile(safePath);
+  // Security: Only allow safe file types to be served
+  const ext = path.extname(safePath).toLowerCase();
+  const ALLOWED_EXTS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.csv', '.ppt', '.pptx', '.json', '.txt', '.zip', '.mp4', '.mov'];
+  if (!ALLOWED_EXTS.includes(ext)) {
+    return res.status(403).json({
+      error: "File type not permitted"
+    });
+  }
+  res.sendFile(safePath);
 });
 
 /**
  * Sanitize a string for use as a folder or file name component.
  */
-const sanitizeForPath = (str) => (str || 'unknown').replace(/[^a-zA-Z0-9_\-. ]/g, '_').trim().slice(0, 60);
+const sanitizeForPath = str => (str || 'unknown').replace(/[^a-zA-Z0-9_\-. ]/g, '_').trim().slice(0, 60);
 
 /**
  * Get the absolute path to a job's dedicated folder.
  * Pattern: uploads/<AccountId>/<ClientName>/<JobId>/
  */
 const getJobFolder = (accountId, clientName, jobId) => {
-    return path.join(UPLOADS_ROOT, sanitizeForPath(accountId), sanitizeForPath(clientName), jobId);
+  return path.join(UPLOADS_ROOT, sanitizeForPath(accountId), sanitizeForPath(clientName), jobId);
 };
 
 /**
  * Ensure the job's folder exists. Returns the folder path.
  */
 const ensureJobFolder = (accountId, clientName, jobId) => {
-    const folder = getJobFolder(accountId, clientName, jobId);
-    if (!fs.existsSync(folder)) fs.mkdirSync(folder, { recursive: true });
-    return folder;
+  const folder = getJobFolder(accountId, clientName, jobId);
+  if (!fs.existsSync(folder)) fs.mkdirSync(folder, {
+    recursive: true
+  });
+  return folder;
 };
 
 /**
  * Append an entry to the project's audit log (project-log.json inside the job folder).
  */
 const appendProjectLog = (accountId, clientName, jobId, entry) => {
-    try {
-        const folder = ensureJobFolder(accountId, clientName, jobId);
-        const logPath = path.join(folder, 'project-log.json');
-        let log = [];
-        if (fs.existsSync(logPath)) {
-            log = JSON.parse(fs.readFileSync(logPath, 'utf8'));
-        }
-        log.push({ ...entry, timestamp: new Date().toISOString() });
-        fs.writeFileSync(logPath, JSON.stringify(log, null, 2));
-    } catch(e) {
-        console.error('Log write error:', e.message);
+  try {
+    const folder = ensureJobFolder(accountId, clientName, jobId);
+    const logPath = path.join(folder, 'project-log.json');
+    let log = [];
+    if (fs.existsSync(logPath)) {
+      log = JSON.parse(fs.readFileSync(logPath, 'utf8'));
     }
+    log.push({
+      ...entry,
+      timestamp: new Date().toISOString()
+    });
+    fs.writeFileSync(logPath, JSON.stringify(log, null, 2));
+  } catch (e) {
+    console.error('Log write error:', e.message);
+  }
 };
 
 /**
  * Save/update the quote snapshot JSON inside the job folder.
  */
 const saveQuoteSnapshot = (accountId, clientName, jobId, jobData) => {
-    try {
-        const folder = ensureJobFolder(accountId, clientName, jobId);
-        fs.writeFileSync(path.join(folder, 'quote.json'), JSON.stringify(jobData, null, 2));
-    } catch(e) {
-        console.error('Quote snapshot error:', e.message);
-    }
+  try {
+    const folder = ensureJobFolder(accountId, clientName, jobId);
+    fs.writeFileSync(path.join(folder, 'quote.json'), JSON.stringify(jobData, null, 2));
+  } catch (e) {
+    console.error('Quote snapshot error:', e.message);
+  }
 };
-
 const apiLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000, 
-    max: 200, 
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: { error: "Too many requests from this IP, please try again after 15 minutes." }
+  windowMs: 15 * 60 * 1000,
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: "Too many requests from this IP, please try again after 15 minutes."
+  }
 });
-
 const authLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 15, // Stricter for auth
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: { error: "Too many login attempts, please try again after 15 minutes." }
+  windowMs: 15 * 60 * 1000,
+  max: 15,
+  // Stricter for auth
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: "Too many login attempts, please try again after 15 minutes."
+  }
 });
-
 const uploadLimiter = rateLimit({
-    windowMs: 15 * 60 * 1000,
-    max: 30, // 30 uploads per 15 mins
-    standardHeaders: true,
-    legacyHeaders: false,
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  // 30 uploads per 15 mins
+  standardHeaders: true,
+  legacyHeaders: false
 });
-
 app.use("/api/auth", authLimiter);
 app.use("/api/", apiLimiter);
 
 // --- AUTHENTICATION ROUTES ---
-registerOAuthRoutes(app);  // Google + Apple OAuth
+registerOAuthRoutes(app); // Google + Apple OAuth
 
 app.post("/api/auth/register", async (req, res) => {
-    const { name, email, password, companyName } = sanitizeObject(req.body);
-    if (!name || !email || !password || !companyName) {
-        return badRequest(res, "All fields are required");
-    }
+  const {
+    name,
+    email,
+    password,
+    companyName
+  } = sanitizeObject(req.body);
+  if (!name || !email || !password || !companyName) {
+    return badRequest(res, "All fields are required");
+  }
+  if (!isValidEmail(email)) return badRequest(res, "Invalid email format");
+  const pwError = validatePassword(password);
+  if (pwError) return badRequest(res, pwError);
+  try {
+    const existingUser = await db.prepare("SELECT * FROM users WHERE email = ?").get(email);
+    if (existingUser) return badRequest(res, "Email already exists");
+    const accountId = uuidv4();
+    const userId = uuidv4();
+    const hashedPassword = await bcrypt.hash(password, 12); // Increased rounds for production
 
-    if (!isValidEmail(email)) return badRequest(res, "Invalid email format");
-    
-    const pwError = validatePassword(password);
-    if (pwError) return badRequest(res, pwError);
-
-    try {
-        const existingUser = db.prepare("SELECT * FROM users WHERE email = ?").get(email);
-        if (existingUser) return badRequest(res, "Email already exists");
-
-        const accountId = uuidv4();
-        const userId = uuidv4();
-        const hashedPassword = await bcrypt.hash(password, 12); // Increased rounds for production
-        
-        const registerTx = db.transaction(() => {
-            db.prepare("INSERT INTO accounts (id, name, createdAt) VALUES (?, ?, ?)").run(accountId, companyName, new Date().toISOString());
-            db.prepare("INSERT INTO users (id, name, email, role, password_hash, account_id) VALUES (?, ?, ?, ?, ?, ?)").run(userId, name, email, "Admin", hashedPassword, accountId);
-            db.prepare("INSERT INTO settings (id, name, email, account_id) VALUES (?, ?, ?, ?)").run(uuidv4(), companyName, email, accountId);
-        });
-        registerTx();
-        seedDefaultTemplatesForAccount(accountId);
-
-        logger.audit('user_registered', { userId, email, accountId });
-
-        const token = jwt.sign({ id: userId, email, account_id: accountId }, JWT_SECRET, { expiresIn: '8h' });
-        res.status(201).json({ token, user: { id: userId, name, email, role: "Admin", account_id: accountId } });
-    } catch (e) {
-        logger.error(`Registration error: ${e.message}`);
-        res.status(500).json({ error: "Internal Server Error" });
-    }
-});
-
-app.post("/api/auth/login", async (req, res) => {
-    const { email, password } = sanitizeObject(req.body);
-    if (!email || !password) return badRequest(res, "Email and password required");
-
-    try {
-        const user = db.prepare("SELECT * FROM users WHERE email = ?").get(email);
-        if (!user) {
-            return res.status(400).json({ error: "Invalid credentials" });
-        }
-        // OAuth-only users have no password — direct them to the right login method
-        if (!user.password_hash) {
-            const provider = user.oauth_provider;
-            const hint = provider ? ` Please sign in with ${provider.charAt(0).toUpperCase() + provider.slice(1)}.` : '';
-            return res.status(400).json({ error: `This account uses social sign-in.${hint}` });
-        }
-
-        // --- Brute Force Protection ---
-        if (user.locked_until && new Date(user.locked_until) > new Date()) {
-            logger.audit('login_locked', { email });
-            return res.status(423).json({ error: "Account locked due to too many failed attempts. Try again later." });
-        }
-
-        const validPassword = await bcrypt.compare(password, user.password_hash);
-        
-        if (!validPassword) {
-            const attempts = (user.failed_login_attempts || 0) + 1;
-            let lockedUntil = null;
-            
-            if (attempts >= 10) {
-                // Lock for 15 minutes after 10 fails
-                lockedUntil = new Date(Date.now() + 15 * 60000).toISOString();
-                logger.audit('user_locked', { email, userId: user.id });
-            }
-
-            db.prepare("UPDATE users SET failed_login_attempts = ?, locked_until = ? WHERE id = ?")
-              .run(attempts, lockedUntil, user.id);
-
-            return res.status(400).json({ error: "Invalid credentials" });
-        }
-
-        // Success: Reset failed attempts
-        db.prepare("UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = ?")
-          .run(user.id);
-
-        if (user.twoFactorEnabled === 1) {
-            const tempToken = jwt.sign({ id: user.id, isTemp2FA: true }, JWT_SECRET, { expiresIn: '5m' });
-            return res.json({ requires2FA: true, tempToken });
-        }
-
-        const token = jwt.sign({ id: user.id, email: user.email, account_id: user.account_id }, JWT_SECRET, { expiresIn: '8h' });
-        
-        logger.audit('login_success', { userId: user.id, email: user.email });
-
-        // Strip sensitive data
-        const { password_hash, twoFactorSecret, ...safeUser } = user;
-        res.json({ token, user: safeUser });
-    } catch (e) {
-        logger.error(`Login error: ${e.message}`);
-        res.status(500).json({ error: "Internal Server Error" });
-    }
-});
-
-app.post("/api/auth/login/2fa", (req, res) => {
-    const { tempToken, code } = req.body;
-    if (!tempToken || !code) return res.status(400).json({ error: "Missing token or code" });
-
-    jwt.verify(tempToken, JWT_SECRET, (err, decoded) => {
-        if (err || !decoded.isTemp2FA) return res.status(403).json({ error: "Invalid or expired temporary token" });
-
-        const user = db.prepare("SELECT * FROM users WHERE id = ?").get(decoded.id);
-        if (!user || user.twoFactorEnabled !== 1 || !user.twoFactorSecret) {
-            return res.status(400).json({ error: "2FA is not properly set up for this user" });
-        }
-
-        const verified = speakeasy.totp.verify({
-            secret: user.twoFactorSecret,
-            encoding: 'base32',
-            token: code,
-            window: 1
-        });
-
-        if (!verified) return res.status(400).json({ error: "Invalid 2FA code" });
-
-        const token = jwt.sign({ id: user.id, email: user.email, account_id: user.account_id }, JWT_SECRET, { expiresIn: '1d' });
-        delete user.password_hash;
-        delete user.twoFactorSecret;
-        res.json({ token, user });
+    const registerTx = db.transaction(async () => {
+      await db.prepare("INSERT INTO accounts (id, name, createdAt) VALUES (?, ?, ?)").run(accountId, companyName, new Date().toISOString());
+      await db.prepare("INSERT INTO users (id, name, email, role, password_hash, account_id) VALUES (?, ?, ?, ?, ?, ?)").run(userId, name, email, "Admin", hashedPassword, accountId);
+      await db.prepare("INSERT INTO settings (id, name, email, account_id) VALUES (?, ?, ?, ?)").run(uuidv4(), companyName, email, accountId);
     });
+    await registerTx();
+    await seedDefaultTemplatesForAccount(accountId);
+    logger.audit('user_registered', {
+      userId,
+      email,
+      accountId
+    });
+    const token = jwt.sign({
+      id: userId,
+      email,
+      account_id: accountId
+    }, JWT_SECRET, {
+      expiresIn: '8h'
+    });
+    res.status(201).json({
+      token,
+      user: {
+        id: userId,
+        name,
+        email,
+        role: "Admin",
+        account_id: accountId
+      }
+    });
+  } catch (e) {
+    logger.error(`Registration error: ${e.message}`);
+    res.status(500).json({
+      error: "Internal Server Error"
+    });
+  }
+});
+app.post("/api/auth/login", async (req, res) => {
+  const {
+    email,
+    password
+  } = sanitizeObject(req.body);
+  if (!email || !password) return badRequest(res, "Email and password required");
+  try {
+    const user = await db.prepare("SELECT * FROM users WHERE email = ?").get(email);
+    if (!user) {
+      return res.status(400).json({
+        error: "Invalid credentials"
+      });
+    }
+    // OAuth-only users have no password — direct them to the right login method
+    if (!user.password_hash) {
+      const provider = user.oauth_provider;
+      const hint = provider ? ` Please sign in with ${provider.charAt(0).toUpperCase() + provider.slice(1)}.` : '';
+      return res.status(400).json({
+        error: `This account uses social sign-in.${hint}`
+      });
+    }
+
+    // --- Brute Force Protection ---
+    if (user.locked_until && new Date(user.locked_until) > new Date()) {
+      logger.audit('login_locked', {
+        email
+      });
+      return res.status(423).json({
+        error: "Account locked due to too many failed attempts. Try again later."
+      });
+    }
+    const validPassword = await bcrypt.compare(password, user.password_hash);
+    if (!validPassword) {
+      const attempts = (user.failed_login_attempts || 0) + 1;
+      let lockedUntil = null;
+      if (attempts >= 10) {
+        // Lock for 15 minutes after 10 fails
+        lockedUntil = new Date(Date.now() + 15 * 60000).toISOString();
+        logger.audit('user_locked', {
+          email,
+          userId: user.id
+        });
+      }
+      await db.prepare("UPDATE users SET failed_login_attempts = ?, locked_until = ? WHERE id = ?").run(attempts, lockedUntil, user.id);
+      return res.status(400).json({
+        error: "Invalid credentials"
+      });
+    }
+
+    // Success: Reset failed attempts
+    await db.prepare("UPDATE users SET failed_login_attempts = 0, locked_until = NULL WHERE id = ?").run(user.id);
+    if (user.twoFactorEnabled === 1) {
+      const tempToken = jwt.sign({
+        id: user.id,
+        isTemp2FA: true
+      }, JWT_SECRET, {
+        expiresIn: '5m'
+      });
+      return res.json({
+        requires2FA: true,
+        tempToken
+      });
+    }
+    const token = jwt.sign({
+      id: user.id,
+      email: user.email,
+      account_id: user.account_id
+    }, JWT_SECRET, {
+      expiresIn: '8h'
+    });
+    logger.audit('login_success', {
+      userId: user.id,
+      email: user.email
+    });
+
+    // Strip sensitive data
+    const {
+      password_hash,
+      twoFactorSecret,
+      ...safeUser
+    } = user;
+    res.json({
+      token,
+      user: safeUser
+    });
+  } catch (e) {
+    logger.error(`Login error: ${e.message}`);
+    res.status(500).json({
+      error: "Internal Server Error"
+    });
+  }
+});
+app.post("/api/auth/login/2fa", (req, res) => {
+  const {
+    tempToken,
+    code
+  } = req.body;
+  if (!tempToken || !code) return res.status(400).json({
+    error: "Missing token or code"
+  });
+  jwt.verify(tempToken, JWT_SECRET, async (err, decoded) => {
+    if (err || !decoded.isTemp2FA) return res.status(403).json({
+      error: "Invalid or expired temporary token"
+    });
+    const user = await db.prepare("SELECT * FROM users WHERE id = ?").get(decoded.id);
+    if (!user || user.twoFactorEnabled !== 1 || !user.twoFactorSecret) {
+      return res.status(400).json({
+        error: "2FA is not properly set up for this user"
+      });
+    }
+    const verified = speakeasy.totp.verify({
+      secret: user.twoFactorSecret,
+      encoding: 'base32',
+      token: code,
+      window: 1
+    });
+    if (!verified) return res.status(400).json({
+      error: "Invalid 2FA code"
+    });
+    const token = jwt.sign({
+      id: user.id,
+      email: user.email,
+      account_id: user.account_id
+    }, JWT_SECRET, {
+      expiresIn: '1d'
+    });
+    delete user.password_hash;
+    delete user.twoFactorSecret;
+    res.json({
+      token,
+      user
+    });
+  });
 });
 
 // --- FORGOT PASSWORD ---
@@ -461,197 +523,223 @@ app.post("/api/auth/login/2fa", (req, res) => {
 // currently-locked account — anything else would let an attacker enumerate
 // which emails have accounts on this workspace.
 app.post("/api/auth/forgot-password", async (req, res) => {
-    const { email } = sanitizeObject(req.body);
-    const genericResponse = { message: "If an account exists for that email, a reset link has been sent." };
+  const {
+    email
+  } = sanitizeObject(req.body);
+  const genericResponse = {
+    message: "If an account exists for that email, a reset link has been sent."
+  };
+  if (!email || !isValidEmail(email)) return res.json(genericResponse);
+  try {
+    const user = await db.prepare("SELECT id, email, password_hash FROM users WHERE email = ?").get(email);
 
-    if (!email || !isValidEmail(email)) return res.json(genericResponse);
+    // Silently no-op for: no such user, or an OAuth-only account (no
+    // password_hash to reset). Same response either way.
+    if (user && user.password_hash) {
+      const rawToken = crypto.randomBytes(32).toString('hex');
+      const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
+      const expires = new Date(Date.now() + 30 * 60 * 1000).toISOString(); // 30 min
 
-    try {
-        const user = db.prepare("SELECT id, email, password_hash FROM users WHERE email = ?").get(email);
-
-        // Silently no-op for: no such user, or an OAuth-only account (no
-        // password_hash to reset). Same response either way.
-        if (user && user.password_hash) {
-            const rawToken = crypto.randomBytes(32).toString('hex');
-            const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
-            const expires = new Date(Date.now() + 30 * 60 * 1000).toISOString(); // 30 min
-
-            db.prepare("UPDATE users SET reset_token_hash = ?, reset_token_expires = ? WHERE id = ?")
-              .run(tokenHash, expires, user.id);
-
-            try {
-                await sendPasswordReset(user.email, rawToken);
-            } catch (mailErr) {
-                logger.error(`Failed to send password reset email to ${user.email}: ${mailErr.message}`);
-            }
-
-            logger.audit('password_reset_requested', { userId: user.id, email: user.email });
-        }
-
-        res.json(genericResponse);
-    } catch (e) {
-        logger.error(`Forgot-password error: ${e.message}`);
-        // Still generic — don't leak internal errors through this endpoint either.
-        res.json(genericResponse);
+      await db.prepare("UPDATE users SET reset_token_hash = ?, reset_token_expires = ? WHERE id = ?").run(tokenHash, expires, user.id);
+      try {
+        await sendPasswordReset(user.email, rawToken);
+      } catch (mailErr) {
+        logger.error(`Failed to send password reset email to ${user.email}: ${mailErr.message}`);
+      }
+      logger.audit('password_reset_requested', {
+        userId: user.id,
+        email: user.email
+      });
     }
+    res.json(genericResponse);
+  } catch (e) {
+    logger.error(`Forgot-password error: ${e.message}`);
+    // Still generic — don't leak internal errors through this endpoint either.
+    res.json(genericResponse);
+  }
 });
-
 app.post("/api/auth/reset-password", async (req, res) => {
-    const { token, password } = sanitizeObject(req.body);
-    if (!token || !password) return badRequest(res, "Token and new password are required");
-
-    const pwError = validatePassword(password);
-    if (pwError) return badRequest(res, pwError);
-
-    try {
-        const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
-        const user = db.prepare(
-            "SELECT id, email, reset_token_expires FROM users WHERE reset_token_hash = ?"
-        ).get(tokenHash);
-
-        if (!user) return res.status(400).json({ error: "Invalid or expired reset link" });
-        if (!user.reset_token_expires || new Date(user.reset_token_expires) < new Date()) {
-            // Clear the stale token so it can't be tried again once expired.
-            db.prepare("UPDATE users SET reset_token_hash = NULL, reset_token_expires = NULL WHERE id = ?").run(user.id);
-            return res.status(400).json({ error: "Invalid or expired reset link" });
-        }
-
-        const hashedPassword = await bcrypt.hash(password, 12);
-        db.prepare(`
+  const {
+    token,
+    password
+  } = sanitizeObject(req.body);
+  if (!token || !password) return badRequest(res, "Token and new password are required");
+  const pwError = validatePassword(password);
+  if (pwError) return badRequest(res, pwError);
+  try {
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    const user = await db.prepare("SELECT id, email, reset_token_expires FROM users WHERE reset_token_hash = ?").get(tokenHash);
+    if (!user) return res.status(400).json({
+      error: "Invalid or expired reset link"
+    });
+    if (!user.reset_token_expires || new Date(user.reset_token_expires) < new Date()) {
+      // Clear the stale token so it can't be tried again once expired.
+      await db.prepare("UPDATE users SET reset_token_hash = NULL, reset_token_expires = NULL WHERE id = ?").run(user.id);
+      return res.status(400).json({
+        error: "Invalid or expired reset link"
+      });
+    }
+    const hashedPassword = await bcrypt.hash(password, 12);
+    await db.prepare(`
             UPDATE users
             SET password_hash = ?, reset_token_hash = NULL, reset_token_expires = NULL,
                 failed_login_attempts = 0, locked_until = NULL
             WHERE id = ?
         `).run(hashedPassword, user.id);
-
-        logger.audit('password_reset_completed', { userId: user.id, email: user.email });
-        res.json({ message: "Password has been reset. You can now log in." });
-    } catch (e) {
-        logger.error(`Reset-password error: ${e.message}`);
-        res.status(500).json({ error: "Internal Server Error" });
-    }
+    logger.audit('password_reset_completed', {
+      userId: user.id,
+      email: user.email
+    });
+    res.json({
+      message: "Password has been reset. You can now log in."
+    });
+  } catch (e) {
+    logger.error(`Reset-password error: ${e.message}`);
+    res.status(500).json({
+      error: "Internal Server Error"
+    });
+  }
 });
-
-app.get("/api/auth/me", authenticateToken, (req, res) => {
-    try {
-        const user = db.prepare("SELECT id, name, email, role, account_id, twoFactorEnabled FROM users WHERE id = ? AND account_id = ?").get(req.user.id, req.accountId);
-        if (!user) return res.status(404).json({ error: "User not found" });
-        res.json(user);
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+app.get("/api/auth/me", authenticateToken, async (req, res) => {
+  try {
+    const user = await db.prepare("SELECT id, name, email, role, account_id, twoFactorEnabled FROM users WHERE id = ? AND account_id = ?").get(req.user.id, req.accountId);
+    if (!user) return res.status(404).json({
+      error: "User not found"
+    });
+    res.json(user);
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
 
 // 2FA Setup endpoints
 app.post("/api/auth/2fa/generate", authenticateToken, async (req, res) => {
-    try {
-        const secret = speakeasy.generateSecret({ name: `V79 Tiquet (${req.user.email})` });
-        const dataUrl = await qrcode.toDataURL(secret.otpauth_url);
-        
-        db.prepare("UPDATE users SET twoFactorSecret = ? WHERE id = ?").run(secret.base32, req.user.id);
-        
-        res.json({ secret: secret.base32, qrCode: dataUrl });
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+  try {
+    const secret = speakeasy.generateSecret({
+      name: `V79 Tiquet (${req.user.email})`
+    });
+    const dataUrl = await qrcode.toDataURL(secret.otpauth_url);
+    await db.prepare("UPDATE users SET twoFactorSecret = ? WHERE id = ?").run(secret.base32, req.user.id);
+    res.json({
+      secret: secret.base32,
+      qrCode: dataUrl
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
-
-app.post("/api/auth/2fa/verify", authenticateToken, (req, res) => {
-    const { code } = req.body;
-    try {
-        const user = db.prepare("SELECT twoFactorSecret FROM users WHERE id = ?").get(req.user.id);
-        if (!user || !user.twoFactorSecret) return res.status(400).json({ error: "No 2FA secret found. Generate one first." });
-        
-        const verified = speakeasy.totp.verify({
-            secret: user.twoFactorSecret,
-            encoding: 'base32',
-            token: code,
-            window: 1
-        });
-        
-        if (verified) {
-            db.prepare("UPDATE users SET twoFactorEnabled = 1 WHERE id = ?").run(req.user.id);
-            res.json({ success: true });
-        } else {
-            res.status(400).json({ error: "Invalid validation code" });
-        }
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+app.post("/api/auth/2fa/verify", authenticateToken, async (req, res) => {
+  const {
+    code
+  } = req.body;
+  try {
+    const user = await db.prepare("SELECT twoFactorSecret FROM users WHERE id = ?").get(req.user.id);
+    if (!user || !user.twoFactorSecret) return res.status(400).json({
+      error: "No 2FA secret found. Generate one first."
+    });
+    const verified = speakeasy.totp.verify({
+      secret: user.twoFactorSecret,
+      encoding: 'base32',
+      token: code,
+      window: 1
+    });
+    if (verified) {
+      await db.prepare("UPDATE users SET twoFactorEnabled = 1 WHERE id = ?").run(req.user.id);
+      res.json({
+        success: true
+      });
+    } else {
+      res.status(400).json({
+        error: "Invalid validation code"
+      });
     }
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
-
-app.post("/api/auth/2fa/disable", authenticateToken, (req, res) => {
-    try {
-        db.prepare("UPDATE users SET twoFactorEnabled = 0, twoFactorSecret = NULL WHERE id = ?").run(req.user.id);
-        res.json({ success: true });
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+app.post("/api/auth/2fa/disable", authenticateToken, async (req, res) => {
+  try {
+    await db.prepare("UPDATE users SET twoFactorEnabled = 0, twoFactorSecret = NULL WHERE id = ?").run(req.user.id);
+    res.json({
+      success: true
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
-
 
 // Helpers for nested relations
-const getJobTags = (jobId) => {
-    return db.prepare("SELECT tag FROM job_tags WHERE job_id = ?").all(jobId).map(row => row.tag);
+const getJobTags = async jobId => {
+  return (await db.prepare("SELECT tag FROM job_tags WHERE job_id = ?").all(jobId)).map(row => row.tag);
 };
-
-const getJobActivityLogs = (jobId) => {
-    return db.prepare("SELECT * FROM activity_logs WHERE job_id = ? ORDER BY timestamp ASC").all(jobId);
+const getJobActivityLogs = async jobId => {
+  return await db.prepare("SELECT * FROM activity_logs WHERE job_id = ? ORDER BY timestamp ASC").all(jobId);
 };
-
-const getJobMessages = (jobId) => {
-    return db.prepare("SELECT * FROM job_messages WHERE job_id = ? ORDER BY timestamp ASC").all(jobId);
+const getJobMessages = async jobId => {
+  return await db.prepare("SELECT * FROM job_messages WHERE job_id = ? ORDER BY timestamp ASC").all(jobId);
 };
-
-const createNotification = ({ userId, title, message, type, accountId }) => {
-    try {
-        db.prepare(`
+const createNotification = async ({
+  userId,
+  title,
+  message,
+  type,
+  accountId
+}) => {
+  try {
+    await db.prepare(`
             INSERT INTO notifications (id, user_id, title, message, type, createdAt, account_id, isRead)
             VALUES (?, ?, ?, ?, ?, ?, ?, 0)
         `).run(uuidv4(), userId, title, message, type, new Date().toISOString(), accountId);
-    } catch (e) {
-        console.error("Failed to create notification:", e.message);
-    }
+  } catch (e) {
+    console.error("Failed to create notification:", e.message);
+  }
 };
 
 /**
  * Advanced Stage Transition Helper
  * Logs current timer, starts new timer, handles auto-assignment and notifications.
  */
-const updateJobStage = (id, newStatus, accountId, userName = "System") => {
-    const job = db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(id, accountId);
-    if (!job) return null;
+const updateJobStage = async (id, newStatus, accountId, userName = "System") => {
+  const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(id, accountId);
+  if (!job) return null;
+  let timeLogs = job.timeLogs ? JSON.parse(job.timeLogs) : [];
+  const now = new Date().toISOString();
 
-    let timeLogs = job.timeLogs ? JSON.parse(job.timeLogs) : [];
-    const now = new Date().toISOString();
-
-    // 1. Log previous timer segment if exists
-    if (job.timerStartedAt) {
-        const elapsed = (new Date(now).getTime() - new Date(job.timerStartedAt).getTime()) / (1000 * 60 * 60);
-        if (elapsed > 0) {
-            timeLogs.push({
-                id: uuidv4(),
-                employeeId: job.assignedTo || "unassigned",
-                startTime: job.timerStartedAt,
-                endTime: now,
-                status: job.status
-            });
-        }
+  // 1. Log previous timer segment if exists
+  if (job.timerStartedAt) {
+    const elapsed = (new Date(now).getTime() - new Date(job.timerStartedAt).getTime()) / (1000 * 60 * 60);
+    if (elapsed > 0) {
+      timeLogs.push({
+        id: uuidv4(),
+        employeeId: job.assignedTo || "unassigned",
+        startTime: job.timerStartedAt,
+        endTime: now,
+        status: job.status
+      });
     }
+  }
 
-    // 2. Automations: Stage Assignments
-    let assignedTo = job.assignedTo;
-    const stageAssignments = job.stageAssignments ? JSON.parse(job.stageAssignments) : {};
-    if (stageAssignments[newStatus]) {
-        assignedTo = stageAssignments[newStatus];
-    }
+  // 2. Automations: Stage Assignments
+  let assignedTo = job.assignedTo;
+  const stageAssignments = job.stageAssignments ? JSON.parse(job.stageAssignments) : {};
+  if (stageAssignments[newStatus]) {
+    assignedTo = stageAssignments[newStatus];
+  }
 
-    // 3. Status-specific logic: Stop timer if finished
-    const isFinished = ['completed', 'paid'].includes(newStatus);
-    const timerStartedAt = isFinished ? null : now;
+  // 3. Status-specific logic: Stop timer if finished
+  const isFinished = ['completed', 'paid'].includes(newStatus);
+  const timerStartedAt = isFinished ? null : now;
 
-    // 4. Update DB
-    db.prepare(`
+  // 4. Update DB
+  await db.prepare(`
         UPDATE jobs SET 
             status = ?, 
             timeLogs = ?, 
@@ -660,44 +748,45 @@ const updateJobStage = (id, newStatus, accountId, userName = "System") => {
         WHERE id = ? AND account_id = ?
     `).run(newStatus, JSON.stringify(timeLogs), timerStartedAt, assignedTo, id, accountId);
 
-    // 4b. FFPRO2 Gateway: a job just became genuinely PAID (not completed,
-    // not invoiced — this only fires on the actual paid transition, and
-    // only once per job since the guard below requires the PREVIOUS status
-    // to not already be 'paid'). Mark it 'pending' synchronously, in the
-    // same write pass, before any network call is attempted — so this
-    // record survives even if the process crashes immediately after. The
-    // actual HTTP delivery happens afterward, off the request path, and can
-    // never fail this function or the payment confirmation that called it.
-    if (newStatus === 'paid' && job.status !== 'paid') {
-        const eventId = generateEventId();
-        db.prepare("UPDATE jobs SET ffproSyncStatus = 'pending', ffproEventId = ? WHERE id = ? AND account_id = ?")
-            .run(eventId, id, accountId);
-        triggerFfproSync(id, accountId).catch((err) => {
-            logger.error(`[FFPRO Gateway] Unexpected error syncing job ${id}: ${err.message}`);
-        });
+  // 4b. FFPRO2 Gateway: a job just became genuinely PAID (not completed,
+  // not invoiced — this only fires on the actual paid transition, and
+  // only once per job since the guard below requires the PREVIOUS status
+  // to not already be 'paid'). Mark it 'pending' synchronously, in the
+  // same write pass, before any network call is attempted — so this
+  // record survives even if the process crashes immediately after. The
+  // actual HTTP delivery happens afterward, off the request path, and can
+  // never fail this function or the payment confirmation that called it.
+  if (newStatus === 'paid' && job.status !== 'paid') {
+    const eventId = generateEventId();
+    await db.prepare("UPDATE jobs SET ffproSyncStatus = 'pending', ffproEventId = ? WHERE id = ? AND account_id = ?").run(eventId, id, accountId);
+    triggerFfproSync(id, accountId).catch(err => {
+      logger.error(`[FFPRO Gateway] Unexpected error syncing job ${id}: ${err.message}`);
+    });
+  }
+
+  // 5. Activity Log
+  await db.prepare("INSERT INTO activity_logs (id, job_id, action, timestamp, user, account_id) VALUES (?, ?, ?, ?, ?, ?)").run(uuidv4(), id, `Stage advanced to ${newStatus}${assignedTo !== job.assignedTo ? ` and auto-assigned to ${assignedTo}` : ''}`, now, userName, accountId);
+
+  // 6. Notifications
+  if (assignedTo) {
+    const userMatch = await db.prepare("SELECT id FROM users WHERE name = ? AND account_id = ?").get(assignedTo, accountId);
+    if (userMatch) {
+      await createNotification({
+        userId: userMatch.id,
+        title: assignedTo !== job.assignedTo ? "Job Assignment Update" : "Job Status Updated",
+        message: assignedTo !== job.assignedTo ? `You have been auto-assigned to "${job.title}" for stage: ${newStatus}` : `"${job.title}" is now: ${newStatus}`,
+        type: assignedTo !== job.assignedTo ? "assignment" : "status_change",
+        accountId
+      });
     }
-
-    // 5. Activity Log
-    db.prepare("INSERT INTO activity_logs (id, job_id, action, timestamp, user, account_id) VALUES (?, ?, ?, ?, ?, ?)")
-        .run(uuidv4(), id, `Stage advanced to ${newStatus}${assignedTo !== job.assignedTo ? ` and auto-assigned to ${assignedTo}` : ''}`, now, userName, accountId);
-
-    // 6. Notifications
-    if (assignedTo) {
-        const userMatch = db.prepare("SELECT id FROM users WHERE name = ? AND account_id = ?").get(assignedTo, accountId);
-        if (userMatch) {
-            createNotification({
-                userId: userMatch.id,
-                title: assignedTo !== job.assignedTo ? "Job Assignment Update" : "Job Status Updated",
-                message: assignedTo !== job.assignedTo 
-                    ? `You have been auto-assigned to "${job.title}" for stage: ${newStatus}`
-                    : `"${job.title}" is now: ${newStatus}`,
-                type: assignedTo !== job.assignedTo ? "assignment" : "status_change",
-                accountId
-            });
-        }
-    }
-
-    return { ...job, status: newStatus, timeLogs, timerStartedAt, assignedTo };
+  }
+  return {
+    ...job,
+    status: newStatus,
+    timeLogs,
+    timerStartedAt,
+    assignedTo
+  };
 };
 
 // Delivers (or re-delivers) a job's paid event to FFPRO2. Always reads the
@@ -706,16 +795,14 @@ const updateJobStage = (id, newStatus, accountId, userName = "System") => {
 // original updateJobStage() call. Never throws — failures just leave
 // ffproSyncStatus as 'pending' for the next sweep to pick up.
 async function triggerFfproSync(jobId, accountId) {
-    const job = db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(jobId, accountId);
-    if (!job || job.status !== 'paid' || !job.ffproEventId) return;
-
-    const settings = db.prepare("SELECT currency FROM settings WHERE account_id = ?").get(accountId);
-    const delivered = await sendPaidEvent(job, accountId, settings);
-
-    if (delivered) {
-        db.prepare("UPDATE jobs SET ffproSyncStatus = 'sent' WHERE id = ? AND account_id = ?").run(jobId, accountId);
-    }
-    // else: leave as 'pending' — the periodic sweep below will retry it.
+  const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(jobId, accountId);
+  if (!job || job.status !== 'paid' || !job.ffproEventId) return;
+  const settings = await db.prepare("SELECT currency FROM settings WHERE account_id = ?").get(accountId);
+  const delivered = await sendPaidEvent(job, accountId, settings);
+  if (delivered) {
+    await db.prepare("UPDATE jobs SET ffproSyncStatus = 'sent' WHERE id = ? AND account_id = ?").run(jobId, accountId);
+  }
+  // else: leave as 'pending' — the periodic sweep below will retry it.
 }
 
 // Periodic sweep: catches any job whose FFPRO2 delivery didn't succeed via
@@ -723,168 +810,206 @@ async function triggerFfproSync(jobId, accountId) {
 // than those cover). Mirrors the existing wsHeartbeat setInterval pattern
 // elsewhere in this file rather than introducing a queue/worker system.
 const FFPRO_SWEEP_INTERVAL_MS = 5 * 60 * 1000; // every 5 minutes
-setInterval(() => {
-    try {
-        const pending = db.prepare("SELECT id, account_id FROM jobs WHERE ffproSyncStatus = 'pending'").all();
-        for (const row of pending) {
-            triggerFfproSync(row.id, row.account_id).catch((err) => {
-                logger.error(`[FFPRO Gateway] Sweep retry failed for job ${row.id}: ${err.message}`);
-            });
-        }
-    } catch (err) {
-        logger.error(`[FFPRO Gateway] Sweep query failed: ${err.message}`);
+setInterval(async () => {
+  try {
+    const pending = await db.prepare("SELECT id, account_id FROM jobs WHERE ffproSyncStatus = 'pending'").all();
+    for (const row of pending) {
+      triggerFfproSync(row.id, row.account_id).catch(err => {
+        logger.error(`[FFPRO Gateway] Sweep retry failed for job ${row.id}: ${err.message}`);
+      });
     }
+  } catch (err) {
+    logger.error(`[FFPRO Gateway] Sweep query failed: ${err.message}`);
+  }
 }, FFPRO_SWEEP_INTERVAL_MS);
 
 // --- API ROUTES (PROTECTED) ---
 
 // Get all jobs
-app.get("/api/jobs", authenticateToken, (req, res) => {
-    try {
-        const jobs = db.prepare("SELECT * FROM jobs WHERE account_id = ? ORDER BY createdAt DESC").all(req.accountId);
-        
-        const populatedJobs = jobs.map(job => ({
-            ...job,
-            tags: getJobTags(job.id),
-            activityLog: getJobActivityLogs(job.id),
-            lineItems: job.lineItems ? JSON.parse(job.lineItems) : [],
-            deliverables: job.deliverables ? JSON.parse(job.deliverables) : [],
-            timeLogs: job.timeLogs ? JSON.parse(job.timeLogs) : [],
-            stageAssignments: job.stageAssignments ? JSON.parse(job.stageAssignments) : {}
-        }));
-
-        res.json(populatedJobs);
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+app.get("/api/jobs", authenticateToken, async (req, res) => {
+  try {
+    const jobs = await db.prepare("SELECT * FROM jobs WHERE account_id = ? ORDER BY createdAt DESC").all(req.accountId);
+    const populatedJobs = await Promise.all(jobs.map(async job => ({
+      ...job,
+      tags: await getJobTags(job.id),
+      activityLog: await getJobActivityLogs(job.id),
+      lineItems: job.lineItems ? JSON.parse(job.lineItems) : [],
+      deliverables: job.deliverables ? JSON.parse(job.deliverables) : [],
+      timeLogs: job.timeLogs ? JSON.parse(job.timeLogs) : [],
+      stageAssignments: job.stageAssignments ? JSON.parse(job.stageAssignments) : {}
+    })));
+    res.json(populatedJobs);
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
 
 // Notifications
-app.get("/api/notifications", authenticateToken, (req, res) => {
-    try {
-        const notifications = db.prepare("SELECT * FROM notifications WHERE (user_id = ? OR user_id IS NULL) AND account_id = ? ORDER BY createdAt DESC LIMIT 50")
-            .all(req.user.id, req.accountId);
-        res.json(notifications);
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+app.get("/api/notifications", authenticateToken, async (req, res) => {
+  try {
+    const notifications = await db.prepare("SELECT * FROM notifications WHERE (user_id = ? OR user_id IS NULL) AND account_id = ? ORDER BY createdAt DESC LIMIT 50").all(req.user.id, req.accountId);
+    res.json(notifications);
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
-
-app.put("/api/notifications/read", authenticateToken, (req, res) => {
-    const { id } = req.body;
-    try {
-        if (id) {
-            db.prepare("UPDATE notifications SET isRead = 1 WHERE id = ? AND account_id = ?").run(id, req.accountId);
-        } else {
-            db.prepare("UPDATE notifications SET isRead = 1 WHERE user_id = ? AND account_id = ?").run(req.user.id, req.accountId);
-        }
-        res.json({ success: true });
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+app.put("/api/notifications/read", authenticateToken, async (req, res) => {
+  const {
+    id
+  } = req.body;
+  try {
+    if (id) {
+      await db.prepare("UPDATE notifications SET isRead = 1 WHERE id = ? AND account_id = ?").run(id, req.accountId);
+    } else {
+      await db.prepare("UPDATE notifications SET isRead = 1 WHERE user_id = ? AND account_id = ?").run(req.user.id, req.accountId);
     }
+    res.json({
+      success: true
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
 
 // Create a new job
-app.post("/api/jobs", authenticateToken, (req, res) => {
-    const { id: reqId, title, client, description, status, createdAt, dueDate, amount, priority, invoiceNotes, assignedTo, clientEmail, tags, activityLog, depositPaid, lineItems, deliverables, timerStartedAt, stageAssignments, timeLogs } = req.body;
-    const id = reqId || uuidv4();
-    const secureToken = uuidv4();
-
-    try {
-        const insertJob = db.prepare(`
+app.post("/api/jobs", authenticateToken, async (req, res) => {
+  const {
+    id: reqId,
+    title,
+    client,
+    description,
+    status,
+    createdAt,
+    dueDate,
+    amount,
+    priority,
+    invoiceNotes,
+    assignedTo,
+    clientEmail,
+    tags,
+    activityLog,
+    depositPaid,
+    lineItems,
+    deliverables,
+    timerStartedAt,
+    stageAssignments,
+    timeLogs
+  } = req.body;
+  const id = reqId || uuidv4();
+  const secureToken = uuidv4();
+  try {
+    const insertJob = db.prepare(`
             INSERT INTO jobs (id, title, client, description, status, createdAt, dueDate, amount, priority, invoiceNotes, assignedTo, clientEmail, secureToken, depositPaid, account_id, lineItems, deliverables, timerStartedAt, stageAssignments, timeLogs)
             VALUES (@id, @title, @client, @description, @status, @createdAt, @dueDate, @amount, @priority, @invoiceNotes, @assignedTo, @clientEmail, @secureToken, @depositPaid, @account_id, @lineItems, @deliverables, @timerStartedAt, @stageAssignments, @timeLogs)
         `);
-
-        insertJob.run({ 
-            id,
-            title: title || 'Untitled Job',
-            client: client || 'Unknown Client',
-            description: description || null,
-            status: status || 'request',
-            createdAt: createdAt || new Date().toISOString(),
-            dueDate: dueDate || null,
-            amount: amount !== undefined ? (Number(amount) || 0) : 0,
-            priority: priority || 'medium',
-            invoiceNotes: invoiceNotes || null,
-            assignedTo: assignedTo || null,
-            clientEmail: clientEmail || null,
-            secureToken, 
-            depositPaid: depositPaid ? 1 : 0, 
-            account_id: req.accountId,
-            lineItems: lineItems ? JSON.stringify(lineItems) : null,
-            deliverables: deliverables ? JSON.stringify(deliverables) : null,
-            timerStartedAt: timerStartedAt || new Date().toISOString(), // Ensure timer ALWAYS starts
-            stageAssignments: stageAssignments ? JSON.stringify(stageAssignments) : null,
-            timeLogs: timeLogs ? (typeof timeLogs === 'string' ? timeLogs : JSON.stringify(timeLogs)) : "[]" // Default to empty array
-        });
-
-        if (tags && tags.length > 0) {
-            const insertTag = db.prepare('INSERT INTO job_tags (job_id, tag, account_id) VALUES (?, ?, ?)');
-            tags.forEach(tag => insertTag.run(id, tag, req.accountId));
-        }
-
-        if (activityLog && activityLog.length > 0) {
-            const insertActivity = db.prepare('INSERT INTO activity_logs (id, job_id, action, timestamp, user, account_id) VALUES (@id, @job_id, @action, @timestamp, @user, @account_id)');
-            activityLog.forEach(log => insertActivity.run({ ...log, job_id: id, account_id: req.accountId }));
-        }
-
-        // Auto-create/update client profile
-        if (client) {
-            const existingClient = db.prepare("SELECT id FROM clients WHERE name = ? AND account_id = ?").get(client, req.accountId);
-            if (existingClient) {
-                if (clientEmail) db.prepare("UPDATE clients SET email = ? WHERE id = ?").run(clientEmail, existingClient.id);
-            } else {
-                db.prepare("INSERT INTO clients (id, name, email, phone, company, notes, createdAt, account_id) VALUES (?, ?, ?, NULL, NULL, NULL, ?, ?)").run(uuidv4(), client, clientEmail || null, new Date().toISOString(), req.accountId);
-            }
-        }
-
-        // --- AUTO-CREATE FILE REPOSITORY FOLDER ---
-        try {
-            const jobFolder = ensureJobFolder(req.accountId, client || 'unknown', id);
-            // Write a README so the folder is clearly labelled
-            const readme = `# Project: ${title}\nClient: ${client}\nJob ID: ${id}\nCreated: ${new Date().toISOString()}\n\nThis folder contains all files, quotes, invoices, and logs for this project.\n`;
-            fs.writeFileSync(path.join(jobFolder, 'README.md'), readme);
-            // Seed initial project log
-            appendProjectLog(req.accountId, client || 'unknown', id, {
-                type: 'job_created',
-                action: 'Job created',
-                user: req.user?.email || 'System',
-                details: { title, client, status, amount }
-            });
-        } catch(folderErr) {
-            console.error('Could not create job folder:', folderErr.message);
-            // Non-fatal — don't block job creation
-        }
-
-        // --- NOTIFICATION ---
-        if (assignedTo) {
-            const assignedUser = db.prepare("SELECT id FROM users WHERE name = ? AND account_id = ?").get(assignedTo, req.accountId);
-            if (assignedUser) {
-                createNotification({
-                    userId: assignedUser.id,
-                    title: "New Job Assigned",
-                    message: `You have been assigned to: ${title}`,
-                    type: "assignment",
-                    accountId: req.accountId
-                });
-            }
-        }
-
-        const newJob = db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(id, req.accountId);
-        res.status(201).json({
-            ...newJob,
-            tags: getJobTags(id),
-            activityLog: getJobActivityLogs(id),
-            lineItems: newJob.lineItems ? JSON.parse(newJob.lineItems) : [],
-            deliverables: newJob.deliverables ? JSON.parse(newJob.deliverables) : [],
-            timeLogs: newJob.timeLogs ? JSON.parse(newJob.timeLogs) : [],
-            stageAssignments: newJob.stageAssignments ? JSON.parse(newJob.stageAssignments) : {}
-        });
-    } catch (error) {
-        console.error("POST /api/jobs error:", error);
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+    insertJob.run({
+      id,
+      title: title || 'Untitled Job',
+      client: client || 'Unknown Client',
+      description: description || null,
+      status: status || 'request',
+      createdAt: createdAt || new Date().toISOString(),
+      dueDate: dueDate || null,
+      amount: amount !== undefined ? Number(amount) || 0 : 0,
+      priority: priority || 'medium',
+      invoiceNotes: invoiceNotes || null,
+      assignedTo: assignedTo || null,
+      clientEmail: clientEmail || null,
+      secureToken,
+      depositPaid: depositPaid ? 1 : 0,
+      account_id: req.accountId,
+      lineItems: lineItems ? JSON.stringify(lineItems) : null,
+      deliverables: deliverables ? JSON.stringify(deliverables) : null,
+      timerStartedAt: timerStartedAt || new Date().toISOString(),
+      // Ensure timer ALWAYS starts
+      stageAssignments: stageAssignments ? JSON.stringify(stageAssignments) : null,
+      timeLogs: timeLogs ? typeof timeLogs === 'string' ? timeLogs : JSON.stringify(timeLogs) : "[]" // Default to empty array
+    });
+    if (tags && tags.length > 0) {
+      const insertTag = db.prepare('INSERT INTO job_tags (job_id, tag, account_id) VALUES (?, ?, ?)');
+      for (const tag of tags) {
+        await insertTag.run(id, tag, req.accountId);
+      }
     }
+    if (activityLog && activityLog.length > 0) {
+      const insertActivity = db.prepare('INSERT INTO activity_logs (id, job_id, action, timestamp, user, account_id) VALUES (@id, @job_id, @action, @timestamp, @user, @account_id)');
+      for (const log of activityLog) {
+        await insertActivity.run({
+          ...log,
+          job_id: id,
+          account_id: req.accountId
+        });
+      }
+    }
+
+    // Auto-create/update client profile
+    if (client) {
+      const existingClient = await db.prepare("SELECT id FROM clients WHERE name = ? AND account_id = ?").get(client, req.accountId);
+      if (existingClient) {
+        if (clientEmail) await db.prepare("UPDATE clients SET email = ? WHERE id = ?").run(clientEmail, existingClient.id);
+      } else {
+        await db.prepare("INSERT INTO clients (id, name, email, phone, company, notes, createdAt, account_id) VALUES (?, ?, ?, NULL, NULL, NULL, ?, ?)").run(uuidv4(), client, clientEmail || null, new Date().toISOString(), req.accountId);
+      }
+    }
+
+    // --- AUTO-CREATE FILE REPOSITORY FOLDER ---
+    try {
+      const jobFolder = ensureJobFolder(req.accountId, client || 'unknown', id);
+      // Write a README so the folder is clearly labelled
+      const readme = `# Project: ${title}\nClient: ${client}\nJob ID: ${id}\nCreated: ${new Date().toISOString()}\n\nThis folder contains all files, quotes, invoices, and logs for this project.\n`;
+      fs.writeFileSync(path.join(jobFolder, 'README.md'), readme);
+      // Seed initial project log
+      appendProjectLog(req.accountId, client || 'unknown', id, {
+        type: 'job_created',
+        action: 'Job created',
+        user: req.user?.email || 'System',
+        details: {
+          title,
+          client,
+          status,
+          amount
+        }
+      });
+    } catch (folderErr) {
+      console.error('Could not create job folder:', folderErr.message);
+      // Non-fatal — don't block job creation
+    }
+
+    // --- NOTIFICATION ---
+    if (assignedTo) {
+      const assignedUser = await db.prepare("SELECT id FROM users WHERE name = ? AND account_id = ?").get(assignedTo, req.accountId);
+      if (assignedUser) {
+        await createNotification({
+          userId: assignedUser.id,
+          title: "New Job Assigned",
+          message: `You have been assigned to: ${title}`,
+          type: "assignment",
+          accountId: req.accountId
+        });
+      }
+    }
+    const newJob = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(id, req.accountId);
+    res.status(201).json({
+      ...newJob,
+      tags: await getJobTags(id),
+      activityLog: await getJobActivityLogs(id),
+      lineItems: newJob.lineItems ? JSON.parse(newJob.lineItems) : [],
+      deliverables: newJob.deliverables ? JSON.parse(newJob.deliverables) : [],
+      timeLogs: newJob.timeLogs ? JSON.parse(newJob.timeLogs) : [],
+      stageAssignments: newJob.stageAssignments ? JSON.parse(newJob.stageAssignments) : {}
+    });
+  } catch (error) {
+    console.error("POST /api/jobs error:", error);
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
 
 // Update a job
@@ -902,224 +1027,252 @@ app.post("/api/jobs", authenticateToken, (req, res) => {
 //     jobs in that one account, not read/write anything else.
 // ---------------------------------------------------------------------
 const intakeLimiter = rateLimit({
-    windowMs: 60 * 60 * 1000,
-    max: 20, // 20 intake submissions per hour per IP is plenty for a contact form
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: { error: "Too many requests. Please try again later or contact us directly." }
+  windowMs: 60 * 60 * 1000,
+  max: 20,
+  // 20 intake submissions per hour per IP is plenty for a contact form
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: "Too many requests. Please try again later or contact us directly."
+  }
 });
-
 const requireIntakeSecret = (req, res, next) => {
-    const configuredSecret = process.env.INTAKE_SECRET;
-    if (!configuredSecret) {
-        logger.error("[Intake] INTAKE_SECRET is not configured — rejecting all intake requests.");
-        return res.status(503).json({ error: "Intake is not configured." });
-    }
-    const provided = req.headers["x-intake-secret"];
-    if (
-        typeof provided !== "string" ||
-        provided.length !== configuredSecret.length ||
-        !crypto.timingSafeEqual(Buffer.from(provided), Buffer.from(configuredSecret))
-    ) {
-        return res.status(401).json({ error: "Unauthorized." });
-    }
-    next();
+  const configuredSecret = process.env.INTAKE_SECRET;
+  if (!configuredSecret) {
+    logger.error("[Intake] INTAKE_SECRET is not configured — rejecting all intake requests.");
+    return res.status(503).json({
+      error: "Intake is not configured."
+    });
+  }
+  const provided = req.headers["x-intake-secret"];
+  if (typeof provided !== "string" || provided.length !== configuredSecret.length || !crypto.timingSafeEqual(Buffer.from(provided), Buffer.from(configuredSecret))) {
+    return res.status(401).json({
+      error: "Unauthorized."
+    });
+  }
+  next();
 };
+app.post("/api/public/intake", intakeLimiter, requireIntakeSecret, async (req, res) => {
+  const accountId = process.env.INTAKE_ACCOUNT_ID || "default_account";
 
-app.post("/api/public/intake", intakeLimiter, requireIntakeSecret, (req, res) => {
-    const accountId = process.env.INTAKE_ACCOUNT_ID || "default_account";
+  // Hard safety check: INTAKE_ACCOUNT_ID must be a real, existing account
+  // — never trusted blindly. Without this, a misconfigured value (most
+  // commonly the 8-character TRUNCATED workspace ID shown in the app
+  // header, e.g. "4864426e", instead of the full UUID account_id) would
+  // silently create every website lead under an account that doesn't
+  // exist. That's not a visible failure: the request still returns
+  // 200/201, so nothing looks broken — the leads just vanish into a
+  // phantom account_id that no logged-in user can ever see, and it can
+  // stay that way indefinitely with nobody noticing. Reject loudly
+  // instead, so a bad config is caught immediately rather than silently
+  // losing every lead forever.
+  const accountExists = await db.prepare("SELECT 1 FROM accounts WHERE id = ?").get(accountId);
+  if (!accountExists) {
+    logger.error(`[Intake] INTAKE_ACCOUNT_ID ("${accountId}") does not match any real account — rejecting to avoid silently orphaning lead data. If you copied this from the app header, that display is truncated to 8 characters; use the full Workspace ID from Settings → Integrations instead.`);
+    return res.status(503).json({
+      error: "Gateway is misconfigured. This has been logged for the site administrator."
+    });
+  }
+  const body = sanitizeObject(req.body || {});
+  const {
+    name,
+    company,
+    email,
+    phone,
+    employees,
+    biggestChallenge,
+    message,
+    source,
+    eventId
+  } = body;
+  if (!isNonEmptyString(name, 200)) return badRequest(res, "name is required.");
+  if (!isNonEmptyString(company, 200)) return badRequest(res, "company is required.");
+  if (!isValidEmail(email)) return badRequest(res, "A valid email is required.");
+  if (eventId !== undefined && eventId !== null && !isNonEmptyString(String(eventId), 255)) {
+    return badRequest(res, "eventId is invalid.");
+  }
 
-    // Hard safety check: INTAKE_ACCOUNT_ID must be a real, existing account
-    // — never trusted blindly. Without this, a misconfigured value (most
-    // commonly the 8-character TRUNCATED workspace ID shown in the app
-    // header, e.g. "4864426e", instead of the full UUID account_id) would
-    // silently create every website lead under an account that doesn't
-    // exist. That's not a visible failure: the request still returns
-    // 200/201, so nothing looks broken — the leads just vanish into a
-    // phantom account_id that no logged-in user can ever see, and it can
-    // stay that way indefinitely with nobody noticing. Reject loudly
-    // instead, so a bad config is caught immediately rather than silently
-    // losing every lead forever.
-    const accountExists = db.prepare("SELECT 1 FROM accounts WHERE id = ?").get(accountId);
-    if (!accountExists) {
-        logger.error(`[Intake] INTAKE_ACCOUNT_ID ("${accountId}") does not match any real account — rejecting to avoid silently orphaning lead data. If you copied this from the app header, that display is truncated to 8 characters; use the full Workspace ID from Settings → Integrations instead.`);
-        return res.status(503).json({ error: "Gateway is misconfigured. This has been logged for the site administrator." });
+  // Idempotency: a retry of the exact same form submission (same eventId)
+  // must not create a second job. website2026 generates this once per
+  // submission attempt and reuses it on retry.
+  if (eventId) {
+    const existingJob = await db.prepare("SELECT id FROM jobs WHERE intakeEventId = ? AND account_id = ?").get(String(eventId), accountId);
+    if (existingJob) {
+      // Look up the client the same way the create path below does —
+      // by email then phone, NOT by the job's stored client name
+      // string. Name-based lookup here would be wrong in two ways:
+      // it can match the wrong client if two clients share a name,
+      // and it returns nothing at all if staff have since renamed the
+      // client (e.g. fixed a typo), even though a real match exists.
+      let existingClient = null;
+      if (email) {
+        existingClient = await db.prepare("SELECT id FROM clients WHERE LOWER(email) = LOWER(?) AND account_id = ?").get(email, accountId);
+      }
+      if (!existingClient && phone) {
+        existingClient = await db.prepare("SELECT id FROM clients WHERE phone = ? AND account_id = ?").get(phone, accountId);
+      }
+      logger.info(`[Intake] Duplicate eventId ${eventId} — returning existing job ${existingJob.id} without creating another.`);
+      return res.status(200).json({
+        success: true,
+        action: "already_processed",
+        jobId: existingJob.id,
+        clientId: existingClient?.id || null
+      });
     }
-
-    const body = sanitizeObject(req.body || {});
-    const { name, company, email, phone, employees, biggestChallenge, message, source, eventId } = body;
-
-    if (!isNonEmptyString(name, 200)) return badRequest(res, "name is required.");
-    if (!isNonEmptyString(company, 200)) return badRequest(res, "company is required.");
-    if (!isValidEmail(email)) return badRequest(res, "A valid email is required.");
-    if (eventId !== undefined && eventId !== null && !isNonEmptyString(String(eventId), 255)) {
-        return badRequest(res, "eventId is invalid.");
-    }
-
-    // Idempotency: a retry of the exact same form submission (same eventId)
-    // must not create a second job. website2026 generates this once per
-    // submission attempt and reuses it on retry.
-    if (eventId) {
-        const existingJob = db.prepare("SELECT id FROM jobs WHERE intakeEventId = ? AND account_id = ?").get(String(eventId), accountId);
-        if (existingJob) {
-            // Look up the client the same way the create path below does —
-            // by email then phone, NOT by the job's stored client name
-            // string. Name-based lookup here would be wrong in two ways:
-            // it can match the wrong client if two clients share a name,
-            // and it returns nothing at all if staff have since renamed the
-            // client (e.g. fixed a typo), even though a real match exists.
-            let existingClient = null;
-            if (email) {
-                existingClient = db.prepare("SELECT id FROM clients WHERE LOWER(email) = LOWER(?) AND account_id = ?").get(email, accountId);
-            }
-            if (!existingClient && phone) {
-                existingClient = db.prepare("SELECT id FROM clients WHERE phone = ? AND account_id = ?").get(phone, accountId);
-            }
-            logger.info(`[Intake] Duplicate eventId ${eventId} — returning existing job ${existingJob.id} without creating another.`);
-            return res.status(200).json({ success: true, action: "already_processed", jobId: existingJob.id, clientId: existingClient?.id || null });
-        }
-    }
-
-    const id = uuidv4();
-    const secureToken = uuidv4();
-    const title = `Website Inquiry — ${company}`.slice(0, 300);
-    const now = new Date().toISOString();
-
-    const descriptionParts = [];
-    if (message) descriptionParts.push(message.trim());
-    if (biggestChallenge) descriptionParts.push(`Biggest challenge: ${biggestChallenge}`);
-    if (employees) descriptionParts.push(`Company size: ${employees} employees`);
-    if (phone) descriptionParts.push(`Phone: ${phone}`);
-    descriptionParts.push(`Submitted via ${source || "website2026"} contact form.`);
-    const description = descriptionParts.join("\n\n").slice(0, 5000);
-
-    const MAX_NOTES_LENGTH = 20000;
-    const trimNotes = (notes) => (notes.length > MAX_NOTES_LENGTH ? notes.slice(notes.length - MAX_NOTES_LENGTH) : notes);
-
-    try {
-        db.prepare(`
+  }
+  const id = uuidv4();
+  const secureToken = uuidv4();
+  const title = `Website Inquiry — ${company}`.slice(0, 300);
+  const now = new Date().toISOString();
+  const descriptionParts = [];
+  if (message) descriptionParts.push(message.trim());
+  if (biggestChallenge) descriptionParts.push(`Biggest challenge: ${biggestChallenge}`);
+  if (employees) descriptionParts.push(`Company size: ${employees} employees`);
+  if (phone) descriptionParts.push(`Phone: ${phone}`);
+  descriptionParts.push(`Submitted via ${source || "website2026"} contact form.`);
+  const description = descriptionParts.join("\n\n").slice(0, 5000);
+  const MAX_NOTES_LENGTH = 20000;
+  const trimNotes = notes => notes.length > MAX_NOTES_LENGTH ? notes.slice(notes.length - MAX_NOTES_LENGTH) : notes;
+  try {
+    await db.prepare(`
             INSERT INTO jobs (id, title, client, description, status, createdAt, priority, clientEmail, secureToken, depositPaid, account_id, timerStartedAt, timeLogs, intakeEventId)
             VALUES (@id, @title, @client, @description, @status, @createdAt, @priority, @clientEmail, @secureToken, 0, @account_id, @timerStartedAt, '[]', @intakeEventId)
         `).run({
-            id,
-            title,
-            client: name,
-            description,
-            status: "request",
-            createdAt: now,
-            priority: "medium",
-            clientEmail: email,
-            secureToken,
-            account_id: accountId,
-            timerStartedAt: now,
-            intakeEventId: eventId ? String(eventId) : null
-        });
+      id,
+      title,
+      client: name,
+      description,
+      status: "request",
+      createdAt: now,
+      priority: "medium",
+      clientEmail: email,
+      secureToken,
+      account_id: accountId,
+      timerStartedAt: now,
+      intakeEventId: eventId ? String(eventId) : null
+    });
+    const insertTag = db.prepare('INSERT INTO job_tags (job_id, tag, account_id) VALUES (?, ?, ?)');
+    await insertTag.run(id, "Website Lead", accountId);
+    const insertActivity = db.prepare('INSERT INTO activity_logs (id, job_id, action, timestamp, user, account_id) VALUES (@id, @job_id, @action, @timestamp, @user, @account_id)');
+    await insertActivity.run({
+      id: uuidv4(),
+      job_id: id,
+      action: "Job created from website contact form",
+      timestamp: now,
+      user: "Website Intake",
+      account_id: accountId
+    });
 
-        const insertTag = db.prepare('INSERT INTO job_tags (job_id, tag, account_id) VALUES (?, ?, ?)');
-        insertTag.run(id, "Website Lead", accountId);
-
-        const insertActivity = db.prepare('INSERT INTO activity_logs (id, job_id, action, timestamp, user, account_id) VALUES (@id, @job_id, @action, @timestamp, @user, @account_id)');
-        insertActivity.run({
-            id: uuidv4(),
-            job_id: id,
-            action: "Job created from website contact form",
-            timestamp: now,
-            user: "Website Intake",
-            account_id: accountId
-        });
-
-        // Client dedup: email first (case-insensitive — the same person
-        // rarely types their email with different casing, but browsers/
-        // autofill sometimes do), then phone as a fallback. Matching by
-        // name (the previous behavior) was fragile — two different people
-        // can share a name, and the same person can spell theirs
-        // differently between submissions.
-        let existingClient = null;
-        if (email) {
-            existingClient = db.prepare("SELECT id, notes, leadSource FROM clients WHERE LOWER(email) = LOWER(?) AND account_id = ?").get(email, accountId);
-        }
-        if (!existingClient && phone) {
-            existingClient = db.prepare("SELECT id, notes, leadSource FROM clients WHERE phone = ? AND account_id = ?").get(phone, accountId);
-        }
-
-        let clientId;
-        let action;
-        if (existingClient) {
-            // Known person submitting another inquiry: preserve the existing
-            // client record (never overwritten wholesale), append this new
-            // inquiry to their notes, and leave leadSource/leadStatus alone
-            // — retroactively relabeling an established client as a fresh
-            // "website lead" would misrepresent how they actually came in,
-            // and clobbering a status staff has since set (e.g. "Converted")
-            // back to anything would lose real work.
-            clientId = existingClient.id;
-            action = "updated";
-            const appended = (message || "").trim()
-                ? `\n\n---\n[${now}] New website inquiry:\n${message.trim()}`
-                : `\n\n---\n[${now}] New website inquiry submitted (no message included).`;
-            const newNotes = trimNotes((existingClient.notes || "") + appended);
-            db.prepare("UPDATE clients SET email = ?, notes = ? WHERE id = ?").run(email, newNotes, clientId);
-        } else {
-            // New person: create the client, clearly marked as a website
-            // lead using dedicated fields so it's identifiable in Client
-            // Management without reading raw notes text, while the notes
-            // field itself preserves the original inquiry verbatim.
-            clientId = uuidv4();
-            action = "created";
-            const initialNotes = trimNotes(
-                `Lead Source: Website\nLead Status: New\n\n[${now}] Original inquiry:\n${(message || "(no message included)").trim()}`
-            );
-            db.prepare(
-                "INSERT INTO clients (id, name, email, phone, company, notes, createdAt, account_id, leadSource, leadStatus) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-            ).run(clientId, name, email, phone || null, company, initialNotes, now, accountId, "website", "New");
-        }
-
-        try {
-            const jobFolder = ensureJobFolder(accountId, name, id);
-            fs.writeFileSync(path.join(jobFolder, 'README.md'), `# Project: ${title}\nClient: ${name}\nJob ID: ${id}\nCreated: ${now}\n\nThis folder contains all files, quotes, invoices, and logs for this project.\n`);
-        } catch (folderErr) {
-            console.error('Could not create job folder for intake job:', folderErr.message);
-        }
-
-        logger.info(`[Intake] Job ${id} created from website contact form for account ${accountId}; client ${action}.`);
-        res.status(201).json({ success: true, action, jobId: id, clientId });
-    } catch (error) {
-        console.error("[Intake] Failed to create job:", error);
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+    // Client dedup: email first (case-insensitive — the same person
+    // rarely types their email with different casing, but browsers/
+    // autofill sometimes do), then phone as a fallback. Matching by
+    // name (the previous behavior) was fragile — two different people
+    // can share a name, and the same person can spell theirs
+    // differently between submissions.
+    let existingClient = null;
+    if (email) {
+      existingClient = await db.prepare("SELECT id, notes, leadSource FROM clients WHERE LOWER(email) = LOWER(?) AND account_id = ?").get(email, accountId);
     }
-});
-
-app.put("/api/jobs/:id", authenticateToken, async (req, res) => {
-    const { id } = req.params;
-    const { title, client, description, status, dueDate, amount, priority, invoiceNotes, assignedTo, clientEmail, tags, activityLog, depositPaid, quoteApproved, lineItems, deliverables, timerStartedAt, stageAssignments, timeLogs } = req.body;
-
+    if (!existingClient && phone) {
+      existingClient = await db.prepare("SELECT id, notes, leadSource FROM clients WHERE phone = ? AND account_id = ?").get(phone, accountId);
+    }
+    let clientId;
+    let action;
+    if (existingClient) {
+      // Known person submitting another inquiry: preserve the existing
+      // client record (never overwritten wholesale), append this new
+      // inquiry to their notes, and leave leadSource/leadStatus alone
+      // — retroactively relabeling an established client as a fresh
+      // "website lead" would misrepresent how they actually came in,
+      // and clobbering a status staff has since set (e.g. "Converted")
+      // back to anything would lose real work.
+      clientId = existingClient.id;
+      action = "updated";
+      const appended = (message || "").trim() ? `\n\n---\n[${now}] New website inquiry:\n${message.trim()}` : `\n\n---\n[${now}] New website inquiry submitted (no message included).`;
+      const newNotes = trimNotes((existingClient.notes || "") + appended);
+      await db.prepare("UPDATE clients SET email = ?, notes = ? WHERE id = ?").run(email, newNotes, clientId);
+    } else {
+      // New person: create the client, clearly marked as a website
+      // lead using dedicated fields so it's identifiable in Client
+      // Management without reading raw notes text, while the notes
+      // field itself preserves the original inquiry verbatim.
+      clientId = uuidv4();
+      action = "created";
+      const initialNotes = trimNotes(`Lead Source: Website\nLead Status: New\n\n[${now}] Original inquiry:\n${(message || "(no message included)").trim()}`);
+      await db.prepare("INSERT INTO clients (id, name, email, phone, company, notes, createdAt, account_id, leadSource, leadStatus) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(clientId, name, email, phone || null, company, initialNotes, now, accountId, "website", "New");
+    }
     try {
-        const existingJob = db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(id, req.accountId);
-        if (!existingJob) return res.status(404).json({ error: "Job not found" });
+      const jobFolder = ensureJobFolder(accountId, name, id);
+      fs.writeFileSync(path.join(jobFolder, 'README.md'), `# Project: ${title}\nClient: ${name}\nJob ID: ${id}\nCreated: ${now}\n\nThis folder contains all files, quotes, invoices, and logs for this project.\n`);
+    } catch (folderErr) {
+      console.error('Could not create job folder for intake job:', folderErr.message);
+    }
+    logger.info(`[Intake] Job ${id} created from website contact form for account ${accountId}; client ${action}.`);
+    res.status(201).json({
+      success: true,
+      action,
+      jobId: id,
+      clientId
+    });
+  } catch (error) {
+    console.error("[Intake] Failed to create job:", error);
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
+});
+app.put("/api/jobs/:id", authenticateToken, async (req, res) => {
+  const {
+    id
+  } = req.params;
+  const {
+    title,
+    client,
+    description,
+    status,
+    dueDate,
+    amount,
+    priority,
+    invoiceNotes,
+    assignedTo,
+    clientEmail,
+    tags,
+    activityLog,
+    depositPaid,
+    quoteApproved,
+    lineItems,
+    deliverables,
+    timerStartedAt,
+    stageAssignments,
+    timeLogs
+  } = req.body;
+  try {
+    const existingJob = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(id, req.accountId);
+    if (!existingJob) return res.status(404).json({
+      error: "Job not found"
+    });
+    const statusChanged = status && existingJob.status !== status;
+    let finalStatus = status || existingJob.status;
+    let finalAssignedTo = assignedTo !== undefined ? assignedTo : existingJob.assignedTo;
+    let finalTimerStartedAt = timerStartedAt !== undefined ? timerStartedAt : existingJob.timerStartedAt;
+    let finalTimeLogs = timeLogs !== undefined ? timeLogs : existingJob.timeLogs;
 
-        const statusChanged = status && existingJob.status !== status;
-        let finalStatus = status || existingJob.status;
-        let finalAssignedTo = assignedTo !== undefined ? assignedTo : existingJob.assignedTo;
-        let finalTimerStartedAt = timerStartedAt !== undefined ? timerStartedAt : existingJob.timerStartedAt;
-        let finalTimeLogs = timeLogs !== undefined ? timeLogs : existingJob.timeLogs;
+    // AUTO-ADVANCE: If in 'request' and now assigned, move to 'estimation'
+    if (finalStatus === 'request' && finalAssignedTo && !existingJob.assignedTo) {
+      finalStatus = 'estimation';
+      console.log(`AUTO-ADVANCE: Job ${id} assigned to ${finalAssignedTo}. Moving to 'estimation'.`);
+    }
 
-        // AUTO-ADVANCE: If in 'request' and now assigned, move to 'estimation'
-        if (finalStatus === 'request' && finalAssignedTo && !existingJob.assignedTo) {
-             finalStatus = 'estimation';
-             console.log(`AUTO-ADVANCE: Job ${id} assigned to ${finalAssignedTo}. Moving to 'estimation'.`);
-        }
-
-        // AUTOMATION: If status changed (either manually or via auto-advance)
-        if (finalStatus !== existingJob.status) {
-            const result = updateJobStage(id, finalStatus, req.accountId, req.user?.email || "User");
-            if (result) {
-                finalAssignedTo = result.assignedTo;
-                finalTimerStartedAt = result.timerStartedAt;
-                finalTimeLogs = result.timeLogs;
-            }
-        }
-
-        const updateJob = db.prepare(`
+    // AUTOMATION: If status changed (either manually or via auto-advance)
+    if (finalStatus !== existingJob.status) {
+      const result = await updateJobStage(id, finalStatus, req.accountId, req.user?.email || "User");
+      if (result) {
+        finalAssignedTo = result.assignedTo;
+        finalTimerStartedAt = result.timerStartedAt;
+        finalTimeLogs = result.timeLogs;
+      }
+    }
+    const updateJob = db.prepare(`
             UPDATE jobs SET 
                 title = @title, client = @client, description = @description, status = @status, 
                 dueDate = @dueDate, amount = @amount, priority = @priority, invoiceNotes = @invoiceNotes, 
@@ -1129,224 +1282,268 @@ app.put("/api/jobs/:id", authenticateToken, async (req, res) => {
                 stageAssignments = @stageAssignments, timeLogs = @timeLogs
             WHERE id = @id AND account_id = @account_id
         `);
-
-        updateJob.run({ 
-            id,
-            title: title !== undefined ? title : existingJob.title,
-            client: client !== undefined ? client : existingJob.client,
-            description: description !== undefined ? description : (existingJob.description || null),
-            status: finalStatus,
-            dueDate: dueDate !== undefined ? dueDate : (existingJob.dueDate || null),
-            amount: amount !== undefined ? (Number(amount) || 0) : (existingJob.amount || 0),
-            priority: priority !== undefined ? priority : (existingJob.priority || 'medium'),
-            invoiceNotes: invoiceNotes !== undefined ? invoiceNotes : (existingJob.invoiceNotes || null), 
-            assignedTo: finalAssignedTo !== undefined ? finalAssignedTo : (existingJob.assignedTo || null),
-            clientEmail: clientEmail !== undefined ? clientEmail : (existingJob.clientEmail || null), 
-            depositPaid: depositPaid !== undefined ? (depositPaid ? 1 : 0) : (existingJob.depositPaid ? 1 : 0), 
-            quoteApproved: quoteApproved !== undefined ? (quoteApproved ? 1 : 0) : (existingJob.quoteApproved ? 1 : 0),
-            account_id: req.accountId,
-            lineItems: lineItems !== undefined ? (lineItems ? JSON.stringify(lineItems) : null) : (existingJob.lineItems || null),
-            deliverables: deliverables !== undefined ? (deliverables ? JSON.stringify(deliverables) : null) : (existingJob.deliverables || null),
-            timerStartedAt: finalTimerStartedAt !== undefined ? finalTimerStartedAt : (existingJob.timerStartedAt || null),
-            stageAssignments: stageAssignments !== undefined ? (stageAssignments ? JSON.stringify(stageAssignments) : null) : (existingJob.stageAssignments || null),
-            timeLogs: finalTimeLogs !== undefined ? (typeof finalTimeLogs === 'string' ? finalTimeLogs : JSON.stringify(finalTimeLogs)) : (existingJob.timeLogs || "[]")
-        });
-
-        if (tags) {
-            db.prepare('DELETE FROM job_tags WHERE job_id = ? AND account_id = ?').run(id, req.accountId);
-            const insertTag = db.prepare('INSERT INTO job_tags (job_id, tag, account_id) VALUES (?, ?, ?)');
-            tags.forEach(tag => insertTag.run(id, tag, req.accountId));
-        }
-
-        if (activityLog && activityLog.length > 0) {
-            const insertActivity = db.prepare('INSERT OR IGNORE INTO activity_logs (id, job_id, action, timestamp, user, account_id) VALUES (@id, @job_id, @action, @timestamp, @user, @account_id)');
-            activityLog.forEach(log => insertActivity.run({ ...log, job_id: id, account_id: req.accountId }));
-        }
-
-        const recipientEmail = clientEmail || existingJob?.clientEmail;
-        const jobTitle = title || existingJob?.title;
-        const token = existingJob?.secureToken;
-
-        if (statusChanged && recipientEmail && token) {
-            sendStatusUpdate(recipientEmail, jobTitle, status, token)
-                .then(r => console.log(`📧 Status update email ${r.success ? 'sent' : 'failed'} to ${recipientEmail}`))
-                .catch(e => console.error('Email error:', e));
-        }
-
-        // --- NOTIFICATION ---
-        // (Handled by updateJobStage for status/assignment changes)
-
-        const updatedJob = db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(id, req.accountId);
-        res.json({
-            ...updatedJob,
-            tags: getJobTags(id),
-            activityLog: getJobActivityLogs(id),
-            lineItems: updatedJob.lineItems ? JSON.parse(updatedJob.lineItems) : [],
-            deliverables: updatedJob.deliverables ? JSON.parse(updatedJob.deliverables) : [],
-            timeLogs: updatedJob.timeLogs ? JSON.parse(updatedJob.timeLogs) : [],
-            stageAssignments: updatedJob.stageAssignments ? JSON.parse(updatedJob.stageAssignments) : {}
-        });
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+    await updateJob.run({
+      id,
+      title: title !== undefined ? title : existingJob.title,
+      client: client !== undefined ? client : existingJob.client,
+      description: description !== undefined ? description : existingJob.description || null,
+      status: finalStatus,
+      dueDate: dueDate !== undefined ? dueDate : existingJob.dueDate || null,
+      amount: amount !== undefined ? Number(amount) || 0 : existingJob.amount || 0,
+      priority: priority !== undefined ? priority : existingJob.priority || 'medium',
+      invoiceNotes: invoiceNotes !== undefined ? invoiceNotes : existingJob.invoiceNotes || null,
+      assignedTo: finalAssignedTo !== undefined ? finalAssignedTo : existingJob.assignedTo || null,
+      clientEmail: clientEmail !== undefined ? clientEmail : existingJob.clientEmail || null,
+      depositPaid: depositPaid !== undefined ? depositPaid ? 1 : 0 : existingJob.depositPaid ? 1 : 0,
+      quoteApproved: quoteApproved !== undefined ? quoteApproved ? 1 : 0 : existingJob.quoteApproved ? 1 : 0,
+      account_id: req.accountId,
+      lineItems: lineItems !== undefined ? lineItems ? JSON.stringify(lineItems) : null : existingJob.lineItems || null,
+      deliverables: deliverables !== undefined ? deliverables ? JSON.stringify(deliverables) : null : existingJob.deliverables || null,
+      timerStartedAt: finalTimerStartedAt !== undefined ? finalTimerStartedAt : existingJob.timerStartedAt || null,
+      stageAssignments: stageAssignments !== undefined ? stageAssignments ? JSON.stringify(stageAssignments) : null : existingJob.stageAssignments || null,
+      timeLogs: finalTimeLogs !== undefined ? typeof finalTimeLogs === 'string' ? finalTimeLogs : JSON.stringify(finalTimeLogs) : existingJob.timeLogs || "[]"
+    });
+    if (tags) {
+      await db.prepare('DELETE FROM job_tags WHERE job_id = ? AND account_id = ?').run(id, req.accountId);
+      const insertTag = db.prepare('INSERT INTO job_tags (job_id, tag, account_id) VALUES (?, ?, ?)');
+      for (const tag of tags) {
+        await insertTag.run(id, tag, req.accountId);
+      }
     }
+    if (activityLog && activityLog.length > 0) {
+      const insertActivity = db.prepare('INSERT OR IGNORE INTO activity_logs (id, job_id, action, timestamp, user, account_id) VALUES (@id, @job_id, @action, @timestamp, @user, @account_id)');
+      for (const log of activityLog) {
+        await insertActivity.run({
+          ...log,
+          job_id: id,
+          account_id: req.accountId
+        });
+      }
+    }
+    const recipientEmail = clientEmail || existingJob?.clientEmail;
+    const jobTitle = title || existingJob?.title;
+    const token = existingJob?.secureToken;
+    if (statusChanged && recipientEmail && token) {
+      sendStatusUpdate(recipientEmail, jobTitle, status, token).then(r => console.log(`📧 Status update email ${r.success ? 'sent' : 'failed'} to ${recipientEmail}`)).catch(e => console.error('Email error:', e));
+    }
+
+    // --- NOTIFICATION ---
+    // (Handled by updateJobStage for status/assignment changes)
+
+    const updatedJob = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(id, req.accountId);
+    res.json({
+      ...updatedJob,
+      tags: await getJobTags(id),
+      activityLog: await getJobActivityLogs(id),
+      lineItems: updatedJob.lineItems ? JSON.parse(updatedJob.lineItems) : [],
+      deliverables: updatedJob.deliverables ? JSON.parse(updatedJob.deliverables) : [],
+      timeLogs: updatedJob.timeLogs ? JSON.parse(updatedJob.timeLogs) : [],
+      stageAssignments: updatedJob.stageAssignments ? JSON.parse(updatedJob.stageAssignments) : {}
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
 
 // Delete job endpoint
-app.delete("/api/jobs/:id", authenticateToken, (req, res) => {
-    const { id } = req.params;
-    try {
-        const job = db.prepare("SELECT id FROM jobs WHERE id = ? AND account_id = ?").get(id, req.accountId);
-        if (!job) return res.status(404).json({ error: "Job not found" });
-
-        db.transaction(() => {
-            db.prepare("DELETE FROM job_tags WHERE job_id = ? AND account_id = ?").run(id, req.accountId);
-            db.prepare("DELETE FROM activity_logs WHERE job_id = ? AND account_id = ?").run(id, req.accountId);
-            db.prepare("DELETE FROM job_messages WHERE job_id = ? AND account_id = ?").run(id, req.accountId);
-            db.prepare("DELETE FROM jobs WHERE id = ? AND account_id = ?").run(id, req.accountId);
-        })();
-
-        logger.audit('job_deleted', { accountId: req.accountId, jobId: id });
-        res.json({ success: true });
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+app.delete("/api/jobs/:id", authenticateToken, async (req, res) => {
+  const {
+    id
+  } = req.params;
+  try {
+    const job = await db.prepare("SELECT id FROM jobs WHERE id = ? AND account_id = ?").get(id, req.accountId);
+    if (!job) return res.status(404).json({
+      error: "Job not found"
+    });
+    db.transaction(async () => {
+      await db.prepare("DELETE FROM job_tags WHERE job_id = ? AND account_id = ?").run(id, req.accountId);
+      await db.prepare("DELETE FROM activity_logs WHERE job_id = ? AND account_id = ?").run(id, req.accountId);
+      await db.prepare("DELETE FROM job_messages WHERE job_id = ? AND account_id = ?").run(id, req.accountId);
+      await db.prepare("DELETE FROM jobs WHERE id = ? AND account_id = ?").run(id, req.accountId);
+    })();
+    logger.audit('job_deleted', {
+      accountId: req.accountId,
+      jobId: id
+    });
+    res.json({
+      success: true
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
-
 
 // Send portal link email
 app.post("/api/jobs/:id/send-portal", authenticateToken, async (req, res) => {
-    const { id } = req.params;
-    try {
-        const job = db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(id, req.accountId);
-        if (!job) return res.status(404).json({ error: "Job not found" });
-        if (!job.clientEmail) return res.status(400).json({ error: "Client does not have an email address" });
-
-        const result = await sendPortalLink(job.clientEmail, job.title, job.secureToken);
-
-        if (result.success) {
-            res.json({ success: true, previewUrl: result.previewUrl });
-        } else {
-            res.status(500).json({ error: result.error || "Failed to send email" });
-        }
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+  const {
+    id
+  } = req.params;
+  try {
+    const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(id, req.accountId);
+    if (!job) return res.status(404).json({
+      error: "Job not found"
+    });
+    if (!job.clientEmail) return res.status(400).json({
+      error: "Client does not have an email address"
+    });
+    const result = await sendPortalLink(job.clientEmail, job.title, job.secureToken);
+    if (result.success) {
+      res.json({
+        success: true,
+        previewUrl: result.previewUrl
+      });
+    } else {
+      res.status(500).json({
+        error: result.error || "Failed to send email"
+      });
     }
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
 
 // Send Quote workflow email
 app.post("/api/jobs/:id/send-quote", authenticateToken, async (req, res) => {
-    const { id } = req.params;
-    try {
-        const job = db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(id, req.accountId);
-        if (!job) return res.status(404).json({ error: "Job not found" });
-        if (!job.clientEmail) return res.status(400).json({ error: "Client does not have an email address" });
+  const {
+    id
+  } = req.params;
+  try {
+    const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(id, req.accountId);
+    if (!job) return res.status(404).json({
+      error: "Job not found"
+    });
+    if (!job.clientEmail) return res.status(400).json({
+      error: "Client does not have an email address"
+    });
 
-        // Update status to estimation if it was request
-        if(job.status === "request") {
-            db.prepare("UPDATE jobs SET status = 'estimation' WHERE id = ? AND account_id = ?").run(id, req.accountId);
-        }
-
-        // We can reuse sendPortalLink for now, or imagine adapting it to explicitly say "Quote Approval"
-        const result = await sendPortalLink(job.clientEmail, `Quote Ready: ${job.title}`, job.secureToken);
-
-        if (result.success) {
-            db.prepare("INSERT INTO activity_logs (id, job_id, action, timestamp, user, account_id) VALUES (?, ?, ?, ?, ?, ?)")
-                .run(uuidv4(), job.id, "Quote link sent to client", new Date().toISOString(), req.user.email, req.accountId);
-            res.json({ success: true, previewUrl: result.previewUrl });
-        } else {
-            res.status(500).json({ error: result.error || "Failed to send quote email" });
-        }
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+    // Update status to estimation if it was request
+    if (job.status === "request") {
+      await db.prepare("UPDATE jobs SET status = 'estimation' WHERE id = ? AND account_id = ?").run(id, req.accountId);
     }
+
+    // We can reuse sendPortalLink for now, or imagine adapting it to explicitly say "Quote Approval"
+    const result = await sendPortalLink(job.clientEmail, `Quote Ready: ${job.title}`, job.secureToken);
+    if (result.success) {
+      await db.prepare("INSERT INTO activity_logs (id, job_id, action, timestamp, user, account_id) VALUES (?, ?, ?, ?, ?, ?)").run(uuidv4(), job.id, "Quote link sent to client", new Date().toISOString(), req.user.email, req.accountId);
+      res.json({
+        success: true,
+        previewUrl: result.previewUrl
+      });
+    } else {
+      res.status(500).json({
+        error: result.error || "Failed to send quote email"
+      });
+    }
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
 
 // Get business settings
-app.get("/api/settings", authenticateToken, (req, res) => {
-    try {
-        const settings = db.prepare("SELECT * FROM settings WHERE account_id = ? LIMIT 1").get(req.accountId);
-        res.json(settings || {});
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+app.get("/api/settings", authenticateToken, async (req, res) => {
+  try {
+    const settings = await db.prepare("SELECT * FROM settings WHERE account_id = ? LIMIT 1").get(req.accountId);
+    res.json(settings || {});
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
 
 // Update business settings
-app.put("/api/settings", authenticateToken, (req, res) => {
-    const { name, address, email, phone, logoUrl, website, paymentTerms, currency, taxRate } = sanitizeObject(req.body);
-    try {
-        const existing = db.prepare("SELECT id FROM settings WHERE account_id = ?").get(req.accountId);
-        if (existing) {
-            db.prepare(`
+app.put("/api/settings", authenticateToken, async (req, res) => {
+  const {
+    name,
+    address,
+    email,
+    phone,
+    logoUrl,
+    website,
+    paymentTerms,
+    currency,
+    taxRate
+  } = sanitizeObject(req.body);
+  try {
+    const existing = await db.prepare("SELECT id FROM settings WHERE account_id = ?").get(req.accountId);
+    if (existing) {
+      await db.prepare(`
                 UPDATE settings 
                 SET name = ?, address = ?, email = ?, phone = ?, logoUrl = ?, website = ?, paymentTerms = ?, currency = ?, taxRate = ? 
                 WHERE account_id = ?
             `).run(name, address, email, phone, logoUrl, website, paymentTerms, currency, taxRate, req.accountId);
-        } else {
-            db.prepare(`
+    } else {
+      await db.prepare(`
                 INSERT INTO settings (id, name, address, email, phone, logoUrl, website, paymentTerms, currency, taxRate, account_id)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `).run(uuidv4(), name, address, email, phone, logoUrl, website, paymentTerms, currency, taxRate, req.accountId);
-        }
-
-        res.json(db.prepare("SELECT * FROM settings WHERE account_id = ?").get(req.accountId));
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
     }
+    res.json(await db.prepare("SELECT * FROM settings WHERE account_id = ?").get(req.accountId));
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
 
 // --- Business logo upload (public read — see PUBLIC_LOGOS_DIR comment above) ---
 
 const ALLOWED_LOGO_MIME_TO_EXT = {
-    'image/png': '.png',
-    'image/jpeg': '.jpg',
-    'image/webp': '.webp',
-    'image/gif': '.gif',
+  'image/png': '.png',
+  'image/jpeg': '.jpg',
+  'image/webp': '.webp',
+  'image/gif': '.gif'
 };
-
 const logoUpload = multer({
-    storage: multer.memoryStorage(),
-    limits: { fileSize: 5 * 1024 * 1024 },
-    fileFilter: (req, file, cb) => {
-        if (!ALLOWED_LOGO_MIME_TO_EXT[file.mimetype]) {
-            return cb(new Error('Logo must be a PNG, JPEG, WEBP, or GIF image'));
-        }
-        cb(null, true);
-    },
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 5 * 1024 * 1024
+  },
+  fileFilter: (req, file, cb) => {
+    if (!ALLOWED_LOGO_MIME_TO_EXT[file.mimetype]) {
+      return cb(new Error('Logo must be a PNG, JPEG, WEBP, or GIF image'));
+    }
+    cb(null, true);
+  }
 });
-
 app.post("/api/settings/logo", authenticateToken, uploadLimiter, (req, res) => {
-    logoUpload.single('logo')(req, res, (err) => {
-        if (err) return badRequest(res, err.message || 'Upload failed');
-        if (!req.file) return badRequest(res, 'No logo file provided');
+  logoUpload.single('logo')(req, res, async err => {
+    if (err) return badRequest(res, err.message || 'Upload failed');
+    if (!req.file) return badRequest(res, 'No logo file provided');
+    try {
+      const ext = ALLOWED_LOGO_MIME_TO_EXT[req.file.mimetype];
+      const filename = `${req.accountId}${ext}`;
 
-        try {
-            const ext = ALLOWED_LOGO_MIME_TO_EXT[req.file.mimetype];
-            const filename = `${req.accountId}${ext}`;
-
-            // Remove any previous logo for this account, including under a
-            // different extension than the new upload, so old files don't
-            // pile up in a publicly-servable folder.
-            for (const oldExt of Object.values(ALLOWED_LOGO_MIME_TO_EXT)) {
-                const oldPath = path.join(PUBLIC_LOGOS_DIR, `${req.accountId}${oldExt}`);
-                if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
-            }
-
-            fs.writeFileSync(path.join(PUBLIC_LOGOS_DIR, filename), req.file.buffer);
-
-            const logoUrl = `/public/logos/${filename}?v=${Date.now()}`;
-            const existing = db.prepare("SELECT id FROM settings WHERE account_id = ?").get(req.accountId);
-            if (existing) {
-                db.prepare("UPDATE settings SET logoUrl = ? WHERE account_id = ?").run(logoUrl, req.accountId);
-            } else {
-                db.prepare("INSERT INTO settings (id, logoUrl, account_id) VALUES (?, ?, ?)").run(uuidv4(), logoUrl, req.accountId);
-            }
-
-            res.json(db.prepare("SELECT * FROM settings WHERE account_id = ?").get(req.accountId));
-        } catch (error) {
-            res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-        }
-    });
+      // Remove any previous logo for this account, including under a
+      // different extension than the new upload, so old files don't
+      // pile up in a publicly-servable folder.
+      for (const oldExt of Object.values(ALLOWED_LOGO_MIME_TO_EXT)) {
+        const oldPath = path.join(PUBLIC_LOGOS_DIR, `${req.accountId}${oldExt}`);
+        if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+      }
+      fs.writeFileSync(path.join(PUBLIC_LOGOS_DIR, filename), req.file.buffer);
+      const logoUrl = `/public/logos/${filename}?v=${Date.now()}`;
+      const existing = await db.prepare("SELECT id FROM settings WHERE account_id = ?").get(req.accountId);
+      if (existing) {
+        await db.prepare("UPDATE settings SET logoUrl = ? WHERE account_id = ?").run(logoUrl, req.accountId);
+      } else {
+        await db.prepare("INSERT INTO settings (id, logoUrl, account_id) VALUES (?, ?, ?)").run(uuidv4(), logoUrl, req.accountId);
+      }
+      res.json(await db.prepare("SELECT * FROM settings WHERE account_id = ?").get(req.accountId));
+    } catch (error) {
+      res.status(500).json({
+        error: isProduction ? "Internal Server Error" : error.message
+      });
+    }
+  });
 });
 
 // Public, unauthenticated — see PUBLIC_LOGOS_DIR comment above for why this
@@ -1355,290 +1552,419 @@ app.post("/api/settings/logo", authenticateToken, uploadLimiter, (req, res) => {
 // inside PUBLIC_LOGOS_DIR — no path traversal surface.
 const LOGO_FILENAME_RE = /^[a-zA-Z0-9-]+\.(png|jpe?g|webp|gif)$/;
 app.get("/public/logos/:filename", (req, res) => {
-    const { filename } = req.params;
-    if (!LOGO_FILENAME_RE.test(filename)) return res.status(400).end();
-    const filePath = path.join(PUBLIC_LOGOS_DIR, filename);
-    if (!fs.existsSync(filePath)) return res.status(404).end();
-    res.set('Cache-Control', 'public, max-age=31536000, immutable');
-    res.sendFile(filePath);
+  const {
+    filename
+  } = req.params;
+  if (!LOGO_FILENAME_RE.test(filename)) return res.status(400).end();
+  const filePath = path.join(PUBLIC_LOGOS_DIR, filename);
+  if (!fs.existsSync(filePath)) return res.status(404).end();
+  res.set('Cache-Control', 'public, max-age=31536000, immutable');
+  res.sendFile(filePath);
 });
 
 // Get all employees
-app.get("/api/employees", authenticateToken, (req, res) => {
-    try {
-        const employees = db.prepare("SELECT * FROM employees WHERE account_id = ?").all(req.accountId);
-        res.json(employees.map(e => ({ ...e, timeCards: e.timeCards ? JSON.parse(e.timeCards) : [] })));
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+app.get("/api/employees", authenticateToken, async (req, res) => {
+  try {
+    const employees = await db.prepare("SELECT * FROM employees WHERE account_id = ?").all(req.accountId);
+    res.json(employees.map(e => ({
+      ...e,
+      timeCards: e.timeCards ? JSON.parse(e.timeCards) : []
+    })));
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
 
 // Create an employee. Accepts an optional client-supplied id so the frontend
 // (which generates ids locally for optimistic UI) stays in sync with what's
 // actually persisted, rather than drifting from a server-generated id.
-app.post("/api/employees", authenticateToken, (req, res) => {
-    const body = sanitizeObject(req.body);
-    const { name, role, salary, hourlyRate, hoursWorked, workerType, paymentMethod, status } = body;
-    if (!name || !role || !workerType || !paymentMethod) return badRequest(res, "Missing required employee fields");
-    try {
-        const id = isNonEmptyString(req.body.id) && isValidUUID(req.body.id) ? req.body.id : uuidv4();
-        db.prepare(`
+app.post("/api/employees", authenticateToken, async (req, res) => {
+  const body = sanitizeObject(req.body);
+  const {
+    name,
+    role,
+    salary,
+    hourlyRate,
+    hoursWorked,
+    workerType,
+    paymentMethod,
+    status
+  } = body;
+  if (!name || !role || !workerType || !paymentMethod) return badRequest(res, "Missing required employee fields");
+  try {
+    const id = isNonEmptyString(req.body.id) && isValidUUID(req.body.id) ? req.body.id : uuidv4();
+    await db.prepare(`
             INSERT INTO employees (id, name, role, salary, hourlyRate, hoursWorked, workerType, paymentMethod, status, isCheckedIn, account_id)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
         `).run(id, name, role, salary || 0, hourlyRate || null, hoursWorked || 0, workerType, paymentMethod, status || "active", req.accountId);
-        const created = db.prepare("SELECT * FROM employees WHERE id = ?").get(id);
-        res.status(201).json({ ...created, timeCards: [] });
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+    const created = await db.prepare("SELECT * FROM employees WHERE id = ?").get(id);
+    res.status(201).json({
+      ...created,
+      timeCards: []
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
 
 // Update an employee — also used to append time cards (client sends full
 // timeCards array; server stores it as JSON since sqlite has no array type).
-app.put("/api/employees/:id", authenticateToken, (req, res) => {
-    const { id } = req.params;
-    const body = sanitizeObject(req.body);
-    const { name, role, salary, hourlyRate, hoursWorked, workerType, paymentMethod, status, isCheckedIn, lastCheckIn } = body;
-    try {
-        const timeCardsJson = Array.isArray(req.body.timeCards) ? JSON.stringify(req.body.timeCards) : undefined;
-        const existing = db.prepare("SELECT * FROM employees WHERE id = ? AND account_id = ?").get(id, req.accountId);
-        if (!existing) return res.status(404).json({ error: "Employee not found" });
-
-        db.prepare(`
+app.put("/api/employees/:id", authenticateToken, async (req, res) => {
+  const {
+    id
+  } = req.params;
+  const body = sanitizeObject(req.body);
+  const {
+    name,
+    role,
+    salary,
+    hourlyRate,
+    hoursWorked,
+    workerType,
+    paymentMethod,
+    status,
+    isCheckedIn,
+    lastCheckIn
+  } = body;
+  try {
+    const timeCardsJson = Array.isArray(req.body.timeCards) ? JSON.stringify(req.body.timeCards) : undefined;
+    const existing = await db.prepare("SELECT * FROM employees WHERE id = ? AND account_id = ?").get(id, req.accountId);
+    if (!existing) return res.status(404).json({
+      error: "Employee not found"
+    });
+    await db.prepare(`
             UPDATE employees SET name = ?, role = ?, salary = ?, hourlyRate = ?, hoursWorked = ?,
               workerType = ?, paymentMethod = ?, status = ?, isCheckedIn = ?, lastCheckIn = ?,
               timeCards = COALESCE(?, timeCards)
             WHERE id = ? AND account_id = ?
-        `).run(
-            name ?? existing.name, role ?? existing.role, salary ?? existing.salary,
-            hourlyRate ?? existing.hourlyRate, hoursWorked ?? existing.hoursWorked,
-            workerType ?? existing.workerType, paymentMethod ?? existing.paymentMethod,
-            status ?? existing.status, isCheckedIn ?? existing.isCheckedIn, lastCheckIn ?? existing.lastCheckIn,
-            timeCardsJson, id, req.accountId
-        );
-        const updated = db.prepare("SELECT * FROM employees WHERE id = ?").get(id);
-        res.json({ ...updated, timeCards: updated.timeCards ? JSON.parse(updated.timeCards) : [] });
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+        `).run(name ?? existing.name, role ?? existing.role, salary ?? existing.salary, hourlyRate ?? existing.hourlyRate, hoursWorked ?? existing.hoursWorked, workerType ?? existing.workerType, paymentMethod ?? existing.paymentMethod, status ?? existing.status, isCheckedIn ?? existing.isCheckedIn, lastCheckIn ?? existing.lastCheckIn, timeCardsJson, id, req.accountId);
+    const updated = await db.prepare("SELECT * FROM employees WHERE id = ?").get(id);
+    res.json({
+      ...updated,
+      timeCards: updated.timeCards ? JSON.parse(updated.timeCards) : []
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
-
-app.delete("/api/employees/:id", authenticateToken, (req, res) => {
-    const { id } = req.params;
-    try {
-        const result = db.prepare("DELETE FROM employees WHERE id = ? AND account_id = ?").run(id, req.accountId);
-        if (result.changes === 0) return res.status(404).json({ error: "Employee not found" });
-        res.json({ success: true });
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+app.delete("/api/employees/:id", authenticateToken, async (req, res) => {
+  const {
+    id
+  } = req.params;
+  try {
+    const result = await db.prepare("DELETE FROM employees WHERE id = ? AND account_id = ?").run(id, req.accountId);
+    if (result.changes === 0) return res.status(404).json({
+      error: "Employee not found"
+    });
+    res.json({
+      success: true
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
 
 // --- Payroll records ---
-app.get("/api/payroll", authenticateToken, (req, res) => {
-    try {
-        const records = db.prepare("SELECT * FROM payroll_records WHERE account_id = ? ORDER BY date DESC").all(req.accountId);
-        res.json(records);
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+app.get("/api/payroll", authenticateToken, async (req, res) => {
+  try {
+    const records = await db.prepare("SELECT * FROM payroll_records WHERE account_id = ? ORDER BY date DESC").all(req.accountId);
+    res.json(records);
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
-
-app.post("/api/payroll", authenticateToken, (req, res) => {
-    const body = sanitizeObject(req.body);
-    const { employeeId, employeeName, amount, date, status } = body;
-    if (!employeeId || !employeeName || amount == null || !date) return badRequest(res, "Missing required payroll fields");
-    try {
-        const employee = db.prepare("SELECT id FROM employees WHERE id = ? AND account_id = ?").get(employeeId, req.accountId);
-        if (!employee) return badRequest(res, "Unknown employee");
-
-        const id = isNonEmptyString(req.body.id) && isValidUUID(req.body.id) ? req.body.id : uuidv4();
-        db.prepare(`
+app.post("/api/payroll", authenticateToken, async (req, res) => {
+  const body = sanitizeObject(req.body);
+  const {
+    employeeId,
+    employeeName,
+    amount,
+    date,
+    status
+  } = body;
+  if (!employeeId || !employeeName || amount == null || !date) return badRequest(res, "Missing required payroll fields");
+  try {
+    const employee = await db.prepare("SELECT id FROM employees WHERE id = ? AND account_id = ?").get(employeeId, req.accountId);
+    if (!employee) return badRequest(res, "Unknown employee");
+    const id = isNonEmptyString(req.body.id) && isValidUUID(req.body.id) ? req.body.id : uuidv4();
+    await db.prepare(`
             INSERT INTO payroll_records (id, employeeId, employeeName, amount, date, status, account_id)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         `).run(id, employeeId, employeeName, amount, date, status || "pending", req.accountId);
-
-        logger.audit('payroll_record_created', { accountId: req.accountId, employeeId, amount });
-        const created = db.prepare("SELECT * FROM payroll_records WHERE id = ?").get(id);
-        res.status(201).json(created);
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+    logger.audit('payroll_record_created', {
+      accountId: req.accountId,
+      employeeId,
+      amount
+    });
+    const created = await db.prepare("SELECT * FROM payroll_records WHERE id = ?").get(id);
+    res.status(201).json(created);
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
-
-app.put("/api/payroll/:id", authenticateToken, (req, res) => {
-    const { id } = req.params;
-    const { status } = sanitizeObject(req.body);
-    try {
-        const result = db.prepare("UPDATE payroll_records SET status = ? WHERE id = ? AND account_id = ?")
-            .run(status, id, req.accountId);
-        if (result.changes === 0) return res.status(404).json({ error: "Payroll record not found" });
-        logger.audit('payroll_record_updated', { accountId: req.accountId, id, status });
-        res.json({ success: true });
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+app.put("/api/payroll/:id", authenticateToken, async (req, res) => {
+  const {
+    id
+  } = req.params;
+  const {
+    status
+  } = sanitizeObject(req.body);
+  try {
+    const result = await db.prepare("UPDATE payroll_records SET status = ? WHERE id = ? AND account_id = ?").run(status, id, req.accountId);
+    if (result.changes === 0) return res.status(404).json({
+      error: "Payroll record not found"
+    });
+    logger.audit('payroll_record_updated', {
+      accountId: req.accountId,
+      id,
+      status
+    });
+    res.json({
+      success: true
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
 
 // --- Team user management (distinct from /api/auth/*: these are teammates
 // within the current account, managed by an Admin) ---
-app.get("/api/users", authenticateToken, (req, res) => {
-    try {
-        const users = db.prepare("SELECT id, name, email, role, permissions FROM users WHERE account_id = ?").all(req.accountId);
-        res.json(users.map(u => ({ ...u, permissions: u.permissions ? JSON.parse(u.permissions) : [] })));
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+app.get("/api/users", authenticateToken, async (req, res) => {
+  try {
+    const users = await db.prepare("SELECT id, name, email, role, permissions FROM users WHERE account_id = ?").all(req.accountId);
+    res.json(users.map(u => ({
+      ...u,
+      permissions: u.permissions ? JSON.parse(u.permissions) : []
+    })));
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
 
 // Invite a new teammate: creates a real login account with a random temporary
 // password, emailed to them, and forces a password change on first login.
 app.post("/api/users", authenticateToken, async (req, res) => {
-    const { name, email, role, permissions } = sanitizeObject(req.body);
-    if (!name || !email || !role) return badRequest(res, "Name, email, and role are required");
-    if (!isValidEmail(email)) return badRequest(res, "Invalid email format");
-    try {
-        const existing = db.prepare("SELECT id FROM users WHERE email = ?").get(email);
-        if (existing) return badRequest(res, "A user with that email already exists");
-
-        const tempPassword = crypto.randomBytes(9).toString("base64url");
-        const hashedPassword = await bcrypt.hash(tempPassword, 12);
-        const id = uuidv4();
-
-        db.prepare(`
+  const {
+    name,
+    email,
+    role,
+    permissions
+  } = sanitizeObject(req.body);
+  if (!name || !email || !role) return badRequest(res, "Name, email, and role are required");
+  if (!isValidEmail(email)) return badRequest(res, "Invalid email format");
+  try {
+    const existing = await db.prepare("SELECT id FROM users WHERE email = ?").get(email);
+    if (existing) return badRequest(res, "A user with that email already exists");
+    const tempPassword = crypto.randomBytes(9).toString("base64url");
+    const hashedPassword = await bcrypt.hash(tempPassword, 12);
+    const id = uuidv4();
+    await db.prepare(`
             INSERT INTO users (id, name, email, role, password_hash, permissions, must_change_password, account_id)
             VALUES (?, ?, ?, ?, ?, ?, 1, ?)
         `).run(id, name, email, role, hashedPassword, JSON.stringify(Array.isArray(permissions) ? permissions : []), req.accountId);
-
-        try {
-            await sendUserInvite(email, name, role, tempPassword);
-        } catch (mailErr) {
-            logger.error(`Failed to send invite email to ${email}: ${mailErr.message}`);
-        }
-
-        logger.audit('user_invited', { accountId: req.accountId, invitedEmail: email, role });
-        res.status(201).json({ id, name, email, role, permissions: permissions || [] });
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
-});
-
-app.put("/api/users/:id", authenticateToken, (req, res) => {
-    const { id } = req.params;
-    const { name, role, permissions } = sanitizeObject(req.body);
     try {
-        const existing = db.prepare("SELECT * FROM users WHERE id = ? AND account_id = ?").get(id, req.accountId);
-        if (!existing) return res.status(404).json({ error: "User not found" });
-
-        db.prepare("UPDATE users SET name = ?, role = ?, permissions = ? WHERE id = ? AND account_id = ?")
-            .run(name ?? existing.name, role ?? existing.role, JSON.stringify(Array.isArray(permissions) ? permissions : []), id, req.accountId);
-
-        logger.audit('user_updated', { accountId: req.accountId, userId: id });
-        res.json({ success: true });
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+      await sendUserInvite(email, name, role, tempPassword);
+    } catch (mailErr) {
+      logger.error(`Failed to send invite email to ${email}: ${mailErr.message}`);
     }
+    logger.audit('user_invited', {
+      accountId: req.accountId,
+      invitedEmail: email,
+      role
+    });
+    res.status(201).json({
+      id,
+      name,
+      email,
+      role,
+      permissions: permissions || []
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
-
-app.delete("/api/users/:id", authenticateToken, (req, res) => {
-    const { id } = req.params;
-    if (id === req.user.id) return badRequest(res, "You cannot remove your own account");
-    try {
-        const result = db.prepare("DELETE FROM users WHERE id = ? AND account_id = ?").run(id, req.accountId);
-        if (result.changes === 0) return res.status(404).json({ error: "User not found" });
-        logger.audit('user_removed', { accountId: req.accountId, userId: id });
-        res.json({ success: true });
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+app.put("/api/users/:id", authenticateToken, async (req, res) => {
+  const {
+    id
+  } = req.params;
+  const {
+    name,
+    role,
+    permissions
+  } = sanitizeObject(req.body);
+  try {
+    const existing = await db.prepare("SELECT * FROM users WHERE id = ? AND account_id = ?").get(id, req.accountId);
+    if (!existing) return res.status(404).json({
+      error: "User not found"
+    });
+    await db.prepare("UPDATE users SET name = ?, role = ?, permissions = ? WHERE id = ? AND account_id = ?").run(name ?? existing.name, role ?? existing.role, JSON.stringify(Array.isArray(permissions) ? permissions : []), id, req.accountId);
+    logger.audit('user_updated', {
+      accountId: req.accountId,
+      userId: id
+    });
+    res.json({
+      success: true
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
+});
+app.delete("/api/users/:id", authenticateToken, async (req, res) => {
+  const {
+    id
+  } = req.params;
+  if (id === req.user.id) return badRequest(res, "You cannot remove your own account");
+  try {
+    const result = await db.prepare("DELETE FROM users WHERE id = ? AND account_id = ?").run(id, req.accountId);
+    if (result.changes === 0) return res.status(404).json({
+      error: "User not found"
+    });
+    logger.audit('user_removed', {
+      accountId: req.accountId,
+      userId: id
+    });
+    res.json({
+      success: true
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
 
 // --- General file repository (not tied to a specific job) ---
 const generalUpload = multer({
-    dest: path.join(UPLOADS_ROOT, "general"),
-    limits: { fileSize: 50 * 1024 * 1024 }
+  dest: path.join(UPLOADS_ROOT, "general"),
+  limits: {
+    fileSize: 50 * 1024 * 1024
+  }
 });
-
-app.get("/api/files", authenticateToken, (req, res) => {
-    try {
-        const files = db.prepare("SELECT * FROM files WHERE account_id = ? ORDER BY uploadedAt DESC").all(req.accountId);
-        res.json(files);
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+app.get("/api/files", authenticateToken, async (req, res) => {
+  try {
+    const files = await db.prepare("SELECT * FROM files WHERE account_id = ? ORDER BY uploadedAt DESC").all(req.accountId);
+    res.json(files);
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
-
 app.post("/api/files", authenticateToken, uploadLimiter, generalUpload.array("files", 20), (req, res) => {
-    try {
-        const uploaded = (req.files || []).map(f => {
-            const id = uuidv4();
-            const record = {
-                id,
-                name: f.originalname,
-                size: f.size,
-                type: f.mimetype,
-                uploadedAt: new Date().toISOString(),
-                uploadedBy: req.user.email,
-                jobId: null,
-                account_id: req.accountId,
-                storedName: f.filename
-            };
-            db.prepare(`
+  try {
+    const uploaded = (req.files || []).map(async f => {
+      const id = uuidv4();
+      const record = {
+        id,
+        name: f.originalname,
+        size: f.size,
+        type: f.mimetype,
+        uploadedAt: new Date().toISOString(),
+        uploadedBy: req.user.email,
+        jobId: null,
+        account_id: req.accountId,
+        storedName: f.filename
+      };
+      await db.prepare(`
                 INSERT INTO files (id, name, size, type, uploadedAt, uploadedBy, jobId, account_id)
                 VALUES (@id, @name, @size, @type, @uploadedAt, @uploadedBy, @jobId, @account_id)
             `).run(record);
-            fs.renameSync(f.path, path.join(path.dirname(f.path), id));
-            return record;
-        });
-        res.status(201).json(uploaded);
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+      fs.renameSync(f.path, path.join(path.dirname(f.path), id));
+      return record;
+    });
+    res.status(201).json(uploaded);
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
-
-app.get("/api/files/:id/download", authenticateToken, (req, res) => {
-    const { id } = req.params;
-    try {
-        const file = db.prepare("SELECT * FROM files WHERE id = ? AND account_id = ?").get(id, req.accountId);
-        if (!file) return res.status(404).json({ error: "File not found" });
-        const storedPath = path.join(UPLOADS_ROOT, "general", id);
-        if (!fs.existsSync(storedPath)) return res.status(404).json({ error: "File content missing on disk" });
-        res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(file.name)}"`);
-        res.setHeader("Content-Type", file.type || "application/octet-stream");
-        fs.createReadStream(storedPath).pipe(res);
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+app.get("/api/files/:id/download", authenticateToken, async (req, res) => {
+  const {
+    id
+  } = req.params;
+  try {
+    const file = await db.prepare("SELECT * FROM files WHERE id = ? AND account_id = ?").get(id, req.accountId);
+    if (!file) return res.status(404).json({
+      error: "File not found"
+    });
+    const storedPath = path.join(UPLOADS_ROOT, "general", id);
+    if (!fs.existsSync(storedPath)) return res.status(404).json({
+      error: "File content missing on disk"
+    });
+    res.setHeader("Content-Disposition", `attachment; filename="${encodeURIComponent(file.name)}"`);
+    res.setHeader("Content-Type", file.type || "application/octet-stream");
+    fs.createReadStream(storedPath).pipe(res);
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
-
-app.delete("/api/files/:id", authenticateToken, (req, res) => {
-    const { id } = req.params;
-    try {
-        const file = db.prepare("SELECT * FROM files WHERE id = ? AND account_id = ?").get(id, req.accountId);
-        if (!file) return res.status(404).json({ error: "File not found" });
-        db.prepare("DELETE FROM files WHERE id = ? AND account_id = ?").run(id, req.accountId);
-        const storedPath = path.join(UPLOADS_ROOT, "general", id);
-        if (fs.existsSync(storedPath)) fs.unlinkSync(storedPath);
-        res.json({ success: true });
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+app.delete("/api/files/:id", authenticateToken, async (req, res) => {
+  const {
+    id
+  } = req.params;
+  try {
+    const file = await db.prepare("SELECT * FROM files WHERE id = ? AND account_id = ?").get(id, req.accountId);
+    if (!file) return res.status(404).json({
+      error: "File not found"
+    });
+    await db.prepare("DELETE FROM files WHERE id = ? AND account_id = ?").run(id, req.accountId);
+    const storedPath = path.join(UPLOADS_ROOT, "general", id);
+    if (fs.existsSync(storedPath)) fs.unlinkSync(storedPath);
+    res.json({
+      success: true
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
 
 // Get all clients with job summary
-app.get("/api/clients", authenticateToken, (req, res) => {
-    try {
-        const clients = db.prepare("SELECT * FROM clients WHERE account_id = ? ORDER BY name ASC").all(req.accountId);
-        const clientsWithStats = clients.map(c => {
-            const jobs = db.prepare("SELECT id, title, status, amount, createdAt, dueDate, priority, assignedTo FROM jobs WHERE client = ? AND account_id = ?").all(c.name, req.accountId);
-            const totalRevenue = jobs.reduce((sum, j) => sum + (j.amount || 0), 0);
-            const activeJobs = jobs.filter(j => !['completed', 'invoiced'].includes(j.status)).length;
-            return { ...c, jobs, totalJobs: jobs.length, activeJobs, totalRevenue };
-        });
-        res.json(clientsWithStats);
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+app.get("/api/clients", authenticateToken, async (req, res) => {
+  try {
+    const clients = await db.prepare("SELECT * FROM clients WHERE account_id = ? ORDER BY name ASC").all(req.accountId);
+    const clientsWithStats = await Promise.all(clients.map(async c => {
+      const jobs = await db.prepare("SELECT id, title, status, amount, createdAt, dueDate, priority, assignedTo FROM jobs WHERE client = ? AND account_id = ?").all(c.name, req.accountId);
+      const totalRevenue = jobs.reduce((sum, j) => sum + (j.amount || 0), 0);
+      const activeJobs = jobs.filter(j => !['completed', 'invoiced'].includes(j.status)).length;
+      return {
+        ...c,
+        jobs,
+        totalJobs: jobs.length,
+        activeJobs,
+        totalRevenue
+      };
+    }));
+    res.json(clientsWithStats);
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
 
 // Public URL for the company's main marketing site — included in the welcome
@@ -1650,231 +1976,308 @@ const APP_BASE_URL_FOR_TEMPLATES = (process.env.APP_BASE_URL || 'http://localhos
 // client. Fire-and-forget by design (see call sites) — a slow or failed SMTP
 // send must never block or fail client creation itself.
 function optInButtonHtml(optInLink) {
-    return `<a href="${optInLink}" style="display:inline-block;background:#3b82f6;color:#ffffff;padding:14px 28px;border-radius:6px;text-decoration:none;font-weight:600;font-size:15px">Yes, send me the newsletter</a>`;
+  return `<a href="${optInLink}" style="display:inline-block;background:#3b82f6;color:#ffffff;padding:14px 28px;border-radius:6px;text-decoration:none;font-weight:600;font-size:15px">Yes, send me the newsletter</a>`;
 }
-
 async function sendWelcomeEmailForClient(client, accountId) {
-    const template = db.prepare("SELECT * FROM email_templates WHERE account_id = ? AND type = 'welcome'").get(accountId);
-    if (!template || !template.subject || !template.body) return { success: false, error: 'No welcome template configured' };
-
-    const settings = db.prepare("SELECT * FROM settings WHERE account_id = ?").get(accountId);
-    const optInLink = `${APP_BASE_URL_FOR_TEMPLATES}/api/newsletter/confirm/${client.newsletterOptInToken}`;
-    const vars = {
-        client_name: client.name || '',
-        company_name: settings?.name || '',
-        company_address: settings?.address || '',
-        company_phone: settings?.phone || '',
-        company_email: settings?.email || '',
-        site_url: settings?.website || COMPANY_WEBSITE_URL,
-        opt_in_link: optInLink,
-    };
-
-    const { subject, html } = renderEmailFromPlainTemplate(template.subject, template.body, vars, {
-        ctaHtml: optInButtonHtml(optInLink),
-    });
-    return sendTemplated(client.email, subject, html);
+  const template = await db.prepare("SELECT * FROM email_templates WHERE account_id = ? AND type = 'welcome'").get(accountId);
+  if (!template || !template.subject || !template.body) return {
+    success: false,
+    error: 'No welcome template configured'
+  };
+  const settings = await db.prepare("SELECT * FROM settings WHERE account_id = ?").get(accountId);
+  const optInLink = `${APP_BASE_URL_FOR_TEMPLATES}/api/newsletter/confirm/${client.newsletterOptInToken}`;
+  const vars = {
+    client_name: client.name || '',
+    company_name: settings?.name || '',
+    company_address: settings?.address || '',
+    company_phone: settings?.phone || '',
+    company_email: settings?.email || '',
+    site_url: settings?.website || COMPANY_WEBSITE_URL,
+    opt_in_link: optInLink
+  };
+  const {
+    subject,
+    html
+  } = renderEmailFromPlainTemplate(template.subject, template.body, vars, {
+    ctaHtml: optInButtonHtml(optInLink)
+  });
+  return sendTemplated(client.email, subject, html);
 }
 
 // Create a new client
 app.post("/api/clients", authenticateToken, async (req, res) => {
-    const { name, company, email, phone, address, industryId } = sanitizeObject(req.body);
-    if (!name || !email) return badRequest(res, "Name and email are required");
-    if (!isValidEmail(email)) return badRequest(res, "Invalid email format");
+  const {
+    name,
+    company,
+    email,
+    phone,
+    address,
+    industryId
+  } = sanitizeObject(req.body);
+  if (!name || !email) return badRequest(res, "Name and email are required");
+  if (!isValidEmail(email)) return badRequest(res, "Invalid email format");
+  try {
+    const id = isNonEmptyString(req.body.id) ? String(req.body.id).slice(0, 64) : uuidv4();
+    const createdAt = new Date().toISOString();
+    const newsletterOptInToken = uuidv4();
+    await db.prepare("INSERT INTO clients (id, name, company, email, phone, address, industryId, newsletterOptInToken, newsletterOptIn, createdAt, account_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)").run(id, name, company || null, email, phone || null, address || null, industryId || null, newsletterOptInToken, createdAt, req.accountId);
+    const newClient = await db.prepare("SELECT * FROM clients WHERE id = ?").get(id);
 
+    // Awaited, not fire-and-forget: this was previously "fire and
+    // forget with a console.log", which meant a failed or skipped
+    // welcome email (e.g. SMTP not configured) was invisible to the
+    // admin — client creation always looked like it fully succeeded
+    // even when no email went anywhere. A single email is small enough
+    // to safely await (unlike the newsletter broadcast, which can be
+    // hundreds) — worst case this adds a second or two to client
+    // creation, not a real cost.
+    let welcomeEmail = {
+      sent: false,
+      skipped: false,
+      error: null
+    };
     try {
-        const id = isNonEmptyString(req.body.id) ? String(req.body.id).slice(0, 64) : uuidv4();
-        const createdAt = new Date().toISOString();
-        const newsletterOptInToken = uuidv4();
-        db.prepare(
-            "INSERT INTO clients (id, name, company, email, phone, address, industryId, newsletterOptInToken, newsletterOptIn, createdAt, account_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)"
-        ).run(id, name, company || null, email, phone || null, address || null, industryId || null, newsletterOptInToken, createdAt, req.accountId);
-
-        const newClient = db.prepare("SELECT * FROM clients WHERE id = ?").get(id);
-
-        // Awaited, not fire-and-forget: this was previously "fire and
-        // forget with a console.log", which meant a failed or skipped
-        // welcome email (e.g. SMTP not configured) was invisible to the
-        // admin — client creation always looked like it fully succeeded
-        // even when no email went anywhere. A single email is small enough
-        // to safely await (unlike the newsletter broadcast, which can be
-        // hundreds) — worst case this adds a second or two to client
-        // creation, not a real cost.
-        let welcomeEmail = { sent: false, skipped: false, error: null };
-        try {
-            const result = await sendWelcomeEmailForClient(newClient, req.accountId);
-            welcomeEmail = { sent: !!result.success && !result.skipped, skipped: !!result.skipped, error: result.error || null };
-            console.log(`📧 Welcome email ${result.skipped ? 'skipped (SMTP not configured)' : result.success ? 'sent' : 'failed'} to ${newClient.email}`);
-        } catch (e) {
-            welcomeEmail = { sent: false, skipped: false, error: e.message };
-            console.error('Welcome email error:', e);
-        }
-
-        res.status(201).json({ ...newClient, jobs: [], totalJobs: 0, activeJobs: 0, totalRevenue: 0, welcomeEmail });
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+      const result = await sendWelcomeEmailForClient(newClient, req.accountId);
+      welcomeEmail = {
+        sent: !!result.success && !result.skipped,
+        skipped: !!result.skipped,
+        error: result.error || null
+      };
+      console.log(`📧 Welcome email ${result.skipped ? 'skipped (SMTP not configured)' : result.success ? 'sent' : 'failed'} to ${newClient.email}`);
+    } catch (e) {
+      welcomeEmail = {
+        sent: false,
+        skipped: false,
+        error: e.message
+      };
+      console.error('Welcome email error:', e);
     }
+    res.status(201).json({
+      ...newClient,
+      jobs: [],
+      totalJobs: 0,
+      activeJobs: 0,
+      totalRevenue: 0,
+      welcomeEmail
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
 
 // Update client contact info
-app.put("/api/clients/:id", authenticateToken, (req, res) => {
-    const { id } = req.params;
-    const { name, phone, company, notes, email, address, industryId } = sanitizeObject(req.body);
-    if (!isNonEmptyString(name)) return badRequest(res, "Name is required");
-    if (email && !isValidEmail(email)) return badRequest(res, "Invalid email format");
-    try {
-        const result = db.prepare(
-            "UPDATE clients SET name = ?, phone = ?, company = ?, notes = ?, email = ?, address = ?, industryId = ? WHERE id = ? AND account_id = ?"
-        ).run(name, phone || null, company || null, notes || null, email || null, address || null, industryId || null, id, req.accountId);
-        if (result.changes === 0) return res.status(404).json({ error: "Client not found" });
-        res.json(db.prepare("SELECT * FROM clients WHERE id = ?").get(id));
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+app.put("/api/clients/:id", authenticateToken, async (req, res) => {
+  const {
+    id
+  } = req.params;
+  const {
+    name,
+    phone,
+    company,
+    notes,
+    email,
+    address,
+    industryId
+  } = sanitizeObject(req.body);
+  if (!isNonEmptyString(name)) return badRequest(res, "Name is required");
+  if (email && !isValidEmail(email)) return badRequest(res, "Invalid email format");
+  try {
+    const result = await db.prepare("UPDATE clients SET name = ?, phone = ?, company = ?, notes = ?, email = ?, address = ?, industryId = ? WHERE id = ? AND account_id = ?").run(name, phone || null, company || null, notes || null, email || null, address || null, industryId || null, id, req.accountId);
+    if (result.changes === 0) return res.status(404).json({
+      error: "Client not found"
+    });
+    res.json(await db.prepare("SELECT * FROM clients WHERE id = ?").get(id));
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
 
 // Delete a client
-app.delete("/api/clients/:id", authenticateToken, (req, res) => {
-    const { id } = req.params;
-    try {
-        const result = db.prepare("DELETE FROM clients WHERE id = ? AND account_id = ?").run(id, req.accountId);
-        if (result.changes === 0) return res.status(404).json({ error: "Client not found" });
-        res.json({ success: true });
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+app.delete("/api/clients/:id", authenticateToken, async (req, res) => {
+  const {
+    id
+  } = req.params;
+  try {
+    const result = await db.prepare("DELETE FROM clients WHERE id = ? AND account_id = ?").run(id, req.accountId);
+    if (result.changes === 0) return res.status(404).json({
+      error: "Client not found"
+    });
+    res.json({
+      success: true
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
 
 // ── Industries (editable dropdown for client grouping) ─────────────────────────
 
-app.get("/api/industries", authenticateToken, (req, res) => {
-    try {
-        const rows = db.prepare("SELECT * FROM industries WHERE account_id = ? ORDER BY name ASC").all(req.accountId);
-        res.json(rows);
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+app.get("/api/industries", authenticateToken, async (req, res) => {
+  try {
+    const rows = await db.prepare("SELECT * FROM industries WHERE account_id = ? ORDER BY name ASC").all(req.accountId);
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
-
-app.post("/api/industries", authenticateToken, (req, res) => {
-    const { name } = sanitizeObject(req.body);
-    if (!isNonEmptyString(name)) return badRequest(res, "Industry name is required");
-    try {
-        const id = uuidv4();
-        db.prepare("INSERT INTO industries (id, name, account_id) VALUES (?, ?, ?)").run(id, name.slice(0, 120), req.accountId);
-        res.status(201).json(db.prepare("SELECT * FROM industries WHERE id = ?").get(id));
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+app.post("/api/industries", authenticateToken, async (req, res) => {
+  const {
+    name
+  } = sanitizeObject(req.body);
+  if (!isNonEmptyString(name)) return badRequest(res, "Industry name is required");
+  try {
+    const id = uuidv4();
+    await db.prepare("INSERT INTO industries (id, name, account_id) VALUES (?, ?, ?)").run(id, name.slice(0, 120), req.accountId);
+    res.status(201).json(await db.prepare("SELECT * FROM industries WHERE id = ?").get(id));
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
-
-app.put("/api/industries/:id", authenticateToken, (req, res) => {
-    const { id } = req.params;
-    const { name } = sanitizeObject(req.body);
-    if (!isNonEmptyString(name)) return badRequest(res, "Industry name is required");
-    try {
-        const result = db.prepare("UPDATE industries SET name = ? WHERE id = ? AND account_id = ?").run(name.slice(0, 120), id, req.accountId);
-        if (result.changes === 0) return res.status(404).json({ error: "Industry not found" });
-        res.json(db.prepare("SELECT * FROM industries WHERE id = ?").get(id));
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+app.put("/api/industries/:id", authenticateToken, async (req, res) => {
+  const {
+    id
+  } = req.params;
+  const {
+    name
+  } = sanitizeObject(req.body);
+  if (!isNonEmptyString(name)) return badRequest(res, "Industry name is required");
+  try {
+    const result = await db.prepare("UPDATE industries SET name = ? WHERE id = ? AND account_id = ?").run(name.slice(0, 120), id, req.accountId);
+    if (result.changes === 0) return res.status(404).json({
+      error: "Industry not found"
+    });
+    res.json(await db.prepare("SELECT * FROM industries WHERE id = ?").get(id));
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
-
-app.delete("/api/industries/:id", authenticateToken, (req, res) => {
-    const { id } = req.params;
-    try {
-        // Clients referencing this industry just fall back to "no industry"
-        // rather than blocking the delete — there's no FK constraint forcing
-        // either choice, so this is the friendlier default for an admin
-        // cleaning up their list.
-        db.prepare("UPDATE clients SET industryId = NULL WHERE industryId = ? AND account_id = ?").run(id, req.accountId);
-        const result = db.prepare("DELETE FROM industries WHERE id = ? AND account_id = ?").run(id, req.accountId);
-        if (result.changes === 0) return res.status(404).json({ error: "Industry not found" });
-        res.json({ success: true });
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+app.delete("/api/industries/:id", authenticateToken, async (req, res) => {
+  const {
+    id
+  } = req.params;
+  try {
+    // Clients referencing this industry just fall back to "no industry"
+    // rather than blocking the delete — there's no FK constraint forcing
+    // either choice, so this is the friendlier default for an admin
+    // cleaning up their list.
+    await db.prepare("UPDATE clients SET industryId = NULL WHERE industryId = ? AND account_id = ?").run(id, req.accountId);
+    const result = await db.prepare("DELETE FROM industries WHERE id = ? AND account_id = ?").run(id, req.accountId);
+    if (result.changes === 0) return res.status(404).json({
+      error: "Industry not found"
+    });
+    res.json({
+      success: true
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
 
 // ── Email templates (welcome + newsletter, admin-editable) ─────────────────────
 
 const VALID_TEMPLATE_TYPES = new Set(['welcome', 'newsletter']);
-
-app.get("/api/templates", authenticateToken, (req, res) => {
-    try {
-        const rows = db.prepare("SELECT type, subject, body, updatedAt FROM email_templates WHERE account_id = ?").all(req.accountId);
-        res.json(rows);
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+app.get("/api/templates", authenticateToken, async (req, res) => {
+  try {
+    const rows = await db.prepare("SELECT type, subject, body, updatedAt FROM email_templates WHERE account_id = ?").all(req.accountId);
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
+app.put("/api/templates/:type", authenticateToken, async (req, res) => {
+  const {
+    type
+  } = req.params;
+  if (!VALID_TEMPLATE_TYPES.has(type)) return badRequest(res, "Unknown template type");
 
-app.put("/api/templates/:type", authenticateToken, (req, res) => {
-    const { type } = req.params;
-    if (!VALID_TEMPLATE_TYPES.has(type)) return badRequest(res, "Unknown template type");
-
-    // Plain text — deliberately NOT HTML-sanitized or tag-stripped. There's
-    // no HTML-injection surface to defend against here at all: this string
-    // is escaped exactly once, at send time (plainTextToHtml in email.js),
-    // so raw '<'/'>' characters the admin types stay as literal text instead
-    // of being misread as markup and stripped.
-    const subject = String(req.body?.subject ?? '').slice(0, 300);
-    const body = String(req.body?.body ?? '').slice(0, 20000);
-
-    try {
-        const existing = db.prepare("SELECT id FROM email_templates WHERE account_id = ? AND type = ?").get(req.accountId, type);
-        const updatedAt = new Date().toISOString();
-        if (existing) {
-            db.prepare("UPDATE email_templates SET subject = ?, body = ?, updatedAt = ? WHERE id = ?")
-                .run(subject, body, updatedAt, existing.id);
-        } else {
-            db.prepare("INSERT INTO email_templates (id, type, subject, body, updatedAt, account_id) VALUES (?, ?, ?, ?, ?, ?)")
-                .run(uuidv4(), type, subject, body, updatedAt, req.accountId);
-        }
-        res.json(db.prepare("SELECT type, subject, body, updatedAt FROM email_templates WHERE account_id = ? AND type = ?").get(req.accountId, type));
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+  // Plain text — deliberately NOT HTML-sanitized or tag-stripped. There's
+  // no HTML-injection surface to defend against here at all: this string
+  // is escaped exactly once, at send time (plainTextToHtml in email.js),
+  // so raw '<'/'>' characters the admin types stay as literal text instead
+  // of being misread as markup and stripped.
+  const subject = String(req.body?.subject ?? '').slice(0, 300);
+  const body = String(req.body?.body ?? '').slice(0, 20000);
+  try {
+    const existing = await db.prepare("SELECT id FROM email_templates WHERE account_id = ? AND type = ?").get(req.accountId, type);
+    const updatedAt = new Date().toISOString();
+    if (existing) {
+      await db.prepare("UPDATE email_templates SET subject = ?, body = ?, updatedAt = ? WHERE id = ?").run(subject, body, updatedAt, existing.id);
+    } else {
+      await db.prepare("INSERT INTO email_templates (id, type, subject, body, updatedAt, account_id) VALUES (?, ?, ?, ?, ?, ?)").run(uuidv4(), type, subject, body, updatedAt, req.accountId);
     }
+    res.json(await db.prepare("SELECT type, subject, body, updatedAt FROM email_templates WHERE account_id = ? AND type = ?").get(req.accountId, type));
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
-
 app.post("/api/templates/:type/test", authenticateToken, async (req, res) => {
-    const { type } = req.params;
-    if (!VALID_TEMPLATE_TYPES.has(type)) return badRequest(res, "Unknown template type");
-    try {
-        const template = db.prepare("SELECT * FROM email_templates WHERE account_id = ? AND type = ?").get(req.accountId, type);
-        if (!template || !template.subject || !template.body) return badRequest(res, "Template is empty — add content before sending a test");
-
-        const settings = db.prepare("SELECT * FROM settings WHERE account_id = ?").get(req.accountId);
-        const testTo = req.user?.email;
-        if (!testTo) return badRequest(res, "No email on your account to send the test to");
-
-        const optInLink = `${APP_BASE_URL_FOR_TEMPLATES}/api/newsletter/confirm/test-token`;
-        const vars = {
-            client_name: 'Test Recipient',
-            company_name: settings?.name || '',
-            company_address: settings?.address || '',
-            company_phone: settings?.phone || '',
-            company_email: settings?.email || '',
-            site_url: settings?.website || COMPANY_WEBSITE_URL,
-            opt_in_link: optInLink,
-        };
-        const { subject, html } = renderEmailFromPlainTemplate(template.subject, template.body, vars, {
-            ctaHtml: type === 'welcome' ? optInButtonHtml(optInLink) : null,
-        });
-        const result = await sendTemplated(testTo, `[TEST] ${subject}`, html);
-        res.json({ success: result.success, error: result.error });
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+  const {
+    type
+  } = req.params;
+  if (!VALID_TEMPLATE_TYPES.has(type)) return badRequest(res, "Unknown template type");
+  try {
+    const template = await db.prepare("SELECT * FROM email_templates WHERE account_id = ? AND type = ?").get(req.accountId, type);
+    if (!template || !template.subject || !template.body) return badRequest(res, "Template is empty — add content before sending a test");
+    const settings = await db.prepare("SELECT * FROM settings WHERE account_id = ?").get(req.accountId);
+    const testTo = req.user?.email;
+    if (!testTo) return badRequest(res, "No email on your account to send the test to");
+    const optInLink = `${APP_BASE_URL_FOR_TEMPLATES}/api/newsletter/confirm/test-token`;
+    const vars = {
+      client_name: 'Test Recipient',
+      company_name: settings?.name || '',
+      company_address: settings?.address || '',
+      company_phone: settings?.phone || '',
+      company_email: settings?.email || '',
+      site_url: settings?.website || COMPANY_WEBSITE_URL,
+      opt_in_link: optInLink
+    };
+    const {
+      subject,
+      html
+    } = renderEmailFromPlainTemplate(template.subject, template.body, vars, {
+      ctaHtml: type === 'welcome' ? optInButtonHtml(optInLink) : null
+    });
+    const result = await sendTemplated(testTo, `[TEST] ${subject}`, html);
+    res.json({
+      success: result.success,
+      error: result.error
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
 
 // ── Newsletter opt-in confirmation (public — reached from an emailed link) ────
 
-const newsletterConfirmLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 30 });
-
-app.get("/api/newsletter/confirm/:token", newsletterConfirmLimiter, (req, res) => {
-    const { token } = req.params;
-    const confirmationPage = (message) => `<!DOCTYPE html>
+const newsletterConfirmLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30
+});
+app.get("/api/newsletter/confirm/:token", newsletterConfirmLimiter, async (req, res) => {
+  const {
+    token
+  } = req.params;
+  const confirmationPage = message => `<!DOCTYPE html>
 <html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Newsletter Subscription</title></head>
 <body style="margin:0;padding:0;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh">
@@ -1882,513 +2285,691 @@ app.get("/api/newsletter/confirm/:token", newsletterConfirmLimiter, (req, res) =
     <p style="color:#1e293b;font-size:16px;line-height:1.6;margin:0">${escapeHtmlForConfirmPage(message)}</p>
   </div>
 </body></html>`;
-
-    try {
-        if (!isValidUUID(token)) return res.status(400).send(confirmationPage("This confirmation link isn't valid."));
-        const client = db.prepare("SELECT id, newsletterOptIn FROM clients WHERE newsletterOptInToken = ?").get(token);
-        if (!client) return res.status(404).send(confirmationPage("This confirmation link isn't valid."));
-
-        if (!client.newsletterOptIn) {
-            db.prepare("UPDATE clients SET newsletterOptIn = 1, newsletterOptedInAt = ? WHERE id = ?")
-                .run(new Date().toISOString(), client.id);
-        }
-        res.send(confirmationPage("You're subscribed! Thanks for signing up for our newsletter."));
-    } catch (error) {
-        res.status(500).send(confirmationPage("Something went wrong confirming your subscription. Please try again later."));
+  try {
+    if (!isValidUUID(token)) return res.status(400).send(confirmationPage("This confirmation link isn't valid."));
+    const client = await db.prepare("SELECT id, newsletterOptIn FROM clients WHERE newsletterOptInToken = ?").get(token);
+    if (!client) return res.status(404).send(confirmationPage("This confirmation link isn't valid."));
+    if (!client.newsletterOptIn) {
+      await db.prepare("UPDATE clients SET newsletterOptIn = 1, newsletterOptedInAt = ? WHERE id = ?").run(new Date().toISOString(), client.id);
     }
+    res.send(confirmationPage("You're subscribed! Thanks for signing up for our newsletter."));
+  } catch (error) {
+    res.status(500).send(confirmationPage("Something went wrong confirming your subscription. Please try again later."));
+  }
 });
-
 function escapeHtmlForConfirmPage(str) {
-    return String(str ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return String(str ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 // ── Newsletter broadcast ────────────────────────────────────────────────────────
 
-app.get("/api/newsletter/sends", authenticateToken, (req, res) => {
-    try {
-        const rows = db.prepare("SELECT id, industryId, subject, recipientCount, sentAt, sentBy FROM newsletter_sends WHERE account_id = ? ORDER BY sentAt DESC LIMIT 50").all(req.accountId);
-        res.json(rows);
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+app.get("/api/newsletter/sends", authenticateToken, async (req, res) => {
+  try {
+    const rows = await db.prepare("SELECT id, industryId, subject, recipientCount, sentAt, sentBy FROM newsletter_sends WHERE account_id = ? ORDER BY sentAt DESC LIMIT 50").all(req.accountId);
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
-
-app.post("/api/newsletter/broadcast", authenticateToken, (req, res) => {
-    const { industryId } = req.body || {};
-    try {
-        const template = db.prepare("SELECT * FROM email_templates WHERE account_id = ? AND type = 'newsletter'").get(req.accountId);
-        if (!template || !template.subject || !template.body) {
-            return badRequest(res, "Your newsletter template is empty — add content in Settings before broadcasting");
-        }
-
-        const recipients = industryId
-            ? db.prepare("SELECT * FROM clients WHERE account_id = ? AND newsletterOptIn = 1 AND email IS NOT NULL AND email != '' AND industryId = ?").all(req.accountId, industryId)
-            : db.prepare("SELECT * FROM clients WHERE account_id = ? AND newsletterOptIn = 1 AND email IS NOT NULL AND email != ''").all(req.accountId);
-
-        if (recipients.length === 0) {
-            return badRequest(res, "No opted-in clients match that group");
-        }
-
-        const settings = db.prepare("SELECT * FROM settings WHERE account_id = ?").get(req.accountId);
-        const sendId = uuidv4();
-        const sentAt = new Date().toISOString();
-
-        // Respond immediately with the recipient count; the actual sends
-        // happen after the response, sequentially with a short delay between
-        // each — there's no email queue in this app, and awaiting hundreds
-        // of SMTP round-trips inside the HTTP request would time out the
-        // request for no benefit to the admin waiting on it.
-        res.status(202).json({ started: true, recipientCount: recipients.length });
-
-        (async () => {
-            let lastRenderedSubject = template.subject;
-            for (const client of recipients) {
-                const vars = {
-                    client_name: client.name || '',
-                    company_name: settings?.name || '',
-                    company_address: settings?.address || '',
-                    company_phone: settings?.phone || '',
-                    company_email: settings?.email || '',
-                    site_url: settings?.website || COMPANY_WEBSITE_URL,
-                };
-                const { subject, html } = renderEmailFromPlainTemplate(template.subject, template.body, vars);
-                lastRenderedSubject = subject;
-                try {
-                    await sendTemplated(client.email, subject, html);
-                } catch (e) {
-                    console.error(`Newsletter send failed for ${client.email}:`, e.message);
-                }
-                await new Promise(r => setTimeout(r, 250));
-            }
-
-            try {
-                db.prepare(
-                    "INSERT INTO newsletter_sends (id, industryId, subject, contentSnapshot, recipientCount, sentAt, sentBy, account_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-                ).run(sendId, industryId || null, lastRenderedSubject, template.body, recipients.length, sentAt, req.user?.email || null, req.accountId);
-                logger.audit('newsletter_broadcast', { accountId: req.accountId, industryId: industryId || null, recipientCount: recipients.length, sentBy: req.user?.email });
-            } catch (e) {
-                console.error('Failed to log newsletter send:', e.message);
-            }
-        })();
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+app.post("/api/newsletter/broadcast", authenticateToken, async (req, res) => {
+  const {
+    industryId
+  } = req.body || {};
+  try {
+    const template = await db.prepare("SELECT * FROM email_templates WHERE account_id = ? AND type = 'newsletter'").get(req.accountId);
+    if (!template || !template.subject || !template.body) {
+      return badRequest(res, "Your newsletter template is empty — add content in Settings before broadcasting");
     }
+    const recipients = industryId ? await db.prepare("SELECT * FROM clients WHERE account_id = ? AND newsletterOptIn = 1 AND email IS NOT NULL AND email != '' AND industryId = ?").all(req.accountId, industryId) : await db.prepare("SELECT * FROM clients WHERE account_id = ? AND newsletterOptIn = 1 AND email IS NOT NULL AND email != ''").all(req.accountId);
+    if (recipients.length === 0) {
+      return badRequest(res, "No opted-in clients match that group");
+    }
+    const settings = await db.prepare("SELECT * FROM settings WHERE account_id = ?").get(req.accountId);
+    const sendId = uuidv4();
+    const sentAt = new Date().toISOString();
+
+    // Respond immediately with the recipient count; the actual sends
+    // happen after the response, sequentially with a short delay between
+    // each — there's no email queue in this app, and awaiting hundreds
+    // of SMTP round-trips inside the HTTP request would time out the
+    // request for no benefit to the admin waiting on it.
+    res.status(202).json({
+      started: true,
+      recipientCount: recipients.length
+    });
+    (async () => {
+      let lastRenderedSubject = template.subject;
+      for (const client of recipients) {
+        const vars = {
+          client_name: client.name || '',
+          company_name: settings?.name || '',
+          company_address: settings?.address || '',
+          company_phone: settings?.phone || '',
+          company_email: settings?.email || '',
+          site_url: settings?.website || COMPANY_WEBSITE_URL
+        };
+        const {
+          subject,
+          html
+        } = renderEmailFromPlainTemplate(template.subject, template.body, vars);
+        lastRenderedSubject = subject;
+        try {
+          await sendTemplated(client.email, subject, html);
+        } catch (e) {
+          console.error(`Newsletter send failed for ${client.email}:`, e.message);
+        }
+        await new Promise(r => setTimeout(r, 250));
+      }
+      try {
+        await db.prepare("INSERT INTO newsletter_sends (id, industryId, subject, contentSnapshot, recipientCount, sentAt, sentBy, account_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(sendId, industryId || null, lastRenderedSubject, template.body, recipients.length, sentAt, req.user?.email || null, req.accountId);
+        logger.audit('newsletter_broadcast', {
+          accountId: req.accountId,
+          industryId: industryId || null,
+          recipientCount: recipients.length,
+          sentBy: req.user?.email
+        });
+      } catch (e) {
+        console.error('Failed to log newsletter send:', e.message);
+      }
+    })();
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
 
 // Job Messages (Chat)
-app.get("/api/jobs/:id/messages", authenticateToken, (req, res) => {
-    try {
-        // SECURITY: verify the job belongs to the caller's account before returning messages
-        const job = db.prepare("SELECT id FROM jobs WHERE id = ? AND account_id = ?").get(req.params.id, req.accountId);
-        if (!job) return res.status(404).json({ error: "Job not found" });
-
-        const messages = getJobMessages(req.params.id);
-        res.json(messages);
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+app.get("/api/jobs/:id/messages", authenticateToken, async (req, res) => {
+  try {
+    // SECURITY: verify the job belongs to the caller's account before returning messages
+    const job = await db.prepare("SELECT id FROM jobs WHERE id = ? AND account_id = ?").get(req.params.id, req.accountId);
+    if (!job) return res.status(404).json({
+      error: "Job not found"
+    });
+    const messages = await getJobMessages(req.params.id);
+    res.json(messages);
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
+app.post("/api/jobs/:id/messages", authenticateToken, async (req, res) => {
+  const {
+    id: jobId
+  } = req.params;
+  const {
+    sender,
+    content
+  } = req.body;
+  const id = uuidv4();
+  const timestamp = new Date().toISOString();
+  try {
+    // SECURITY: verify the job belongs to the caller's account before writing a message to it
+    const job = await db.prepare("SELECT client FROM jobs WHERE id = ? AND account_id = ?").get(jobId, req.accountId);
+    if (!job) return res.status(404).json({
+      error: "Job not found"
+    });
+    await db.prepare("INSERT INTO job_messages (id, job_id, sender, content, timestamp, account_id) VALUES (?, ?, ?, ?, ?, ?)").run(id, jobId, sender, content, timestamp, req.accountId);
 
-app.post("/api/jobs/:id/messages", authenticateToken, (req, res) => {
-    const { id: jobId } = req.params;
-    const { sender, content } = req.body;
-    const id = uuidv4();
-    const timestamp = new Date().toISOString();
-
-    try {
-        // SECURITY: verify the job belongs to the caller's account before writing a message to it
-        const job = db.prepare("SELECT client FROM jobs WHERE id = ? AND account_id = ?").get(jobId, req.accountId);
-        if (!job) return res.status(404).json({ error: "Job not found" });
-
-        db.prepare("INSERT INTO job_messages (id, job_id, sender, content, timestamp, account_id) VALUES (?, ?, ?, ?, ?, ?)")
-            .run(id, jobId, sender, content, timestamp, req.accountId);
-
-        // Append to project log
-        appendProjectLog(req.accountId, job.client, jobId, {
-            type: 'message',
-            action: `Message sent by ${sender}`,
-            user: sender,
-            details: { content: (content || '').slice(0, 200) }
-        });
-
-        const message = { id, jobId, sender, content, timestamp };
-        broadcastToJob(jobId, { type: "message", message });
-
-        res.status(201).json(message);
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+    // Append to project log
+    appendProjectLog(req.accountId, job.client, jobId, {
+      type: 'message',
+      action: `Message sent by ${sender}`,
+      user: sender,
+      details: {
+        content: (content || '').slice(0, 200)
+      }
+    });
+    const message = {
+      id,
+      jobId,
+      sender,
+      content,
+      timestamp
+    };
+    broadcastToJob(jobId, {
+      type: "message",
+      message
+    });
+    res.status(201).json(message);
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
 
 // --- FILE REPOSITORY ENDPOINTS ---
 
 // Dynamic multer storage — destination is set per-job folder
 const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        try {
-            const job = db.prepare("SELECT client, account_id FROM jobs WHERE id = ? AND account_id = ?").get(req.params.id, req.accountId);
-            if (!job) return cb(new Error('Job not found'), null);
-            const folder = ensureJobFolder(req.accountId, job.client, req.params.id);
-            cb(null, folder);
-        } catch(e) { cb(e, null); }
-    },
-    filename: (req, file, cb) => {
-        // Prefix with timestamp to avoid collisions, preserve original name
-        const safe = file.originalname.replace(/[^a-zA-Z0-9_.\-]/g, '_');
-        cb(null, `${Date.now()}-${safe}`);
+  destination: async (req, file, cb) => {
+    try {
+      const job = await db.prepare("SELECT client, account_id FROM jobs WHERE id = ? AND account_id = ?").get(req.params.id, req.accountId);
+      if (!job) return cb(new Error('Job not found'), null);
+      const folder = ensureJobFolder(req.accountId, job.client, req.params.id);
+      cb(null, folder);
+    } catch (e) {
+      cb(e, null);
     }
+  },
+  filename: (req, file, cb) => {
+    // Prefix with timestamp to avoid collisions, preserve original name
+    const safe = file.originalname.replace(/[^a-zA-Z0-9_.\-]/g, '_');
+    cb(null, `${Date.now()}-${safe}`);
+  }
 });
 const upload = multer({
-    storage,
-    limits: { fileSize: 50 * 1024 * 1024 }, // 50MB per file
+  storage,
+  limits: {
+    fileSize: 50 * 1024 * 1024
+  } // 50MB per file
 });
 
 // POST /api/jobs/:id/files  — upload one or many files into the job folder
-app.post("/api/jobs/:id/files", authenticateToken, uploadLimiter, upload.array('files', 20), (req, res) => {
-    const { id: jobId } = req.params;
-    try {
-        if (!req.files || req.files.length === 0) return res.status(400).json({ error: 'No files uploaded' });
+app.post("/api/jobs/:id/files", authenticateToken, uploadLimiter, upload.array('files', 20), async (req, res) => {
+  const {
+    id: jobId
+  } = req.params;
+  try {
+    if (!req.files || req.files.length === 0) return res.status(400).json({
+      error: 'No files uploaded'
+    });
+    const job = await db.prepare("SELECT client FROM jobs WHERE id = ? AND account_id = ?").get(jobId, req.accountId);
+    const uploaded = req.files.map(f => ({
+      name: f.originalname,
+      filename: f.filename,
+      size: f.size,
+      mimetype: f.mimetype,
+      url: `/api/files/${sanitizeForPath(req.accountId)}/${sanitizeForPath(job?.client || 'unknown')}/${jobId}/${f.filename}`,
+      uploadedAt: new Date().toISOString()
+    }));
 
-        const job = db.prepare("SELECT client FROM jobs WHERE id = ? AND account_id = ?").get(jobId, req.accountId);
-        const uploaded = req.files.map(f => ({
-            name: f.originalname,
-            filename: f.filename,
-            size: f.size,
-            mimetype: f.mimetype,
-            url: `/api/files/${sanitizeForPath(req.accountId)}/${sanitizeForPath(job?.client || 'unknown')}/${jobId}/${f.filename}`,
-            uploadedAt: new Date().toISOString()
-        }));
-
-        // Log the upload
-        if (job) {
-            appendProjectLog(req.accountId, job.client, jobId, {
-                type: 'file_upload',
-                action: `${req.files.length} file(s) uploaded`,
-                user: req.user?.email || 'Team',
-                details: { files: uploaded.map(f => f.name) }
-            });
+    // Log the upload
+    if (job) {
+      appendProjectLog(req.accountId, job.client, jobId, {
+        type: 'file_upload',
+        action: `${req.files.length} file(s) uploaded`,
+        user: req.user?.email || 'Team',
+        details: {
+          files: uploaded.map(f => f.name)
         }
-
-        res.status(201).json({ success: true, files: uploaded });
-    } catch(error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+      });
     }
+    res.status(201).json({
+      success: true,
+      files: uploaded
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
 
 // GET /api/jobs/:id/files  — list all files in the job folder
-app.get("/api/jobs/:id/files", authenticateToken, (req, res) => {
-    const { id: jobId } = req.params;
-    try {
-        const job = db.prepare("SELECT client FROM jobs WHERE id = ? AND account_id = ?").get(jobId, req.accountId);
-        if (!job) return res.status(404).json({ error: 'Job not found' });
+app.get("/api/jobs/:id/files", authenticateToken, async (req, res) => {
+  const {
+    id: jobId
+  } = req.params;
+  try {
+    const job = await db.prepare("SELECT client FROM jobs WHERE id = ? AND account_id = ?").get(jobId, req.accountId);
+    if (!job) return res.status(404).json({
+      error: 'Job not found'
+    });
+    const folder = getJobFolder(req.accountId, job.client, jobId);
+    if (!fs.existsSync(folder)) return res.json({
+      files: [],
+      log: []
+    });
+    const entries = fs.readdirSync(folder, {
+      withFileTypes: true
+    }).filter(e => e.isFile() && e.name !== 'project-log.json').map(e => {
+      const stat = fs.statSync(path.join(folder, e.name));
+      return {
+        filename: e.name,
+        // Original name: strip leading timestamp prefix if present
+        name: e.name.replace(/^\d+-/, ''),
+        size: stat.size,
+        uploadedAt: stat.mtime.toISOString(),
+        url: `/api/files/${sanitizeForPath(req.accountId)}/${sanitizeForPath(job.client)}/${jobId}/${e.name}`
+      };
+    });
 
-        const folder = getJobFolder(req.accountId, job.client, jobId);
-        if (!fs.existsSync(folder)) return res.json({ files: [], log: [] });
-
-        const entries = fs.readdirSync(folder, { withFileTypes: true })
-            .filter(e => e.isFile() && e.name !== 'project-log.json')
-            .map(e => {
-                const stat = fs.statSync(path.join(folder, e.name));
-                return {
-                    filename: e.name,
-                    // Original name: strip leading timestamp prefix if present
-                    name: e.name.replace(/^\d+-/, ''),
-                    size: stat.size,
-                    uploadedAt: stat.mtime.toISOString(),
-                    url: `/api/files/${sanitizeForPath(req.accountId)}/${sanitizeForPath(job.client)}/${jobId}/${e.name}`
-                };
-            });
-
-        // Also read project log
-        const logPath = path.join(folder, 'project-log.json');
-        const log = fs.existsSync(logPath) ? JSON.parse(fs.readFileSync(logPath, 'utf8')) : [];
-
-        res.json({ files: entries, log });
-    } catch(error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+    // Also read project log
+    const logPath = path.join(folder, 'project-log.json');
+    const log = fs.existsSync(logPath) ? JSON.parse(fs.readFileSync(logPath, 'utf8')) : [];
+    res.json({
+      files: entries,
+      log
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
 
 // DELETE /api/jobs/:id/files/:filename  — delete a specific file from the job folder
-app.delete("/api/jobs/:id/files/:filename", authenticateToken, (req, res) => {
-    const { id: jobId, filename } = req.params;
-    try {
-        const job = db.prepare("SELECT client FROM jobs WHERE id = ? AND account_id = ?").get(jobId, req.accountId);
-        if (!job) return res.status(404).json({ error: 'Job not found' });
+app.delete("/api/jobs/:id/files/:filename", authenticateToken, async (req, res) => {
+  const {
+    id: jobId,
+    filename
+  } = req.params;
+  try {
+    const job = await db.prepare("SELECT client FROM jobs WHERE id = ? AND account_id = ?").get(jobId, req.accountId);
+    if (!job) return res.status(404).json({
+      error: 'Job not found'
+    });
+    const folder = getJobFolder(req.accountId, job.client, jobId);
+    const filePath = path.join(folder, filename);
 
-        const folder = getJobFolder(req.accountId, job.client, jobId);
-        const filePath = path.join(folder, filename);
-
-        // Security: ensure file is inside the job folder (prevent path traversal)
-        if (!filePath.startsWith(folder)) return res.status(403).json({ error: 'Forbidden' });
-        if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found' });
-
-        fs.unlinkSync(filePath);
-        appendProjectLog(req.accountId, job.client, jobId, {
-            type: 'file_deleted',
-            action: `File deleted: ${filename}`,
-            user: req.user?.email || 'Team',
-        });
-        res.json({ success: true });
-    } catch(error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+    // Security: ensure file is inside the job folder (prevent path traversal)
+    if (!filePath.startsWith(folder)) return res.status(403).json({
+      error: 'Forbidden'
+    });
+    if (!fs.existsSync(filePath)) return res.status(404).json({
+      error: 'File not found'
+    });
+    fs.unlinkSync(filePath);
+    appendProjectLog(req.accountId, job.client, jobId, {
+      type: 'file_deleted',
+      action: `File deleted: ${filename}`,
+      user: req.user?.email || 'Team'
+    });
+    res.json({
+      success: true
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
-
 
 // --- CLIENT PORTAL PUBLIC SECURE ROUTES ---
 
 // Helper to get settings for a public portal
-const getSettingsForPortal = (accountId) => {
-    return db.prepare("SELECT * FROM settings WHERE account_id = ? LIMIT 1").get(accountId) || {};
-}
+const getSettingsForPortal = async accountId => {
+  return (await db.prepare("SELECT * FROM settings WHERE account_id = ? LIMIT 1").get(accountId)) || {};
+};
 
 // Secure endpoint for client portal
-app.get("/api/portal/:token", (req, res) => {
-    const { token } = req.params;
-    try {
-        const job = db.prepare("SELECT * FROM jobs WHERE secureToken = ?").get(token);
-        if (!job) return res.status(404).json({ error: "Invalid link" });
-
-        const populatedJob = {
-            ...job,
-            activityLog: getJobActivityLogs(job.id),
-            messages: getJobMessages(job.id),
-            lineItems: job.lineItems ? JSON.parse(job.lineItems) : [],
-            deliverables: job.deliverables ? JSON.parse(job.deliverables) : [],
-            timeLogs: job.timeLogs ? JSON.parse(job.timeLogs) : [],
-            stageAssignments: job.stageAssignments ? JSON.parse(job.stageAssignments) : {},
-            timerStartedAt: job.timerStartedAt
-        };
-        const settings = getSettingsForPortal(job.account_id);
-        res.json({ job: populatedJob, settings });
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+app.get("/api/portal/:token", async (req, res) => {
+  const {
+    token
+  } = req.params;
+  try {
+    const job = await db.prepare("SELECT * FROM jobs WHERE secureToken = ?").get(token);
+    if (!job) return res.status(404).json({
+      error: "Invalid link"
+    });
+    const populatedJob = {
+      ...job,
+      activityLog: await getJobActivityLogs(job.id),
+      messages: await getJobMessages(job.id),
+      lineItems: job.lineItems ? JSON.parse(job.lineItems) : [],
+      deliverables: job.deliverables ? JSON.parse(job.deliverables) : [],
+      timeLogs: job.timeLogs ? JSON.parse(job.timeLogs) : [],
+      stageAssignments: job.stageAssignments ? JSON.parse(job.stageAssignments) : {},
+      timerStartedAt: job.timerStartedAt
+    };
+    const settings = await getSettingsForPortal(job.account_id);
+    res.json({
+      job: populatedJob,
+      settings
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
+app.post("/api/portal/:token/approve-quote", async (req, res) => {
+  const {
+    token
+  } = req.params;
+  try {
+    const job = await db.prepare("SELECT id, account_id FROM jobs WHERE secureToken = ?").get(token);
+    if (!job) return res.status(404).json({
+      error: "Invalid link"
+    });
 
-app.post("/api/portal/:token/approve-quote", (req, res) => {
-    const { token } = req.params;
-    try {
-        const job = db.prepare("SELECT id, account_id FROM jobs WHERE secureToken = ?").get(token);
-        if (!job) return res.status(404).json({ error: "Invalid link" });
-
-        // Automate stage transition to 'in-progress'
-        updateJobStage(job.id, 'in-progress', job.account_id, 'Client Portal');
-
-        db.prepare("UPDATE jobs SET quoteApproved = 1 WHERE id = ?").run(job.id);
-
-        res.json({ success: true });
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+    // Automate stage transition to 'in-progress'
+    await updateJobStage(job.id, 'in-progress', job.account_id, 'Client Portal');
+    await db.prepare("UPDATE jobs SET quoteApproved = 1 WHERE id = ?").run(job.id);
+    res.json({
+      success: true
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
-
-app.post("/api/portal/:token/pay-deposit", (req, res) => {
-    const { token } = req.params;
-    try {
-        const job = db.prepare("SELECT id, account_id FROM jobs WHERE secureToken = ?").get(token);
-        if (!job) return res.status(404).json({ error: "Invalid link" });
-
-        db.prepare("UPDATE jobs SET depositPaid = 1 WHERE id = ?").run(job.id);
-        db.prepare("INSERT INTO activity_logs (id, job_id, action, timestamp, user, account_id) VALUES (?, ?, ?, ?, ?, ?)")
-            .run(uuidv4(), job.id, "30% Deposit paid via portal", new Date().toISOString(), "Client", job.account_id);
-
-        res.json({ success: true });
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+app.post("/api/portal/:token/pay-deposit", async (req, res) => {
+  const {
+    token
+  } = req.params;
+  try {
+    const job = await db.prepare("SELECT id, account_id FROM jobs WHERE secureToken = ?").get(token);
+    if (!job) return res.status(404).json({
+      error: "Invalid link"
+    });
+    await db.prepare("UPDATE jobs SET depositPaid = 1 WHERE id = ?").run(job.id);
+    await db.prepare("INSERT INTO activity_logs (id, job_id, action, timestamp, user, account_id) VALUES (?, ?, ?, ?, ?, ?)").run(uuidv4(), job.id, "30% Deposit paid via portal", new Date().toISOString(), "Client", job.account_id);
+    res.json({
+      success: true
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
+app.post("/api/portal/:token/pay-final", async (req, res) => {
+  const {
+    token
+  } = req.params;
+  try {
+    const job = await db.prepare("SELECT id, account_id FROM jobs WHERE secureToken = ?").get(token);
+    if (!job) return res.status(404).json({
+      error: "Invalid link"
+    });
 
-app.post("/api/portal/:token/pay-final", (req, res) => {
-    const { token } = req.params;
-    try {
-        const job = db.prepare("SELECT id, account_id FROM jobs WHERE secureToken = ?").get(token);
-        if (!job) return res.status(404).json({ error: "Invalid link" });
-
-        // Automate stage transition to 'paid' (this will stop the timer)
-        updateJobStage(job.id, 'paid', job.account_id, 'Client Portal');
-
-        res.json({ success: true });
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
-    }
+    // Automate stage transition to 'paid' (this will stop the timer)
+    await updateJobStage(job.id, 'paid', job.account_id, 'Client Portal');
+    res.json({
+      success: true
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
-
-app.post("/api/portal/:token/messages", (req, res) => {
-    const { token } = req.params;
-    const { content } = req.body;
-    // SECURITY: this is a public, unauthenticated endpoint reachable by anyone with the
-    // portal link. Never trust a caller-supplied `sender` here — force it to "Client" so
-    // the portal cannot be used to spoof staff messages in the thread.
-    const sender = "Client";
-    try {
-        if (!content || typeof content !== "string" || !content.trim()) {
-            return res.status(400).json({ error: "Message content is required" });
-        }
-        const job = db.prepare("SELECT id, account_id, client FROM jobs WHERE secureToken = ?").get(token);
-        if (!job) return res.status(404).json({ error: "Invalid link" });
-
-        const id = uuidv4();
-        const timestamp = new Date().toISOString();
-        const trimmedContent = content.trim().slice(0, 2000);
-        db.prepare("INSERT INTO job_messages (id, job_id, sender, content, timestamp, account_id) VALUES (?, ?, ?, ?, ?, ?)")
-            .run(id, job.id, sender, trimmedContent, timestamp, job.account_id);
-
-        appendProjectLog(job.account_id, job.client, job.id, {
-            type: 'message',
-            action: `Message sent by ${sender}`,
-            user: sender,
-            details: { content: trimmedContent.slice(0, 200) }
-        });
-
-        const message = { id, jobId: job.id, sender, content: trimmedContent, timestamp };
-        broadcastToJob(job.id, { type: "message", message });
-
-        res.status(201).json(message);
-    } catch (error) {
-        res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+app.post("/api/portal/:token/messages", async (req, res) => {
+  const {
+    token
+  } = req.params;
+  const {
+    content
+  } = req.body;
+  // SECURITY: this is a public, unauthenticated endpoint reachable by anyone with the
+  // portal link. Never trust a caller-supplied `sender` here — force it to "Client" so
+  // the portal cannot be used to spoof staff messages in the thread.
+  const sender = "Client";
+  try {
+    if (!content || typeof content !== "string" || !content.trim()) {
+      return res.status(400).json({
+        error: "Message content is required"
+      });
     }
+    const job = await db.prepare("SELECT id, account_id, client FROM jobs WHERE secureToken = ?").get(token);
+    if (!job) return res.status(404).json({
+      error: "Invalid link"
+    });
+    const id = uuidv4();
+    const timestamp = new Date().toISOString();
+    const trimmedContent = content.trim().slice(0, 2000);
+    await db.prepare("INSERT INTO job_messages (id, job_id, sender, content, timestamp, account_id) VALUES (?, ?, ?, ?, ?, ?)").run(id, job.id, sender, trimmedContent, timestamp, job.account_id);
+    appendProjectLog(job.account_id, job.client, job.id, {
+      type: 'message',
+      action: `Message sent by ${sender}`,
+      user: sender,
+      details: {
+        content: trimmedContent.slice(0, 200)
+      }
+    });
+    const message = {
+      id,
+      jobId: job.id,
+      sender,
+      content: trimmedContent,
+      timestamp
+    };
+    broadcastToJob(job.id, {
+      type: "message",
+      message
+    });
+    res.status(201).json(message);
+  } catch (error) {
+    res.status(500).json({
+      error: isProduction ? "Internal Server Error" : error.message
+    });
+  }
 });
-
 
 // ══════════════════════════════════════════════════════════════════════════════
 // SUPER ADMIN ROUTES
 // ══════════════════════════════════════════════════════════════════════════════
 
-const saLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 30 });
+const saLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30
+});
 
 // POST /api/superadmin/login
 app.post('/api/superadmin/login', saLimiter, async (req, res) => {
-    const { email, password } = req.body;
-    if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
-    try {
-        const admin = db.prepare("SELECT * FROM super_admins WHERE email = ?").get(email);
-        if (!admin) return res.status(401).json({ error: 'Invalid credentials' });
-        const valid = await bcrypt.compare(password, admin.password_hash);
-        if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
-        const token = jwt.sign({ id: admin.id, email: admin.email, isSuperAdmin: true }, SA_JWT_SECRET, { expiresIn: '8h' });
-        res.json({ token, admin: { id: admin.id, email: admin.email } });
-    } catch (e) {
-        res.status(500).json({ error: isProduction ? 'Internal Server Error' : e.message });
-    }
+  const {
+    email,
+    password
+  } = req.body;
+  if (!email || !password) return res.status(400).json({
+    error: 'Email and password required'
+  });
+  try {
+    const admin = await db.prepare("SELECT * FROM super_admins WHERE email = ?").get(email);
+    if (!admin) return res.status(401).json({
+      error: 'Invalid credentials'
+    });
+    const valid = await bcrypt.compare(password, admin.password_hash);
+    if (!valid) return res.status(401).json({
+      error: 'Invalid credentials'
+    });
+    const token = jwt.sign({
+      id: admin.id,
+      email: admin.email,
+      isSuperAdmin: true
+    }, SA_JWT_SECRET, {
+      expiresIn: '8h'
+    });
+    res.json({
+      token,
+      admin: {
+        id: admin.id,
+        email: admin.email
+      }
+    });
+  } catch (e) {
+    res.status(500).json({
+      error: isProduction ? 'Internal Server Error' : e.message
+    });
+  }
 });
 
 // GET /api/superadmin/stats
-app.get('/api/superadmin/stats', superAdminMiddleware, (req, res) => {
-    try {
-        const totalAccounts = db.prepare("SELECT count(*) as c FROM accounts").get().c;
-        const activeAccounts = db.prepare("SELECT count(*) as c FROM accounts WHERE status = 'active'").get().c;
-        const suspendedAccounts = db.prepare("SELECT count(*) as c FROM accounts WHERE status = 'suspended'").get().c;
-        const totalUsers = db.prepare("SELECT count(*) as c FROM users").get().c;
-        const totalJobs = db.prepare("SELECT count(*) as c FROM jobs").get().c;
-        const activeSubs = db.prepare("SELECT count(*) as c FROM subscriptions WHERE status = 'active'").get().c;
-        const trialSubs = db.prepare("SELECT count(*) as c FROM subscriptions WHERE status = 'trialing'").get().c;
-        const canceledSubs = db.prepare("SELECT count(*) as c FROM subscriptions WHERE status = 'canceled'").get().c;
-        // MRR: sum plan prices for active subscriptions
-        const planPrices = { starter: 29, pro: 79, enterprise: 199, trial: 0 };
-        const activePlans = db.prepare("SELECT plan, count(*) as c FROM subscriptions WHERE status = 'active' GROUP BY plan").all();
-        const mrr = activePlans.reduce((sum, row) => sum + (planPrices[row.plan] || 0) * row.c, 0);
-        const newSignups30d = db.prepare("SELECT count(*) as c FROM accounts WHERE createdAt >= datetime('now', '-30 days')").get().c;
-
-        res.json({ totalAccounts, activeAccounts, suspendedAccounts, totalUsers, totalJobs, activeSubs, trialSubs, canceledSubs, mrr, newSignups30d });
-    } catch (e) {
-        res.status(500).json({ error: isProduction ? 'Internal Server Error' : e.message });
-    }
+app.get('/api/superadmin/stats', superAdminMiddleware, async (req, res) => {
+  try {
+    const totalAccounts = (await db.prepare("SELECT count(*) as c FROM accounts").get()).c;
+    const activeAccounts = (await db.prepare("SELECT count(*) as c FROM accounts WHERE status = 'active'").get()).c;
+    const suspendedAccounts = (await db.prepare("SELECT count(*) as c FROM accounts WHERE status = 'suspended'").get()).c;
+    const totalUsers = (await db.prepare("SELECT count(*) as c FROM users").get()).c;
+    const totalJobs = (await db.prepare("SELECT count(*) as c FROM jobs").get()).c;
+    const activeSubs = (await db.prepare("SELECT count(*) as c FROM subscriptions WHERE status = 'active'").get()).c;
+    const trialSubs = (await db.prepare("SELECT count(*) as c FROM subscriptions WHERE status = 'trialing'").get()).c;
+    const canceledSubs = (await db.prepare("SELECT count(*) as c FROM subscriptions WHERE status = 'canceled'").get()).c;
+    // MRR: sum plan prices for active subscriptions
+    const planPrices = {
+      starter: 29,
+      pro: 79,
+      enterprise: 199,
+      trial: 0
+    };
+    const activePlans = await db.prepare("SELECT plan, count(*) as c FROM subscriptions WHERE status = 'active' GROUP BY plan").all();
+    const mrr = activePlans.reduce((sum, row) => sum + (planPrices[row.plan] || 0) * row.c, 0);
+    const newSignups30d = (await db.prepare("SELECT count(*) as c FROM accounts WHERE createdAt >= datetime('now', '-30 days')").get()).c;
+    res.json({
+      totalAccounts,
+      activeAccounts,
+      suspendedAccounts,
+      totalUsers,
+      totalJobs,
+      activeSubs,
+      trialSubs,
+      canceledSubs,
+      mrr,
+      newSignups30d
+    });
+  } catch (e) {
+    res.status(500).json({
+      error: isProduction ? 'Internal Server Error' : e.message
+    });
+  }
 });
 
 // GET /api/superadmin/accounts
-app.get('/api/superadmin/accounts', superAdminMiddleware, (req, res) => {
-    try {
-        const accounts = db.prepare("SELECT * FROM accounts ORDER BY createdAt DESC").all();
-        const enriched = accounts.map(acc => {
-            const sub = db.prepare("SELECT * FROM subscriptions WHERE account_id = ? ORDER BY createdAt DESC LIMIT 1").get(acc.id);
-            const userCount = db.prepare("SELECT count(*) as c FROM users WHERE account_id = ?").get(acc.id).c;
-            const jobCount = db.prepare("SELECT count(*) as c FROM jobs WHERE account_id = ?").get(acc.id).c;
-            const settings = db.prepare("SELECT name, email, logoUrl FROM settings WHERE account_id = ? LIMIT 1").get(acc.id);
-            return { ...acc, subscription: sub || null, userCount, jobCount, settings: settings || {} };
-        });
-        res.json(enriched);
-    } catch (e) {
-        res.status(500).json({ error: isProduction ? 'Internal Server Error' : e.message });
-    }
+app.get('/api/superadmin/accounts', superAdminMiddleware, async (req, res) => {
+  try {
+    const accounts = await db.prepare("SELECT * FROM accounts ORDER BY createdAt DESC").all();
+    const enriched = await Promise.all(accounts.map(async acc => {
+      const sub = await db.prepare("SELECT * FROM subscriptions WHERE account_id = ? ORDER BY createdAt DESC LIMIT 1").get(acc.id);
+      const userCount = (await db.prepare("SELECT count(*) as c FROM users WHERE account_id = ?").get(acc.id)).c;
+      const jobCount = (await db.prepare("SELECT count(*) as c FROM jobs WHERE account_id = ?").get(acc.id)).c;
+      const settings = await db.prepare("SELECT name, email, logoUrl FROM settings WHERE account_id = ? LIMIT 1").get(acc.id);
+      return {
+        ...acc,
+        subscription: sub || null,
+        userCount,
+        jobCount,
+        settings: settings || {}
+      };
+    }));
+    res.json(enriched);
+  } catch (e) {
+    res.status(500).json({
+      error: isProduction ? 'Internal Server Error' : e.message
+    });
+  }
 });
 
 // GET /api/superadmin/accounts/:id
-app.get('/api/superadmin/accounts/:id', superAdminMiddleware, (req, res) => {
-    try {
-        const acc = db.prepare("SELECT * FROM accounts WHERE id = ?").get(req.params.id);
-        if (!acc) return res.status(404).json({ error: 'Account not found' });
-        const sub = db.prepare("SELECT * FROM subscriptions WHERE account_id = ? ORDER BY createdAt DESC LIMIT 1").get(acc.id);
-        const users = db.prepare("SELECT id, name, email, role, twoFactorEnabled FROM users WHERE account_id = ?").all(acc.id);
-        const jobs = db.prepare("SELECT id, title, status, amount, createdAt FROM jobs WHERE account_id = ? ORDER BY createdAt DESC LIMIT 20").all(acc.id);
-        const settings = db.prepare("SELECT * FROM settings WHERE account_id = ? LIMIT 1").get(acc.id);
-        res.json({ ...acc, subscription: sub || null, users, recentJobs: jobs, settings: settings || {} });
-    } catch (e) {
-        res.status(500).json({ error: isProduction ? 'Internal Server Error' : e.message });
-    }
+app.get('/api/superadmin/accounts/:id', superAdminMiddleware, async (req, res) => {
+  try {
+    const acc = await db.prepare("SELECT * FROM accounts WHERE id = ?").get(req.params.id);
+    if (!acc) return res.status(404).json({
+      error: 'Account not found'
+    });
+    const sub = await db.prepare("SELECT * FROM subscriptions WHERE account_id = ? ORDER BY createdAt DESC LIMIT 1").get(acc.id);
+    const users = await db.prepare("SELECT id, name, email, role, twoFactorEnabled FROM users WHERE account_id = ?").all(acc.id);
+    const jobs = await db.prepare("SELECT id, title, status, amount, createdAt FROM jobs WHERE account_id = ? ORDER BY createdAt DESC LIMIT 20").all(acc.id);
+    const settings = await db.prepare("SELECT * FROM settings WHERE account_id = ? LIMIT 1").get(acc.id);
+    res.json({
+      ...acc,
+      subscription: sub || null,
+      users,
+      recentJobs: jobs,
+      settings: settings || {}
+    });
+  } catch (e) {
+    res.status(500).json({
+      error: isProduction ? 'Internal Server Error' : e.message
+    });
+  }
 });
 
 // PUT /api/superadmin/accounts/:id/suspend
-app.put('/api/superadmin/accounts/:id/suspend', superAdminMiddleware, (req, res) => {
-    try {
-        db.prepare("UPDATE accounts SET status = 'suspended', suspendedAt = ? WHERE id = ?").run(new Date().toISOString(), req.params.id);
-        res.json({ success: true, message: 'Account suspended' });
-    } catch (e) {
-        res.status(500).json({ error: isProduction ? 'Internal Server Error' : e.message });
-    }
+app.put('/api/superadmin/accounts/:id/suspend', superAdminMiddleware, async (req, res) => {
+  try {
+    await db.prepare("UPDATE accounts SET status = 'suspended', suspendedAt = ? WHERE id = ?").run(new Date().toISOString(), req.params.id);
+    res.json({
+      success: true,
+      message: 'Account suspended'
+    });
+  } catch (e) {
+    res.status(500).json({
+      error: isProduction ? 'Internal Server Error' : e.message
+    });
+  }
 });
 
 // PUT /api/superadmin/accounts/:id/unsuspend
-app.put('/api/superadmin/accounts/:id/unsuspend', superAdminMiddleware, (req, res) => {
-    try {
-        db.prepare("UPDATE accounts SET status = 'active', suspendedAt = NULL WHERE id = ?").run(req.params.id);
-        res.json({ success: true, message: 'Account unsuspended' });
-    } catch (e) {
-        res.status(500).json({ error: isProduction ? 'Internal Server Error' : e.message });
-    }
+app.put('/api/superadmin/accounts/:id/unsuspend', superAdminMiddleware, async (req, res) => {
+  try {
+    await db.prepare("UPDATE accounts SET status = 'active', suspendedAt = NULL WHERE id = ?").run(req.params.id);
+    res.json({
+      success: true,
+      message: 'Account unsuspended'
+    });
+  } catch (e) {
+    res.status(500).json({
+      error: isProduction ? 'Internal Server Error' : e.message
+    });
+  }
 });
 
 // DELETE /api/superadmin/accounts/:id
-app.delete('/api/superadmin/accounts/:id', superAdminMiddleware, (req, res) => {
-    const { id } = req.params;
-    if (id === 'default_account') return res.status(403).json({ error: 'Cannot delete the default account' });
-    try {
-        const tables = ['jobs', 'job_tags', 'activity_logs', 'employees', 'users', 'user_permissions', 'files', 'clients', 'job_messages', 'notifications', 'settings', 'subscriptions'];
-        db.transaction(() => {
-            for (const t of tables) {
-                try { db.prepare(`DELETE FROM ${t} WHERE account_id = ?`).run(id); } catch(e) {}
-            }
-            db.prepare("DELETE FROM accounts WHERE id = ?").run(id);
-        })();
-        res.json({ success: true });
-    } catch (e) {
-        res.status(500).json({ error: isProduction ? 'Internal Server Error' : e.message });
+app.delete('/api/superadmin/accounts/:id', superAdminMiddleware, async (req, res) => {
+  const {
+    id
+  } = req.params;
+  if (id === 'default_account') return res.status(403).json({
+    error: 'Cannot delete the default account'
+  });
+  try {
+    const tables = ['jobs', 'job_tags', 'activity_logs', 'employees', 'users', 'user_permissions', 'files', 'clients', 'job_messages', 'notifications', 'settings', 'subscriptions'];
+    for (const t of tables) {
+      try {
+        await db.prepare(`DELETE FROM ${t} WHERE account_id = ?`).run(id);
+      } catch (e) {}
     }
+    await db.prepare("DELETE FROM accounts WHERE id = ?").run(id);
+    res.json({
+      success: true
+    });
+  } catch (e) {
+    res.status(500).json({
+      error: isProduction ? 'Internal Server Error' : e.message
+    });
+  }
 });
 
 // GET /api/superadmin/subscriptions
-app.get('/api/superadmin/subscriptions', superAdminMiddleware, (req, res) => {
-    try {
-        const subs = db.prepare("SELECT s.*, a.name as accountName, a.status as accountStatus FROM subscriptions s LEFT JOIN accounts a ON s.account_id = a.id ORDER BY s.createdAt DESC").all();
-        res.json(subs);
-    } catch (e) {
-        res.status(500).json({ error: isProduction ? 'Internal Server Error' : e.message });
-    }
+app.get('/api/superadmin/subscriptions', superAdminMiddleware, async (req, res) => {
+  try {
+    const subs = await db.prepare("SELECT s.*, a.name as accountName, a.status as accountStatus FROM subscriptions s LEFT JOIN accounts a ON s.account_id = a.id ORDER BY s.createdAt DESC").all();
+    res.json(subs);
+  } catch (e) {
+    res.status(500).json({
+      error: isProduction ? 'Internal Server Error' : e.message
+    });
+  }
 });
 
 // PUT /api/superadmin/accounts/:id/change-plan
-app.put('/api/superadmin/accounts/:id/change-plan', superAdminMiddleware, (req, res) => {
-    const { plan } = req.body;
-    const validPlans = ['trial', 'starter', 'pro', 'enterprise'];
-    if (!validPlans.includes(plan)) return res.status(400).json({ error: 'Invalid plan' });
-    try {
-        db.prepare("UPDATE accounts SET plan = ? WHERE id = ?").run(plan, req.params.id);
-        db.prepare("UPDATE subscriptions SET plan = ? WHERE account_id = ?").run(plan, req.params.id);
-        res.json({ success: true });
-    } catch (e) {
-        res.status(500).json({ error: isProduction ? 'Internal Server Error' : e.message });
-    }
+app.put('/api/superadmin/accounts/:id/change-plan', superAdminMiddleware, async (req, res) => {
+  const {
+    plan
+  } = req.body;
+  const validPlans = ['trial', 'starter', 'pro', 'enterprise'];
+  if (!validPlans.includes(plan)) return res.status(400).json({
+    error: 'Invalid plan'
+  });
+  try {
+    await db.prepare("UPDATE accounts SET plan = ? WHERE id = ?").run(plan, req.params.id);
+    await db.prepare("UPDATE subscriptions SET plan = ? WHERE account_id = ?").run(plan, req.params.id);
+    res.json({
+      success: true
+    });
+  } catch (e) {
+    res.status(500).json({
+      error: isProduction ? 'Internal Server Error' : e.message
+    });
+  }
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -2410,26 +2991,30 @@ if (process.env.STRIPE_SECRET_KEY) {
 
 // Serve frontend
 if (!isProduction) {
-    const vite = await createViteServer({
-        root: path.resolve(__dirname, '..'),
-        server: { middlewareMode: true },
-        appType: "spa",
-    });
-    app.use(vite.middlewares);
+  const vite = await createViteServer({
+    root: path.resolve(__dirname, '..'),
+    server: {
+      middlewareMode: true
+    },
+    appType: "spa"
+  });
+  app.use(vite.middlewares);
 } else {
-    const distPath = path.join(__dirname, '../dist');
-    app.use(express.static(distPath));
-    // Only fall back to the SPA shell for real page routes. Without the
-    // /api exclusion here, any unmatched /api/* request (typo'd endpoint,
-    // stale frontend build calling a removed route, etc.) would silently
-    // return a 200 HTML page instead of a 404 — masking real API errors
-    // as if they succeeded.
-    app.get(/^(?!\/api\/).*/, (req, res) => {
-        res.sendFile(path.join(distPath, 'index.html'));
+  const distPath = path.join(__dirname, '../dist');
+  app.use(express.static(distPath));
+  // Only fall back to the SPA shell for real page routes. Without the
+  // /api exclusion here, any unmatched /api/* request (typo'd endpoint,
+  // stale frontend build calling a removed route, etc.) would silently
+  // return a 200 HTML page instead of a 404 — masking real API errors
+  // as if they succeeded.
+  app.get(/^(?!\/api\/).*/, (req, res) => {
+    res.sendFile(path.join(distPath, 'index.html'));
+  });
+  app.use('/api', (req, res) => {
+    res.status(404).json({
+      error: 'Not found'
     });
-    app.use('/api', (req, res) => {
-        res.status(404).json({ error: 'Not found' });
-    });
+  });
 }
 
 // ── Global error handler ──────────────────────────────────────────────────
@@ -2439,95 +3024,103 @@ if (!isProduction) {
 // masks real CORS/config problems as generic server errors. Catch them here
 // and respond with the correct status code instead.
 app.use((err, req, res, next) => {
-    if (err && err.message === 'Not allowed by CORS') {
-        logger.warn(`CORS rejection for ${req.method} ${req.originalUrl} — Origin: ${req.headers.origin}`);
-        return res.status(403).json({ error: 'Not allowed by CORS' });
-    }
-    logger.error(`Unhandled error on ${req.method} ${req.originalUrl}: ${err && err.stack ? err.stack : err}`);
-    res.status(500).json({ error: isProduction ? 'Internal Server Error' : (err && err.message) });
+  if (err && err.message === 'Not allowed by CORS') {
+    logger.warn(`CORS rejection for ${req.method} ${req.originalUrl} — Origin: ${req.headers.origin}`);
+    return res.status(403).json({
+      error: 'Not allowed by CORS'
+    });
+  }
+  logger.error(`Unhandled error on ${req.method} ${req.originalUrl}: ${err && err.stack ? err.stack : err}`);
+  res.status(500).json({
+    error: isProduction ? 'Internal Server Error' : err && err.message
+  });
 });
 
 // Purge logs older than 30 days on startup
 logger.rotateLogs(30);
-
 const server = http.createServer(app);
 
 // ── Real-time chat WebSocket endpoint ─────────────────────────────────────
 // Two ways to authenticate a connection, mirroring the REST auth model:
 //   - Client portal: ?token=<job.secureToken>            (no login — the link IS the credential)
 //   - Staff:          ?jobId=<id>&auth=<jwt>              (must belong to the job's account)
-const wss = new WebSocketServer({ noServer: true });
-
+const wss = new WebSocketServer({
+  noServer: true
+});
 function handleWsUpgrade(request, socket, head) {
-    try {
-        const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
-        if (url.pathname === "/ws") {
-            wss.handleUpgrade(request, socket, head, (ws) => {
-                wss.emit("connection", ws, request);
-            });
-        } else {
-            socket.destroy();
-        }
-    } catch (_) {
-        socket.destroy();
+  try {
+    const url = new URL(request.url, `http://${request.headers.host || 'localhost'}`);
+    if (url.pathname === "/ws") {
+      wss.handleUpgrade(request, socket, head, ws => {
+        wss.emit("connection", ws, request);
+      });
+    } else {
+      socket.destroy();
     }
+  } catch (_) {
+    socket.destroy();
+  }
 }
-
 server.on("upgrade", handleWsUpgrade);
-
-wss.on("connection", (ws, req) => {
-    try {
-        const url = new URL(req.url, `http://${req.headers.host}`);
-        const portalToken = url.searchParams.get("token");
-        const jobIdParam = url.searchParams.get("jobId");
-        const authParam = url.searchParams.get("auth");
-
-        let jobId = null;
-
-        if (portalToken) {
-            const job = db.prepare("SELECT id FROM jobs WHERE secureToken = ?").get(portalToken);
-            if (!job) { ws.close(4004, "Invalid link"); return; }
-            jobId = job.id;
-            ws.role = "client";
-        } else if (jobIdParam && authParam) {
-            let decoded;
-            try {
-                decoded = jwt.verify(authParam, JWT_SECRET);
-            } catch (e) {
-                ws.close(4001, "Unauthorized");
-                return;
-            }
-            const job = db.prepare("SELECT id FROM jobs WHERE id = ? AND account_id = ?").get(jobIdParam, decoded.account_id);
-            if (!job) { ws.close(4003, "Forbidden"); return; }
-            jobId = job.id;
-            ws.role = "staff";
-        } else {
-            ws.close(4000, "Missing credentials");
-            return;
-        }
-
-        ws.jobId = jobId;
-        ws.isAlive = true;
-        subscribeToJob(jobId, ws);
-
-        ws.on("pong", () => { ws.isAlive = true; });
-        ws.on("close", () => unsubscribeFromJob(jobId, ws));
-        ws.on("error", () => unsubscribeFromJob(jobId, ws));
-    } catch (e) {
-        try { ws.close(1011, "Server error"); } catch (_) { /* noop */ }
+wss.on("connection", async (ws, req) => {
+  try {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const portalToken = url.searchParams.get("token");
+    const jobIdParam = url.searchParams.get("jobId");
+    const authParam = url.searchParams.get("auth");
+    let jobId = null;
+    if (portalToken) {
+      const job = await db.prepare("SELECT id FROM jobs WHERE secureToken = ?").get(portalToken);
+      if (!job) {
+        ws.close(4004, "Invalid link");
+        return;
+      }
+      jobId = job.id;
+      ws.role = "client";
+    } else if (jobIdParam && authParam) {
+      let decoded;
+      try {
+        decoded = jwt.verify(authParam, JWT_SECRET);
+      } catch (e) {
+        ws.close(4001, "Unauthorized");
+        return;
+      }
+      const job = await db.prepare("SELECT id FROM jobs WHERE id = ? AND account_id = ?").get(jobIdParam, decoded.account_id);
+      if (!job) {
+        ws.close(4003, "Forbidden");
+        return;
+      }
+      jobId = job.id;
+      ws.role = "staff";
+    } else {
+      ws.close(4000, "Missing credentials");
+      return;
     }
+    ws.jobId = jobId;
+    ws.isAlive = true;
+    subscribeToJob(jobId, ws);
+    ws.on("pong", () => {
+      ws.isAlive = true;
+    });
+    ws.on("close", () => unsubscribeFromJob(jobId, ws));
+    ws.on("error", () => unsubscribeFromJob(jobId, ws));
+  } catch (e) {
+    try {
+      ws.close(1011, "Server error");
+    } catch (_) {/* noop */}
+  }
 });
 
 // Drop dead connections (e.g. laptop sleep, dropped wifi) every 30s
 const wsHeartbeat = setInterval(() => {
-    wss.clients.forEach((ws) => {
-        if (ws.isAlive === false) {
-            unsubscribeFromJob(ws.jobId, ws);
-            return ws.terminate();
-        }
-        ws.isAlive = false;
-        ws.ping();
-    });
+  wss.clients.forEach(ws => {
+    if (ws.isAlive === false) {
+      unsubscribeFromJob(ws.jobId, ws);
+      return ws.terminate();
+    }
+    ws.isAlive = false;
+    ws.ping();
+  });
 }, 30000);
 wss.on("close", () => clearInterval(wsHeartbeat));
 
@@ -2540,35 +3133,35 @@ wss.on("close", () => clearInterval(wsHeartbeat));
 // handler; either way it's rejected, but this makes a bad config visible
 // immediately in the server logs instead of only after a lead is lost.
 if (process.env.INTAKE_SECRET) {
+  (async () => {
     const configuredAccountId = process.env.INTAKE_ACCOUNT_ID || "default_account";
-    const accountExists = db.prepare("SELECT 1 FROM accounts WHERE id = ?").get(configuredAccountId);
+    const accountExists = await db.prepare("SELECT 1 FROM accounts WHERE id = ?").get(configuredAccountId);
     if (!accountExists) {
-        logger.error(`[Intake] STARTUP WARNING: INTAKE_ACCOUNT_ID ("${configuredAccountId}") does not match any real account. The website lead-capture gateway will reject every request until this is fixed. If you copied this value from the app header (e.g. "Workspace: 4864426e"), that display is truncated to 8 characters — copy the FULL Workspace ID from Settings → Integrations instead.`);
+      logger.error(`[Intake] STARTUP WARNING: INTAKE_ACCOUNT_ID ("${configuredAccountId}") does not match any real account. The website lead-capture gateway will reject every request until this is fixed. If you copied this value from the app header (e.g. "Workspace: 4864426e"), that display is truncated to 8 characters — copy the FULL Workspace ID from Settings → Integrations instead.`);
     }
+  })();
 }
-
 server.listen(PRIMARY_PORT, '0.0.0.0', () => {
-    logger.info(`Backend server running on primary port ${PRIMARY_PORT} in ${isProduction ? 'production' : 'development'} mode (HTTP + WS)`);
-}).on('error', (err) => {
-    if (err.code === 'EADDRINUSE') {
-        logger.error(`Port ${PRIMARY_PORT} is already in use.`);
-        process.exit(1);
-    } else {
-        logger.error(`Server error on port ${PRIMARY_PORT}: ${err.message}`);
-    }
+  logger.info(`Backend server running on primary port ${PRIMARY_PORT} in ${isProduction ? 'production' : 'development'} mode (HTTP + WS)`);
+}).on('error', err => {
+  if (err.code === 'EADDRINUSE') {
+    logger.error(`Port ${PRIMARY_PORT} is already in use.`);
+    process.exit(1);
+  } else {
+    logger.error(`Server error on port ${PRIMARY_PORT}: ${err.message}`);
+  }
 });
-
 let secondaryServer = null;
 if (SECONDARY_PORT && SECONDARY_PORT !== PRIMARY_PORT) {
-    secondaryServer = http.createServer(app);
-    secondaryServer.on("upgrade", handleWsUpgrade);
-    secondaryServer.listen(SECONDARY_PORT, '0.0.0.0', () => {
-        logger.info(`Backend server also running on port ${SECONDARY_PORT} in ${isProduction ? 'production' : 'development'} mode (HTTP + WS)`);
-    }).on('error', (err) => {
-        if (err.code === 'EADDRINUSE') {
-            logger.warn(`Port ${SECONDARY_PORT} is already in use or unavailable.`);
-        } else {
-            logger.warn(`Secondary server error on port ${SECONDARY_PORT}: ${err.message}`);
-        }
-    });
+  secondaryServer = http.createServer(app);
+  secondaryServer.on("upgrade", handleWsUpgrade);
+  secondaryServer.listen(SECONDARY_PORT, '0.0.0.0', () => {
+    logger.info(`Backend server also running on port ${SECONDARY_PORT} in ${isProduction ? 'production' : 'development'} mode (HTTP + WS)`);
+  }).on('error', err => {
+    if (err.code === 'EADDRINUSE') {
+      logger.warn(`Port ${SECONDARY_PORT} is already in use or unavailable.`);
+    } else {
+      logger.warn(`Secondary server error on port ${SECONDARY_PORT}: ${err.message}`);
+    }
+  });
 }

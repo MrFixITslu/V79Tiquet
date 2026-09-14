@@ -4,10 +4,10 @@
 import db from "./db.js";
 
 export const registerHealthCheck = (app) => {
-    const handleHealth = (req, res) => {
+    const handleHealth = async (req, res) => {
         try {
             // Check DB connection
-            const result = db.prepare("SELECT 1").get();
+            const result = await db.prepare("SELECT 1").get();
             if (!result) throw new Error("DB probe failed");
 
             res.status(200).json({
@@ -31,9 +31,9 @@ export const registerHealthCheck = (app) => {
     // reachable and responsive). Kept separate so orchestration/monitoring
     // can distinguish "process alive" from "ready for traffic" without
     // either endpoint leaking connection strings, secrets, or paths.
-    app.get('/health/ready', (req, res) => {
+    app.get('/health/ready', async (req, res) => {
         try {
-            const result = db.prepare("SELECT 1").get();
+            const result = await db.prepare("SELECT 1").get();
             if (!result) throw new Error("Database not responding");
             res.status(200).json({ status: "ready", database: "connected" });
         } catch (e) {

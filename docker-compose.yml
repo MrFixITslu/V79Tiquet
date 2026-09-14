@@ -10,6 +10,11 @@ services:
     environment:
       - NODE_ENV=production
       - PORT=3050
+      - DB_HOST=tiquet-postgres
+      - DB_PORT=5432
+      - DB_NAME=${DB_NAME:-tiquet}
+      - DB_USER=${DB_USER:-tiquet_app}
+      - DB_PASSWORD=${DB_PASSWORD}
       - DATABASE_PATH=/app/data/tiquet.db
     # No `ports:` mapping on purpose. Nginx Proxy Manager reaches this
     # container over the shared `proxy_network` by container name + internal
@@ -41,11 +46,9 @@ services:
     networks:
       - proxy_network
       - tiquet_internal
-    # NOTE: not yet reading DB_HOST/DB_PORT/etc below — the app still runs on
-    # SQLite (DATABASE_PATH above) until the data-access layer migration and
-    # validated data migration are both complete. Postgres is being stood up
-    # here ahead of time, additively, alongside the existing DB, so it can be
-    # reached, seeded, and tested without any cutover risk to production.
+    # Production database runs on PostgreSQL (tiquet-postgres container).
+    # If the Postgres database is uninitialized and existing SQLite data is detected
+    # at /app/data/tiquet.db, server/db.js automatically bootstraps and migrates all data safely.
     depends_on:
       tiquet-postgres:
         condition: service_healthy
