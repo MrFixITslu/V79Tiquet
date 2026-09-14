@@ -196,10 +196,12 @@ CREATE TABLE IF NOT EXISTS email_templates (
     type TEXT NOT NULL,
     subject TEXT NOT NULL,
     body TEXT NOT NULL DEFAULT '',
+    htmlbody TEXT,
     updatedAt TEXT NOT NULL,
     account_id TEXT
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_templates_account_type ON email_templates(account_id, type);
+ALTER TABLE email_templates ADD COLUMN IF NOT EXISTS htmlbody TEXT;
 
 -- 15. Newsletter Sends
 CREATE TABLE IF NOT EXISTS newsletter_sends (

@@ -75,16 +75,12 @@ export async function runMigration(options = {}) {
   console.log('[Migration] Connected to PostgreSQL.');
 
   try {
-    // 4. Apply schema DDL if not already applied
-    const tblCheck = await client.query("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'");
-    if (tblCheck.rows.length === 0) {
-      console.log('[Migration] Initialising PostgreSQL schema from server/schema.sql...');
-      const schemaSql = fs.readFileSync(path.resolve('server/schema.sql'), 'utf8');
-      await client.query(schemaSql);
-      console.log('[Migration] Schema initialisation complete.');
-    } else {
-      console.log('[Migration] PostgreSQL schema already present, skipping DDL execution.');
-    }
+    // 4. Apply schema DDL (all statements are IF NOT EXISTS)
+    console.log('[Migration] Ensuring PostgreSQL schema and all columns are up to date...');
+    const schemaSql = fs.readFileSync(path.resolve('server/schema.sql'), 'utf8');
+    await client.query(schemaSql);
+    await client.query('ALTER TABLE email_templates ADD COLUMN IF NOT EXISTS htmlbody TEXT;');
+    console.log('[Migration] Schema verification complete.');
 
     // 5. Read all table row counts from SQLite
     const tableOrder = [
@@ -146,21 +142,62 @@ export async function runMigration(options = {}) {
 
       console.log(`[Migration] Migrating ${rows.length} rows for table "${table}"...`);
 
-      for (const row of rows) {
-        const keys = Object.keys(row);
-        if (keys.length === 0) continue;
+      // 1. Inspect PostgreSQL columns for this table
+      const pgColsRes = await client.query(`
+        SELECT column_name 
+        FROM information_schema.columns 
+        WHERE table_schema = 'public' AND table_name = $1
+      `, [table]);
+      const existingPgCols = new Set(pgColsRes.rows.map(r => r.column_name.toLowerCase()));
 
-        // Escape reserved keywords like "user" in activity_logs
-        const quotedCols = keys.map(k => (k === 'user' ? '"user"' : k)).join(', ');
-        const placeholders = keys.map((_, i) => `$${i + 1}`).join(', ');
-        const values = keys.map(k => row[k]);
+      // 2. Ensure all SQLite columns exist in PostgreSQL
+      if (rows.length > 0) {
+        const sampleKeys = Object.keys(rows[0]);
+        for (const col of sampleKeys) {
+          const lower = col.toLowerCase();
+          if (!existingPgCols.has(lower)) {
+            console.log(`[Migration] Adding missing column "${lower}" to PostgreSQL table "${table}"...`);
+            await client.query(`ALTER TABLE "${table}" ADD COLUMN IF NOT EXISTS "${lower}" TEXT`);
+            existingPgCols.add(lower);
+          }
+        }
+      }
+
+      // 3. Migrate each row safely
+      for (const row of rows) {
+        // Special case for email_templates: synchronize body and htmlbody/htmlBody
+        if (table === 'email_templates') {
+          if (row.htmlBody && !row.body) row.body = row.htmlBody;
+          if (row.htmlbody && !row.body) row.body = row.htmlbody;
+          if (row.body && !row.htmlbody) row.htmlbody = row.body;
+          if (row.body && !row.htmlBody) row.htmlBody = row.body;
+        }
+
+        const rawKeys = Object.keys(row);
+        if (rawKeys.length === 0) continue;
+
+        // Map column names to lowercase and escape reserved keyword "user"
+        const cols = [];
+        const values = [];
+        const seenCols = new Set();
+
+        for (const k of rawKeys) {
+          const lower = k.toLowerCase();
+          if (seenCols.has(lower)) continue; // Avoid duplicate columns if SQLite had both htmlBody and htmlbody
+          seenCols.add(lower);
+
+          cols.push(lower === 'user' ? '"user"' : lower);
+          values.push(row[k]);
+        }
+
+        const quotedCols = cols.join(', ');
+        const placeholders = cols.map((_, i) => `$${i + 1}`).join(', ');
 
         // Build conflict handling
         let insertSql = `INSERT INTO "${table}" (${quotedCols}) VALUES (${placeholders})`;
         if (row.id !== undefined) {
           insertSql += ` ON CONFLICT (id) DO NOTHING`;
         } else if (table === 'job_tags' || table === 'user_permissions') {
-          // Tables without single primary key
           insertSql += ``;
         }
 

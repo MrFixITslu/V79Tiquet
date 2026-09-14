@@ -68,6 +68,7 @@ const CAMEL_MAP = {
   recipientcount: 'recipientCount',
   sentat: 'sentAt',
   sentby: 'sentBy',
+  htmlbody: 'htmlBody',
   employeeid: 'employeeId',
   employeename: 'employeeName',
   suspendedat: 'suspendedAt',
@@ -117,29 +118,44 @@ async function createPool() {
   const config = getPgConfig();
   const pool = new Pool(config);
 
-  try {
-    const client = await pool.connect();
-    client.release();
-    console.log(`[DB] Connected to PostgreSQL at ${config.host || 'connection string'}`);
-    return pool;
-  } catch (err) {
-    if (process.env.NODE_ENV === 'production') {
-      console.error('[DB] FATAL: Could not connect to PostgreSQL server in production:', err.message);
-      throw err;
-    }
+  const maxAttempts = process.env.NODE_ENV === 'production' ? 40 : 10;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const client = await pool.connect();
+      client.release();
+      console.log(`[DB] Connected to PostgreSQL at ${config.host || 'connection string'}`);
+      return pool;
+    } catch (err) {
+      const isStartup = err.code === '57P03' || err.message?.includes('starting up') || err.message?.includes('accepting connections');
+      const isConnectionRefused = err.code === 'ECONNREFUSED' || err.code === 'ETIMEDOUT';
 
-    console.warn(`[DB] PostgreSQL not reachable at ${config.host || 'DATABASE_URL'} (${err.message}).`);
-    console.warn('[DB] Initialising in-memory PostgreSQL 16 instance for development/test environment...');
-    const { newDb } = await import('pg-mem');
-    const memDb = newDb();
-    const memPg = memDb.adapters.createPg();
-    return new memPg.Pool();
+      if ((isStartup || isConnectionRefused) && attempt < maxAttempts) {
+        console.warn(`[DB] PostgreSQL is starting up or recovering (attempt ${attempt}/${maxAttempts}): ${err.message}. Waiting 3s...`);
+        await new Promise(res => setTimeout(res, 3000));
+        continue;
+      }
+
+      if (process.env.NODE_ENV === 'production') {
+        console.error('[DB] FATAL: Could not connect to PostgreSQL server in production:', err.message);
+        throw err;
+      }
+
+      console.warn(`[DB] PostgreSQL not reachable at ${config.host || 'DATABASE_URL'} (${err.message}).`);
+      console.warn('[DB] Initialising in-memory PostgreSQL 16 instance for development/test environment...');
+      const { newDb } = await import('pg-mem');
+      const memDb = newDb();
+      const memPg = memDb.adapters.createPg();
+      return new memPg.Pool();
+    }
   }
 }
 
 export function convertSql(sql, params) {
   let paramIndex = 1;
   let converted = sql.replace(/\?/g, () => `$${paramIndex++}`);
+
+  // Escape reserved keyword "user" when used as a column in column lists (e.g. activity_logs)
+  converted = converted.replace(/(?<=[(,]\s*)user(?=\s*[,)])/gi, '"user"');
 
   // Transform SQLite datetime('now', ...) to PostgreSQL INTERVAL
   converted = converted.replace(/datetime\('now',\s*'(-?\d+)\s*(days?|hours?|minutes?|seconds?)'\)/gi, (_, num, unit) => {
@@ -351,7 +367,7 @@ const db = {
     return await pool.query(sql);
   },
 
-  async transaction(fn) {
+  transaction(fn) {
     return async (...args) => {
       const pool = await ensureDbReady();
       const client = await pool.connect();
