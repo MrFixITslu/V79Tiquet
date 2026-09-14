@@ -51,7 +51,7 @@ browser with `localStorage`.
      a reproducible deploy.
 2. `docker compose up -d --build`
 3. In Nginx Proxy Manager's UI, add/edit the Proxy Host for
-   `tiquet.v79sl.duckdns.org`:
+   `tiquet.v79sl.com`:
    - **Forward Hostname / IP**: `v79-tiquet-manager`
    - **Forward Port**: `8080`
    - **Websockets Support**: **ON** -- the app uses a WebSocket connection

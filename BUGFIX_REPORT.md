@@ -7,9 +7,9 @@ gatewayClient), `src/api.ts`, `src/useSyncedCollection.ts`, `src/types.ts`,
 see "Not yet reviewed" at the bottom.
 
 Files changed: `server/db.js`, `server/index.js`, `server/oauth.js`,
-`src/useSyncedCollection.ts`. Full unified diff in `v79tiquet_bugfixes.patch`;
-this zip also contains the complete fixed versions of those 4 files, ready to
-drop into the repo.
+`src/useSyncedCollection.ts`, `env.example`, `README.md`. Full unified diff
+in `v79tiquet_bugfixes.patch`; this zip also contains the complete fixed
+versions of those files, ready to drop into the repo.
 
 Verified after fixing: `npx tsc --noEmit` clean, `npx vite build` succeeds,
 `node --check` passes on all changed server files, server boots against the
@@ -130,6 +130,14 @@ order.
 **Fix:** replaced the inert boolean ref with a promise chain
 (`syncChainRef`) — each sync now runs after the previous one to the same
 endpoint has fully settled, so they're strictly sequential.
+
+---
+
+### 7. Stale `tiquet.v79sl.duckdns.org` references left over from the domain move to `tiquet.v79sl.com`
+The app-level CORS allowlist and the OAuth config endpoint (`server/index.js`, `server/oauth.js`) were already updated to the new domain — good. Three places weren't:
+- `server/index.js` — `COMPANY_WEBSITE_URL` (the fallback link used in the welcome email's `{{site_url}}` when a client record has no `website` set) still defaulted to `https://v79sl.duckdns.org` — the *old* address for the main Vision79 Digital site, not even the Tiquet subdomain. Updated to `https://v79sl.com`, matching the main site's own completed migration.
+- `env.example` — `APP_BASE_URL` and `ALLOWED_ORIGINS` still showed the old `tiquet.v79sl.duckdns.org`, so a fresh deploy following the example file would start on the wrong domain. Updated to `tiquet.v79sl.com`.
+- `README.md` — the Nginx Proxy Manager setup instructions still named the old proxy host. Updated to `tiquet.v79sl.com`.
 
 ---
 

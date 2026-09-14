@@ -2020,7 +2020,7 @@ app.get("/api/clients", authenticateToken, async (req, res) => {
 
 // Public URL for the company's main marketing site — included in the welcome
 // email. Distinct from APP_BASE_URL, which is this app's own portal domain.
-const COMPANY_WEBSITE_URL = process.env.COMPANY_WEBSITE_URL || 'https://v79sl.duckdns.org';
+const COMPANY_WEBSITE_URL = process.env.COMPANY_WEBSITE_URL || 'https://v79sl.com';
 const APP_BASE_URL_FOR_TEMPLATES = (process.env.APP_BASE_URL || 'http://localhost:3000').replace(/\/$/, '');
 
 // Renders and sends the account's 'welcome' template to a newly-created
