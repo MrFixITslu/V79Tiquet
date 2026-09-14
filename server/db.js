@@ -367,13 +367,60 @@ const db = {
     return await pool.query(sql);
   },
 
+  // Runs `fn` inside a single BEGIN/COMMIT/ROLLBACK. `fn` is called with a
+  // `tx` handle — a db-shaped object (prepare/query/exec) bound to THIS
+  // transaction's dedicated client — which it must use for every query it
+  // wants covered by the transaction.
+  //
+  // NOTE: previously this checked out a client and ran BEGIN/COMMIT/ROLLBACK
+  // on it, but `fn` itself called the module-level `db.prepare(...)`, which
+  // always goes through the shared `pool` (a different connection per call)
+  // — so none of the callback's queries were ever actually part of the
+  // transaction. A failure partway through left whatever had already run
+  // committed, with nothing to roll back. That's fixed here by handing `fn`
+  // a client-bound `tx` object instead of relying on module-level state.
   transaction(fn) {
     return async (...args) => {
       const pool = await ensureDbReady();
       const client = await pool.connect();
+      const tx = {
+        prepare(sql) {
+          return {
+            async get(...params) {
+              const converted = convertSql(sql, params);
+              const res = await client.query(converted.sql, converted.params);
+              return res.rows.length > 0 ? normalizeRow(res.rows[0]) : undefined;
+            },
+            async all(...params) {
+              const converted = convertSql(sql, params);
+              const res = await client.query(converted.sql, converted.params);
+              return res.rows.map(normalizeRow);
+            },
+            async run(...params) {
+              const converted = convertSql(sql, params);
+              const res = await client.query(converted.sql, converted.params);
+              return {
+                changes: res.rowCount || 0,
+                lastInsertRowid: null
+              };
+            }
+          };
+        },
+        async query(sql, params = []) {
+          const converted = convertSql(sql, params);
+          const res = await client.query(converted.sql, converted.params);
+          return {
+            ...res,
+            rows: res.rows.map(normalizeRow)
+          };
+        },
+        async exec(sql) {
+          return await client.query(sql);
+        }
+      };
       try {
         await client.query('BEGIN');
-        const result = await fn(...args);
+        const result = await fn(tx, ...args);
         await client.query('COMMIT');
         return result;
       } catch (e) {

@@ -185,6 +185,23 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
+// --- Admin-only middleware ---
+// Several endpoints (team management, role/permission changes) must only be
+// callable by an Admin of the account. `authenticateToken` only proves *who*
+// the caller is — it never checked *what* they're allowed to do, so any
+// authenticated teammate (any role) could previously call these routes
+// directly (bypassing the UI, which only hides the buttons) and promote
+// themselves to Admin, invite new users, or remove teammates. Always mount
+// this AFTER authenticateToken.
+const requireAdmin = (req, res, next) => {
+  if (!req.user || req.user.role !== 'Admin') {
+    return res.status(403).json({
+      error: "Forbidden: Admin access required"
+    });
+  }
+  next();
+};
+
 // --- Super Admin Middleware ---
 const superAdminMiddleware = (req, res, next) => {
   const authHeader = req.headers['authorization'];
@@ -349,7 +366,7 @@ app.use("/api/auth", authLimiter);
 app.use("/api/", apiLimiter);
 
 // --- AUTHENTICATION ROUTES ---
-registerOAuthRoutes(app); // Google + Apple OAuth
+registerOAuthRoutes(app, JWT_SECRET); // Google + Apple OAuth
 
 app.post("/api/auth/register", async (req, res) => {
   const {
@@ -371,10 +388,10 @@ app.post("/api/auth/register", async (req, res) => {
     const userId = uuidv4();
     const hashedPassword = await bcrypt.hash(password, 12); // Increased rounds for production
 
-    const registerTx = db.transaction(async () => {
-      await db.prepare("INSERT INTO accounts (id, name, createdAt) VALUES (?, ?, ?)").run(accountId, companyName, new Date().toISOString());
-      await db.prepare("INSERT INTO users (id, name, email, role, password_hash, account_id) VALUES (?, ?, ?, ?, ?, ?)").run(userId, name, email, "Admin", hashedPassword, accountId);
-      await db.prepare("INSERT INTO settings (id, name, email, account_id) VALUES (?, ?, ?, ?)").run(uuidv4(), companyName, email, accountId);
+    const registerTx = db.transaction(async (tx) => {
+      await tx.prepare("INSERT INTO accounts (id, name, createdAt) VALUES (?, ?, ?)").run(accountId, companyName, new Date().toISOString());
+      await tx.prepare("INSERT INTO users (id, name, email, role, password_hash, account_id) VALUES (?, ?, ?, ?, ?, ?)").run(userId, name, email, "Admin", hashedPassword, accountId);
+      await tx.prepare("INSERT INTO settings (id, name, email, account_id) VALUES (?, ?, ?, ?)").run(uuidv4(), companyName, email, accountId);
     });
     await registerTx();
     await seedDefaultTemplatesForAccount(accountId);
@@ -1383,12 +1400,13 @@ app.delete("/api/jobs/:id", authenticateToken, async (req, res) => {
     if (!job) return res.status(404).json({
       error: "Job not found"
     });
-    db.transaction(async () => {
-      await db.prepare("DELETE FROM job_tags WHERE job_id = ? AND account_id = ?").run(id, req.accountId);
-      await db.prepare("DELETE FROM activity_logs WHERE job_id = ? AND account_id = ?").run(id, req.accountId);
-      await db.prepare("DELETE FROM job_messages WHERE job_id = ? AND account_id = ?").run(id, req.accountId);
-      await db.prepare("DELETE FROM jobs WHERE id = ? AND account_id = ?").run(id, req.accountId);
-    })();
+    const deleteJobTx = db.transaction(async (tx) => {
+      await tx.prepare("DELETE FROM job_tags WHERE job_id = ? AND account_id = ?").run(id, req.accountId);
+      await tx.prepare("DELETE FROM activity_logs WHERE job_id = ? AND account_id = ?").run(id, req.accountId);
+      await tx.prepare("DELETE FROM job_messages WHERE job_id = ? AND account_id = ?").run(id, req.accountId);
+      await tx.prepare("DELETE FROM jobs WHERE id = ? AND account_id = ?").run(id, req.accountId);
+    });
+    await deleteJobTx();
     logger.audit('job_deleted', {
       accountId: req.accountId,
       jobId: id
@@ -1785,7 +1803,7 @@ app.get("/api/users", authenticateToken, async (req, res) => {
 
 // Invite a new teammate: creates a real login account with a random temporary
 // password, emailed to them, and forces a password change on first login.
-app.post("/api/users", authenticateToken, async (req, res) => {
+app.post("/api/users", authenticateToken, requireAdmin, async (req, res) => {
   const {
     name,
     email,
@@ -1827,7 +1845,7 @@ app.post("/api/users", authenticateToken, async (req, res) => {
     });
   }
 });
-app.put("/api/users/:id", authenticateToken, async (req, res) => {
+app.put("/api/users/:id", authenticateToken, requireAdmin, async (req, res) => {
   const {
     id
   } = req.params;
@@ -1855,7 +1873,7 @@ app.put("/api/users/:id", authenticateToken, async (req, res) => {
     });
   }
 });
-app.delete("/api/users/:id", authenticateToken, async (req, res) => {
+app.delete("/api/users/:id", authenticateToken, requireAdmin, async (req, res) => {
   const {
     id
   } = req.params;
@@ -1896,9 +1914,16 @@ app.get("/api/files", authenticateToken, async (req, res) => {
     });
   }
 });
-app.post("/api/files", authenticateToken, uploadLimiter, generalUpload.array("files", 20), (req, res) => {
+app.post("/api/files", authenticateToken, uploadLimiter, generalUpload.array("files", 20), async (req, res) => {
   try {
-    const uploaded = (req.files || []).map(async f => {
+    // NOTE: this used to be a non-async handler that did
+    // `(req.files || []).map(async f => {...})` and immediately responded
+    // with that array — since `.map` doesn't wait for its async callbacks,
+    // the response went out full of pending Promises (which serialize to
+    // `{}`) before the DB insert or the file rename had actually happened,
+    // and any error inside the map was an unhandled rejection instead of
+    // hitting the catch block below. Awaiting Promise.all fixes all three.
+    const uploaded = await Promise.all((req.files || []).map(async f => {
       const id = uuidv4();
       const record = {
         id,
@@ -1917,7 +1942,7 @@ app.post("/api/files", authenticateToken, uploadLimiter, generalUpload.array("fi
             `).run(record);
       fs.renameSync(f.path, path.join(path.dirname(f.path), id));
       return record;
-    });
+    }));
     res.status(201).json(uploaded);
   } catch (error) {
     res.status(500).json({

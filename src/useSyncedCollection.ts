@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api";
 
 type Row = Record<string, any> & { id: string };
@@ -16,7 +16,9 @@ export function useSyncedCollection<T extends Row>(endpoint: string, enabled: bo
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const prevRef = useRef<T[]>([]);
-  const syncingRef = useRef(false);
+  // Chain of in-flight syncs to this endpoint. Starts resolved (nothing in
+  // flight). See the comment in setItems for why this exists.
+  const syncChainRef = useRef<Promise<void>>(Promise.resolve());
 
   const reload = useCallback(async () => {
     if (!enabled) return;
@@ -44,10 +46,24 @@ export function useSyncedCollection<T extends Row>(endpoint: string, enabled: bo
         const next = typeof updater === "function" ? (updater as (p: T[]) => T[])(prev) : updater;
         const before = prevRef.current;
         prevRef.current = next;
-        void syncDiff<T>(endpoint, before, next, syncingRef, (reconciled) => {
-          prevRef.current = reconciled;
-          setItemsState(reconciled);
-        });
+
+        // Chain this sync after whatever is already in flight, rather than
+        // firing it immediately. Two `setItems` calls close together (e.g.
+        // two quick edits, or a second save firing before the first
+        // request lands) used to run syncDiff concurrently: both diffs
+        // would race against the server using a `before` that was already
+        // stale by the time their requests went out, which could
+        // double-fire a create for the same new row, or let an update and
+        // a delete for the same id land out of order. Chaining makes syncs
+        // to this endpoint strictly sequential, each one seeing the
+        // outcome of the last.
+        syncChainRef.current = syncChainRef.current.then(() =>
+          syncDiff<T>(endpoint, before, next, (reconciled) => {
+            prevRef.current = reconciled;
+            setItemsState(reconciled);
+          })
+        );
+
         return next;
       });
     },
@@ -61,7 +77,6 @@ async function syncDiff<T extends Row>(
   endpoint: string,
   prev: T[],
   next: T[],
-  syncingRef: MutableRefObject<boolean>,
   onReconciled: (items: T[]) => void
 ) {
   const prevIds = new Set(prev.map((p) => p.id));

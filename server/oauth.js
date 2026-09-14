@@ -29,7 +29,6 @@ import db            from './db.js';
 import { seedDefaultTemplatesForAccount } from './db.js';
 import { logger }    from './logger.js';
 
-const JWT_SECRET     = process.env.JWT_SECRET || 'dev_jwt_secret_v79_tickit';
 const APPLE_ID       = process.env.APPLE_CLIENT_ID;
 const FACEBOOK_ID    = process.env.FACEBOOK_APP_ID;
 const FACEBOOK_SECRET= process.env.FACEBOOK_APP_SECRET;
@@ -103,14 +102,14 @@ async function findOrCreateOAuthUser(provider, oauthId, email, displayName) {
 /**
  * Check account suspension, mint a JWT, return the standard auth payload.
  */
-async function buildAuthResponse(user) {
+async function buildAuthResponse(user, jwtSecret) {
     const account = await db.prepare("SELECT status FROM accounts WHERE id = ?").get(user.account_id);
     if (account?.status === 'suspended') {
         return { suspended: true };
     }
     const token = jwt.sign(
         { id: user.id, email: user.email, account_id: user.account_id },
-        JWT_SECRET,
+        jwtSecret,
         { expiresIn: '8h' }
     );
     return {
@@ -128,7 +127,19 @@ async function buildAuthResponse(user) {
 
 // ── Route Registration ────────────────────────────────────────────────────────
 
-export function registerOAuthRoutes(app) {
+// `jwtSecret` MUST be the same secret index.js's `authenticateToken` verifies
+// against. Previously this module resolved its own JWT_SECRET independently
+// (`process.env.JWT_SECRET || 'dev_jwt_secret_v79_tickit'`), which only
+// matched index.js's secret when JWT_SECRET was explicitly set in the
+// environment. If it was left unset in production, index.js generates and
+// persists a strong random secret (see loadOrCreatePersistedSecret) while
+// this file silently fell back to the hardcoded dev string — so tokens
+// issued via Google/Apple/Facebook login would be signed with a different,
+// publicly-known secret than the one verifying them: OAuth logins would
+// fail signature verification, and (worse) anyone could forge a valid OAuth
+// session token using the well-known default string. Passing the resolved
+// secret in from index.js closes both problems.
+export function registerOAuthRoutes(app, jwtSecret) {
 
     // ── Google ────────────────────────────────────────────────────────────────
     /**
@@ -164,7 +175,7 @@ export function registerOAuthRoutes(app) {
             }
 
             const user   = await findOrCreateOAuthUser('google', googleId, email, name);
-            const result = await buildAuthResponse(user);
+            const result = await buildAuthResponse(user, jwtSecret);
 
             if (result.suspended) {
                 return res.status(402).json({ error: 'ACCOUNT_SUSPENDED', message: 'Account suspended. Contact support.' });
@@ -233,7 +244,7 @@ export function registerOAuthRoutes(app) {
             const resolvedEmail = email || `${appleId}@privaterelay.appleid.com`;
 
             const user   = await findOrCreateOAuthUser('apple', appleId, resolvedEmail, displayName);
-            const result = await buildAuthResponse(user);
+            const result = await buildAuthResponse(user, jwtSecret);
 
             if (result.suspended) {
                 return res.redirect(`${APP_BASE_URL}/?oauth_error=suspended`);
@@ -313,7 +324,7 @@ export function registerOAuthRoutes(app) {
             }
 
             const user   = await findOrCreateOAuthUser('facebook', fbId, email, name);
-            const result = await buildAuthResponse(user);
+            const result = await buildAuthResponse(user, jwtSecret);
 
             if (result.suspended) {
                 return res.status(402).json({ error: 'ACCOUNT_SUSPENDED', message: 'Account suspended. Contact support.' });
