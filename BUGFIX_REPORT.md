@@ -7,8 +7,9 @@ gatewayClient), `src/api.ts`, `src/useSyncedCollection.ts`, `src/types.ts`,
 see "Not yet reviewed" at the bottom.
 
 Files changed: `server/db.js`, `server/index.js`, `server/oauth.js`,
-`src/useSyncedCollection.ts`, `env.example`, `README.md`. Full unified diff
-in `v79tiquet_bugfixes.patch`; this zip also contains the complete fixed
+`src/useSyncedCollection.ts`, `env.example`, `README.md`,
+`scripts/migrate-sqlite-to-pg.js`. Full unified diff in
+`v79tiquet_bugfixes.patch`; this zip also contains the complete fixed
 versions of those files, ready to drop into the repo.
 
 Verified after fixing: `npx tsc --noEmit` clean, `npx vite build` succeeds,
@@ -138,6 +139,99 @@ The app-level CORS allowlist and the OAuth config endpoint (`server/index.js`, `
 - `server/index.js` — `COMPANY_WEBSITE_URL` (the fallback link used in the welcome email's `{{site_url}}` when a client record has no `website` set) still defaulted to `https://v79sl.duckdns.org` — the *old* address for the main Vision79 Digital site, not even the Tiquet subdomain. Updated to `https://v79sl.com`, matching the main site's own completed migration.
 - `env.example` — `APP_BASE_URL` and `ALLOWED_ORIGINS` still showed the old `tiquet.v79sl.duckdns.org`, so a fresh deploy following the example file would start on the wrong domain. Updated to `tiquet.v79sl.com`.
 - `README.md` — the Nginx Proxy Manager setup instructions still named the old proxy host. Updated to `tiquet.v79sl.com`.
+
+---
+
+### 8. SQLite→Postgres migration permanently stuck on a duplicate-key error (`scripts/migrate-sqlite-to-pg.js`)
+This is what's actually happening in your `tiquet-manager` logs right now — the
+migration is failing on every single restart, which means the real account's
+jobs/clients/employees/settings are **still sitting in SQLite and never
+making it into Postgres**.
+
+Root cause: `email_templates` has two separate constraints — the `id`
+primary key, and a unique index on `(account_id, type)`
+(`idx_templates_account_type`, one welcome + one newsletter template per
+account). The migration script's generic conflict handling only targets the
+`id` column (`ON CONFLICT (id) DO NOTHING`), which does nothing to prevent
+an `(account_id, type)` collision — Postgres still throws a hard error for
+that, aborting the *entire* transaction (every table in this run, not just
+email templates).
+
+That collision is real, and it's self-inflicted by a different part of
+`initDb()`: on every startup, after a migration attempt, `initDb()`
+unconditionally seeds a placeholder welcome/newsletter template for every
+account that currently exists in Postgres (`default_account` included). So
+the sequence is: migration fails for some other/original reason → rolls
+back → but the *seed* step still runs right after and creates a
+`(default_account, welcome)` placeholder row → next restart, migration
+tries again, and now collides with that placeholder → fails again → same
+seed step recreates the trap → repeat forever. (Your SQLite data's real
+tenant account appears to actually be `default_account` itself, from
+before this app had proper multi-tenancy — that's why the collision is on
+exactly that id.)
+
+**Fix:** for `email_templates` specifically, the insert now targets the
+actual unique constraint — `ON CONFLICT (account_id, type) DO UPDATE SET
+subject/body/htmlbody/updatedat = EXCLUDED...` — so the real migrated
+content overwrites the placeholder instead of erroring. This is
+self-healing: once this fix is deployed, the very next restart's migration
+attempt will succeed and overwrite the placeholder rows with your real
+templates — no manual DB surgery needed.
+
+**This is very likely also the cause of your `INTAKE_ACCOUNT_ID` startup
+warning** — `4864426e-841d-4536-a0fb-8103d504d746` "doesn't match any real
+account" because that account has been stuck in SQLite, never migrated into
+Postgres, this whole time. Once the migration fix above runs successfully,
+check whether that warning clears on its own before changing the
+`INTAKE_ACCOUNT_ID` env var.
+
+### 9. "Forgot password" silently did nothing for Google/Apple/Facebook sign-in accounts (`server/index.js`)
+`POST /api/auth/forgot-password` only sent a reset email when
+`user.password_hash` was already set — accounts created via "Continue with
+Google" (or Apple/Facebook) never get a `password_hash` at all (see
+`findOrCreateOAuthUser` in `server/oauth.js`), so for those accounts the
+route always took the silent no-op branch. The response is deliberately the
+same generic "if an account exists, a reset link has been sent" message
+either way (to prevent email enumeration), so there was **no visible error
+anywhere** — it just quietly never sent anything, every time.
+
+Combined with the Google sign-in issue below, this can mean a full lockout:
+Google login broken + the account has no password + password reset
+silently refuses to help.
+
+**Fix:** removed the `password_hash` requirement — completing the emailed
+reset link is just as strong a proof of account ownership as a normal
+password reset, so it's now allowed to *establish* a password for an
+OAuth-only account, not just reset an existing one. `/api/auth/login`
+already handles this correctly once a `password_hash` exists, so no changes
+were needed there.
+
+**If email still doesn't arrive after this fix**, that's a separate,
+infrastructure-side possibility worth ruling out: `server/email.js` silently
+no-ops (logs only, doesn't error) whenever `SMTP_HOST`/`SMTP_USER`/`SMTP_PASS`
+aren't all set in the `tiquet-manager` container's environment. Check that
+container's logs for `SMTP not configured — emails will be logged but not
+delivered` or `SMTP connection verification failed` around a reset attempt.
+
+### 10. Google sign-in hangs on a blank `accounts.google.com/gsi/transform` page — diagnosed, not a code bug
+I read through `src/components/GoogleAuthButton.tsx` and `server/oauth.js` —
+the implementation is a standard, correctly-wired use of `@react-oauth/google`
+(current version, `0.12.2`) with a normal ID-token flow (no custom/broken
+logic to fix). A blank hang on that specific Google URL, rather than a clear
+error, is the classic symptom of one of two things **outside this repo's
+code**:
+
+1. **Google Cloud Console's "Authorized JavaScript origins" for this OAuth
+   client still lists the old domain** (`tiquet.v79sl.duckdns.org`) and
+   hasn't been updated to `https://tiquet.v79sl.com` since the domain move —
+   worth checking first, since this lines up with the recent migration.
+2. **Third-party cookies blocked** in that browser/profile — Chrome now
+   blocks these by default in a growing number of contexts, and Google's
+   relay iframe depends on them when it can't fall back to FedCM.
+
+Nothing to patch in the app for this one — worth checking (1) in Google
+Cloud Console, then testing in a plain browser profile with third-party
+cookies allowed to rule out (2).
 
 ---
 

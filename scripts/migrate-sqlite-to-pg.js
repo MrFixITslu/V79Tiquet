@@ -221,7 +221,29 @@ export async function runMigration(options = {}) {
 
         // Build conflict handling
         let insertSql = `INSERT INTO "${table}" (${quotedCols}) VALUES (${placeholders})`;
-        if (row.id !== undefined) {
+        if (table === 'email_templates') {
+          // email_templates has a SEPARATE unique constraint on
+          // (account_id, type) — see idx_templates_account_type in
+          // schema.sql — in addition to its `id` primary key. `ON CONFLICT
+          // (id) DO NOTHING` only guards against an id collision (which
+          // essentially never happens, since these are fresh UUIDs from
+          // SQLite); it does nothing for an (account_id, type) collision,
+          // which Postgres still rejects as a hard error. That happens in
+          // practice: initDb() seeds a placeholder 'welcome'/'newsletter'
+          // template for every existing account (including one seeded for
+          // this migration's own target account, if a prior migration
+          // attempt failed and got rolled back but the seed step still ran
+          // afterwards) — so migrating the account's *real* template rows
+          // collides with that placeholder and aborts this entire
+          // transaction, not just this table. Target the actual unique
+          // constraint and let the real, migrated content win over the
+          // placeholder.
+          insertSql += ` ON CONFLICT (account_id, type) DO UPDATE SET
+            subject = EXCLUDED.subject,
+            body = EXCLUDED.body,
+            htmlbody = EXCLUDED.htmlbody,
+            updatedat = EXCLUDED.updatedat`;
+        } else if (row.id !== undefined) {
           insertSql += ` ON CONFLICT (id) DO NOTHING`;
         } else if (table === 'job_tags' || table === 'user_permissions') {
           insertSql += ``;

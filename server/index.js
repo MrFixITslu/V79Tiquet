@@ -562,9 +562,9 @@ app.post("/api/auth/login/2fa", (req, res) => {
 // --- FORGOT PASSWORD ---
 // Two-step flow: request a reset link, then submit a new password with the
 // token from that link. Deliberately returns the same generic success
-// message whether or not the email exists, an OAuth-only account, or a
-// currently-locked account — anything else would let an attacker enumerate
-// which emails have accounts on this workspace.
+// message whether or not the email exists, or the account is currently
+// locked — anything else would let an attacker enumerate which emails have
+// accounts on this workspace.
 app.post("/api/auth/forgot-password", async (req, res) => {
   const {
     email
@@ -576,9 +576,18 @@ app.post("/api/auth/forgot-password", async (req, res) => {
   try {
     const user = await db.prepare("SELECT id, email, password_hash FROM users WHERE email = ?").get(email);
 
-    // Silently no-op for: no such user, or an OAuth-only account (no
-    // password_hash to reset). Same response either way.
-    if (user && user.password_hash) {
+    // NOTE: this used to also require `user.password_hash` to be set,
+    // silently no-op'ing for an OAuth-only account (Google/Apple/Facebook
+    // sign-in, no password ever set). That's a real lockout trap: an
+    // account created via "Continue with Google" has no password to fall
+    // back on, so if OAuth ever breaks (wrong Google Cloud Console origin,
+    // a revoked app, etc.) there was *no* way back in — forgot-password
+    // looked like it worked (same generic message) but silently sent
+    // nothing, every time, with no error anywhere. Completing this email
+    // link is just as strong a proof of account ownership as a normal
+    // reset, so it's fine to let it *establish* a password for an
+    // OAuth-only account, not just reset an existing one.
+    if (user) {
       const rawToken = crypto.randomBytes(32).toString('hex');
       const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
       const expires = new Date(Date.now() + 30 * 60 * 1000).toISOString(); // 30 min
