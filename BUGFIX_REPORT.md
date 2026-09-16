@@ -13,8 +13,15 @@ Files changed: `server/db.js`, `server/index.js`, `server/oauth.js`,
 versions of those files, ready to drop into the repo.
 
 Verified after fixing: `npx tsc --noEmit` clean, `npx vite build` succeeds,
-`node --check` passes on all changed server files, server boots against the
-`pg-mem` in-memory fallback and completes a register call successfully.
+`node --check` passes on all changed server files. Beyond static checks, this
+was also verified live: booted the server against the `pg-mem` in-memory
+fallback and exercised every fix end-to-end (registration, admin-gated
+invite/edit/delete on both the allow and deny path, file upload, job
+deletion, forgot-password) via curl, plus a full reproduction of the
+migration bug against a purpose-built SQLite fixture, plus an isolated
+simulation of the frontend race-condition fix. This live pass caught two
+real bugs in the *fixes themselves* (see items 11 and 12) that a re-read of
+the code alone had missed — both are fixed and reverified below.
 
 ---
 
@@ -232,6 +239,71 @@ code**:
 Nothing to patch in the app for this one — worth checking (1) in Google
 Cloud Console, then testing in a plain browser profile with third-party
 cookies allowed to rule out (2).
+
+---
+
+---
+
+### 11. Fixed a bug in my own fix: `requireAdmin` rejected everyone, including real Admins
+Testing item 4's middleware end-to-end (not just reading it back) turned up
+a real problem: the JWT issued at login/register only ever carries
+`{id, email, account_id}` — it never included a `role` claim, at any sign-in
+path (register, login, 2FA, OAuth). My first version of `requireAdmin`
+checked `req.user.role`, which is *always* `undefined` — so it rejected
+**every single request, including legitimate Admins**, not just the
+privilege-escalation attempts it was meant to stop.
+
+**Fix:** `requireAdmin` now looks the caller's current role up from the DB
+by `req.user.id` instead of trusting a token claim. This is also more
+correct than embedding `role` in the JWT would have been: a demoted Admin
+loses access immediately, rather than keeping it for the rest of their
+token's lifetime (up to 8h, or 1d after 2FA) — it mirrors the same
+"check current DB state, don't trust the token" pattern `authenticateToken`
+already uses for account suspension.
+
+**Retested after the fix:** a real Admin's invite/edit/delete calls succeed
+(201/200); a minted Employee-role token is correctly rejected (403) on all
+three routes; `GET /api/users` (not admin-gated) still works for both roles.
+
+### 12. Found via testing, not review: `initDb()` silently discarded the real account's name during migration
+Building an exact reproduction of the migration bug (a fixture SQLite file
+with real data under `account_id = 'default_account'`, matching your setup)
+proved the item 8 fix works — but also exposed a second, related bug:
+`initDb()` unconditionally inserts a `('default_account', 'Default
+Account', …)` placeholder row into `accounts` *before* it ever attempts
+migration. Since your real account apparently already uses that literal id,
+the placeholder claims the `id` first, and migration's own account insert
+(`ON CONFLICT (id) DO NOTHING`) then silently no-ops — so even with the
+email-template crash fixed, your account's real name would have stayed
+stuck as "Default Account" forever, with no error anywhere to show it.
+
+**Fix:** reordered `initDb()` to attempt migration *before* inserting the
+placeholder account row. The placeholder insert is now purely a fallback for
+a genuinely fresh install with nothing to migrate — nothing about migration
+itself depends on that row existing first, since `accounts` is the very
+first table migration populates, ahead of anything that references
+`account_id`.
+
+**Verified with a full reproduction, not just re-reading the code:** built a
+throwaway SQLite fixture with a real `default_account` row (name "Fire Lion
+Real Account") plus a colliding `email_templates` row, pointed a fresh
+`initDb()` at it via `DATABASE_PATH`, and confirmed: migration now completes
+with no error, the real email template content overwrites the placeholder
+(item 8), and — after this additional fix — the account's real name comes
+through correctly instead of staying "Default Account" (item 12).
+
+### 13. Hardened the sync-chain fix (item 6) against a hypothetical future failure
+`syncDiff` already catches every request it makes internally and never
+throws, so the chain from item 6 couldn't actually get stuck under current
+behavior — but chaining with a bare `.then(fn)` (no rejection handler) means
+*if that ever changed*, a single unexpected throw would permanently wedge
+every later sync to that endpoint (`.then(onFulfilled)` on a rejected
+promise never calls `onFulfilled` again). Added a `.catch()` so one bad sync
+can't take down every sync after it, regardless of what `syncDiff` does in
+the future. Verified with an isolated simulation of the exact chaining
+pattern (4 rapid calls with staggered delays, one forced to throw) — confirmed
+strictly sequential execution with no concurrent overlap, and that the
+simulated failure didn't stop the next call from running.
 
 ---
 

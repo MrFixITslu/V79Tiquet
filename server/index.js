@@ -193,13 +193,29 @@ const authenticateToken = (req, res, next) => {
 // directly (bypassing the UI, which only hides the buttons) and promote
 // themselves to Admin, invite new users, or remove teammates. Always mount
 // this AFTER authenticateToken.
-const requireAdmin = (req, res, next) => {
-  if (!req.user || req.user.role !== 'Admin') {
-    return res.status(403).json({
-      error: "Forbidden: Admin access required"
+//
+// This looks the caller's role up fresh from the DB rather than trusting a
+// `role` claim on the JWT — the login/register JWTs here only ever carry
+// {id, email, account_id}, never role, and embedding one would mean a
+// demoted Admin keeps admin access for the rest of their token's lifetime
+// (up to 8h, or 1d after 2FA). A live lookup costs one extra query, but
+// only on the handful of admin-gated routes, and matches the same
+// "check current DB state, don't trust the token" pattern authenticateToken
+// already uses for account suspension.
+const requireAdmin = async (req, res, next) => {
+  try {
+    const current = await db.prepare("SELECT role FROM users WHERE id = ?").get(req.user?.id);
+    if (!current || current.role !== 'Admin') {
+      return res.status(403).json({
+        error: "Forbidden: Admin access required"
+      });
+    }
+    next();
+  } catch (e) {
+    res.status(500).json({
+      error: "Internal Server Error"
     });
   }
-  next();
 };
 
 // --- Super Admin Middleware ---

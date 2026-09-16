@@ -216,13 +216,18 @@ export async function initDb() {
     await poolInstance.query(schemaSql);
   }
 
-  // 2. Ensure default account exists
-  await poolInstance.query(
-    'INSERT INTO accounts (id, name, createdAt) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING',
-    ['default_account', 'Default Account', new Date().toISOString()]
-  );
-
-  // 3. Check if SQLite data needs to be migrated
+  // 2. Check if SQLite data needs to be migrated — this MUST run before we
+  // touch the `accounts` table ourselves (see step 3 below). This app's
+  // real production account has apparently always used the literal id
+  // 'default_account' (from before it had proper multi-tenancy), so if we
+  // insert our own placeholder account row for that id first, the
+  // migration's own `INSERT ... ON CONFLICT (id) DO NOTHING` for that same
+  // id silently no-ops — the real account's name (and createdAt) would
+  // never actually migrate, permanently stuck as "Default Account" with no
+  // error anywhere to indicate it. Running migration first lets the real
+  // row win; nothing here depends on an accounts row existing beforehand —
+  // migration creates its own (`accounts` is the first table it migrates,
+  // ahead of anything that references account_id).
   let sqliteCandidate = process.env.DATABASE_PATH
     || (fs.existsSync(path.resolve('data/data.db')) ? path.resolve('data/data.db') : path.resolve('data.db'));
 
@@ -243,6 +248,15 @@ export async function initDb() {
       }
     }
   }
+
+  // 3. Ensure a default account exists. Purely a fallback for a genuinely
+  // fresh install with nothing to migrate — `ON CONFLICT (id) DO NOTHING`
+  // means this never overwrites a real row migration may have just created
+  // for the same id (see step 2's comment).
+  await poolInstance.query(
+    'INSERT INTO accounts (id, name, createdAt) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING',
+    ['default_account', 'Default Account', new Date().toISOString()]
+  );
 
   // 4. Seed super admin from environment if configured
   const saEmail = process.env.SUPER_ADMIN_EMAIL;

@@ -57,10 +57,21 @@ export function useSyncedCollection<T extends Row>(endpoint: string, enabled: bo
         // a delete for the same id land out of order. Chaining makes syncs
         // to this endpoint strictly sequential, each one seeing the
         // outcome of the last.
+        //
+        // syncDiff already catches every request it makes internally and
+        // never rejects — but chaining with a bare `.then(fn)` (no
+        // rejection handler) would mean a single unexpected throw permanently
+        // wedges the chain: every future sync after it would silently never
+        // run, since `.then(onFulfilled)` on a rejected promise just
+        // re-rejects without calling `onFulfilled`. Swallowing here (we
+        // already log inside syncDiff) keeps one bad sync from taking every
+        // later one down with it.
         syncChainRef.current = syncChainRef.current.then(() =>
           syncDiff<T>(endpoint, before, next, (reconciled) => {
             prevRef.current = reconciled;
             setItemsState(reconciled);
+          }).catch((e) => {
+            console.error(`Unexpected error syncing ${endpoint}`, e);
           })
         );
 
