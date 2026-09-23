@@ -19,39 +19,69 @@ jobs:
   validate:
     name: Validate, test and build
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: tiquet_test
+          POSTGRES_USER: tiquet_test
+          POSTGRES_PASSWORD: tiquet_test_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tiquet_test -d tiquet_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://tiquet_test:tiquet_test_password@127.0.0.1:5432/tiquet_test
+      JWT_SECRET: ci_jwt_secret_0123456789abcdef0123456789abcdef
+      SUPER_ADMIN_JWT_SECRET: ci_admin_secret_0123456789abcdef0123456789abcdef
+      V79_PLATFORM_SHARED_SECRET: ci_platform_secret_0123456789abcdef0123456789abcdef
+      SEED_DEMO_DATA: "false"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-      - name: Install and validate application
+          node-version: '22'
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: TypeScript check
+        run: npm run lint
+      - name: Production frontend build
+        run: npm run build
+      - name: Start API for integration tests
         shell: bash
         run: |
           set -euo pipefail
-          run_project() {
-            local dir="$1"
-            echo "==> Checking $dir"
-            pushd "$dir" >/dev/null
-            if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
-            for script in lint check test build; do
-              if node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts['$script'] ? 0 : 1)"; then
-                npm run "$script"
-              else
-                echo "No $script script; skipping"
-              fi
-            done
-            popd >/dev/null
-          }
-          run_project .
-          if [ -f backend/package.json ]; then run_project backend; fi
+          npm run server > /tmp/v79-tiquet-ci.log 2>&1 &
+          echo $! > /tmp/v79-tiquet-ci.pid
+          for i in {1..40}; do
+            if curl --fail --silent http://127.0.0.1:3000/health >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/v79-tiquet-ci.log
+          exit 1
+      - name: API security and workflow tests
+        run: npm test
       - name: Verify Docker image can build
-        if: ${{ hashFiles('Dockerfile') != '' }}
-        run: docker build --tag v79-ci-image .
+        run: docker build --tag v79-tiquet-ci .
+      - name: Show API log on failure
+        if: failure()
+        run: cat /tmp/v79-tiquet-ci.log || true
+      - name: Stop API
+        if: always()
+        run: |
+          if [ -f /tmp/v79-tiquet-ci.pid ]; then kill "$(cat /tmp/v79-tiquet-ci.pid)" || true; fi
       - name: Create delivery bundle
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         run: |
-          tar --exclude=.git --exclude=node_modules --exclude=backend/node_modules --exclude='*.tar.gz' \
+          tar --exclude=.git --exclude=node_modules --exclude='*.tar.gz' \
               -czf "${RUNNER_TEMP}/${GITHUB_REPOSITORY##*/}-${GITHUB_SHA::12}.tar.gz" .
       - name: Upload delivery bundle
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
@@ -70,28 +100,13 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - name: Detect Dockerfile
-        id: docker
-        shell: bash
-        run: |
-          if [ -f Dockerfile ]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-            echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
-          else
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-          fi
       - name: Log in to GHCR
-        if: ${{ steps.docker.outputs.enabled == 'true' }}
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
       - name: Build and publish immutable image
-        if: ${{ steps.docker.outputs.enabled == 'true' }}
         shell: bash
         run: |
-          IMAGE="${{ steps.docker.outputs.image }}"
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
           SHORT_SHA="${GITHUB_SHA::12}"
           docker build -t "$IMAGE:latest" -t "$IMAGE:$SHORT_SHA" .
           docker push "$IMAGE:latest"
           docker push "$IMAGE:$SHORT_SHA"
-      - name: Delivery note
-        if: ${{ steps.docker.outputs.enabled != 'true' }}
-        run: echo "No root Dockerfile; the release bundle is this repository's continuous-delivery artifact."
