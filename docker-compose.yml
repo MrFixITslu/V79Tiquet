@@ -18,6 +18,8 @@ services:
       - DATABASE_PATH=/app/data/tiquet.db
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
       - APP_BASE_URL=${APP_BASE_URL:-https://tiquet.v79sl.com}
+      - V79_HUB_EVENT_URL=${V79_HUB_EVENT_URL:-http://v79-hub:3040/api/platform/events}
+      - V79_HUB_EVENT_SECRET=${V79_HUB_EVENT_SECRET:-}
     expose:
       - "3050"
     volumes:
