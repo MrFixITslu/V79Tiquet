@@ -135,17 +135,9 @@ async function createPool() {
         continue;
       }
 
-      if (process.env.NODE_ENV === 'production') {
-        console.error('[DB] FATAL: Could not connect to PostgreSQL server in production:', err.message);
-        throw err;
-      }
-
-      console.warn(`[DB] PostgreSQL not reachable at ${config.host || 'DATABASE_URL'} (${err.message}).`);
-      console.warn('[DB] Initialising in-memory PostgreSQL 16 instance for development/test environment...');
-      const { newDb } = await import('pg-mem');
-      const memDb = newDb();
-      const memPg = memDb.adapters.createPg();
-      return new memPg.Pool();
+      console.error(`[DB] Could not connect to PostgreSQL at ${config.host || 'DATABASE_URL'}: ${err.message}`);
+      console.error('[DB] V79Tiquet now requires PostgreSQL in every environment. Use docker compose for local development or set DATABASE_URL.');
+      throw err;
     }
   }
 }
