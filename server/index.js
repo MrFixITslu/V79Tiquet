@@ -25,6 +25,7 @@ import { registerHealthCheck } from "./healthcheck.js";
 import { sendPaidEvent, generateEventId } from "./gatewayClient.js";
 import { logger } from "./logger.js";
 import platformRoutes from "./platform.js";
+import { queuePlatformEvent, startPlatformEventPump } from "./platformEvents.js";
 import { sanitizeString, sanitizeObject, isValidEmail, isValidUUID, isNonEmptyString, secureFilePath, validatePassword, badRequest } from "./security.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -756,6 +757,15 @@ const getJobActivityLogs = async jobId => {
 const getJobMessages = async jobId => {
   return await db.prepare("SELECT * FROM job_messages WHERE job_id = ? ORDER BY timestamp ASC").all(jobId);
 };
+async function safeQueuePlatformEvent(event) {
+  try {
+    return await queuePlatformEvent(event);
+  } catch (error) {
+    logger.warn(`[V79 Hub Events] Could not queue ${event?.type || "event"}: ${error?.message || error}`);
+    return null;
+  }
+}
+
 const createNotification = async ({
   userId,
   title,
@@ -826,11 +836,33 @@ const updateJobStage = async (id, newStatus, accountId, userName = "System") => 
   // record survives even if the process crashes immediately after. The
   // actual HTTP delivery happens afterward, off the request path, and can
   // never fail this function or the payment confirmation that called it.
+  let ffproCorrelationId = null;
   if (newStatus === 'paid' && job.status !== 'paid') {
     const eventId = generateEventId();
+    ffproCorrelationId = eventId;
     await db.prepare("UPDATE jobs SET ffproSyncStatus = 'pending', ffproEventId = ? WHERE id = ? AND account_id = ?").run(eventId, id, accountId);
     triggerFfproSync(id, accountId).catch(err => {
       logger.error(`[FFPRO Gateway] Unexpected error syncing job ${id}: ${err.message}`);
+    });
+  }
+
+  await safeQueuePlatformEvent({
+    accountId,
+    type: "job.status_changed",
+    subjectId: id,
+    correlationId: ffproCorrelationId,
+    occurredAt: now,
+    payload: { title: job.title, previousStatus: job.status, status: newStatus }
+  });
+  if (newStatus === 'paid' && job.status !== 'paid') {
+    const settings = await db.prepare("SELECT currency FROM settings WHERE account_id = ?").get(accountId);
+    await safeQueuePlatformEvent({
+      accountId,
+      type: "job.paid",
+      subjectId: id,
+      correlationId: ffproCorrelationId,
+      occurredAt: now,
+      payload: { title: job.title, amount: Number(job.amount || 0), currency: settings?.currency || "USD" }
     });
   }
 
@@ -1065,6 +1097,13 @@ app.post("/api/jobs", authenticateToken, async (req, res) => {
       }
     }
     const newJob = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(id, req.accountId);
+    await safeQueuePlatformEvent({
+      accountId: req.accountId,
+      type: "job.created",
+      subjectId: id,
+      occurredAt: newJob.createdAt || new Date().toISOString(),
+      payload: { title: newJob.title, status: newJob.status, priority: newJob.priority }
+    });
     res.status(201).json({
       ...newJob,
       tags: await getJobTags(id),
@@ -1276,6 +1315,24 @@ app.post("/api/public/intake", intakeLimiter, requireIntakeSecret, async (req, r
       fs.writeFileSync(path.join(jobFolder, 'README.md'), `# Project: ${title}\nClient: ${name}\nJob ID: ${id}\nCreated: ${now}\n\nThis folder contains all files, quotes, invoices, and logs for this project.\n`);
     } catch (folderErr) {
       console.error('Could not create job folder for intake job:', folderErr.message);
+    }
+    await safeQueuePlatformEvent({
+      accountId,
+      type: "job.created",
+      subjectId: id,
+      correlationId: eventId ? String(eventId) : null,
+      occurredAt: now,
+      payload: { title, status: "request", priority: "medium", origin: "website" }
+    });
+    if (action === "created") {
+      await safeQueuePlatformEvent({
+        accountId,
+        type: "customer.created",
+        subjectId: clientId,
+        correlationId: eventId ? String(eventId) : null,
+        occurredAt: now,
+        payload: { company, origin: "website" }
+      });
     }
     logger.info(`[Intake] Job ${id} created from website contact form for account ${accountId}; client ${action}.`);
     res.status(201).json({
@@ -2100,6 +2157,13 @@ app.post("/api/clients", authenticateToken, async (req, res) => {
     const newsletterOptInToken = uuidv4();
     await db.prepare("INSERT INTO clients (id, name, company, email, phone, address, industryId, newsletterOptInToken, newsletterOptIn, createdAt, account_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)").run(id, name, company || null, email, phone || null, address || null, industryId || null, newsletterOptInToken, createdAt, req.accountId);
     const newClient = await db.prepare("SELECT * FROM clients WHERE id = ?").get(id);
+    await safeQueuePlatformEvent({
+      accountId: req.accountId,
+      type: "customer.created",
+      subjectId: id,
+      occurredAt: createdAt,
+      payload: { company: newClient.company || newClient.name }
+    });
 
     // Awaited, not fire-and-forget: this was previously "fire and
     // forget with a console.log", which meant a failed or skipped
@@ -3219,6 +3283,8 @@ if (process.env.INTAKE_SECRET) {
     }
   })();
 }
+startPlatformEventPump();
+
 server.listen(PRIMARY_PORT, '0.0.0.0', () => {
   logger.info(`Backend server running on primary port ${PRIMARY_PORT} in ${isProduction ? 'production' : 'development'} mode (HTTP + WS)`);
 }).on('error', err => {
