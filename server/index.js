@@ -23,7 +23,8 @@ import multer from "multer";
 import { registerStripeRoutes } from "./stripe.js";
 import { registerHealthCheck } from "./healthcheck.js";
 import { sendPaidEvent, generateEventId } from "./gatewayClient.js";
-import { logger } from "./logger.js";\nimport platformRoutes from "./platform.js";
+import { logger } from "./logger.js";
+import platformRoutes from "./platform.js";
 import { sanitizeString, sanitizeObject, isValidEmail, isValidUUID, isNonEmptyString, secureFilePath, validatePassword, badRequest } from "./security.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -379,7 +380,8 @@ const uploadLimiter = rateLimit({
   legacyHeaders: false
 });
 app.use("/api/auth", authLimiter);
-app.use("/api/", apiLimiter);\napp.use("/api/platform", platformRoutes);
+app.use("/api/", apiLimiter);
+app.use("/api/platform", platformRoutes);
 
 // --- AUTHENTICATION ROUTES ---
 registerOAuthRoutes(app, JWT_SECRET); // Google + Apple OAuth
