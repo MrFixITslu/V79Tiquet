@@ -66,11 +66,6 @@ export default function App() {
   // login), restore the session instead of bouncing back to the login screen.
   useEffect(() => {
     const restore = async () => {
-      const token = getToken();
-      if (!token) {
-        setRestoringSession(false);
-        return;
-      }
       try {
         const me = await api.get<{ id: string; name: string; email: string; account_id: string }>("/auth/me");
         const settings = await api.get<any>("/settings");
@@ -174,6 +169,8 @@ export default function App() {
     setToken(null);
     setCurrentUser(null);
     setActiveBusiness(null);
+    void fetch("/api/auth/logout", { method:"POST", credentials:"same-origin" })
+      .finally(() => window.location.assign("/api/platform/start"));
   };
 
   if (portalRoute.matched && portalRoute.token) {
@@ -201,14 +198,14 @@ export default function App() {
   }
 
   if (!authenticated) {
+    window.location.replace("/api/platform/start");
     return (
-      <AuthGate
-        onAuthComplete={handleAuthComplete}
-        onForgotPassword={() => {
-          window.history.pushState({}, "", "/reset-password");
-          setResetPasswordRoute({ matched: true, token: null });
-        }}
-      />
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="text-center">
+          <Loader2 className="mx-auto w-6 h-6 text-indigo-500 animate-spin" />
+          <p className="mt-3 text-sm text-slate-500">Checking your V79 Hub access…</p>
+        </div>
+      </div>
     );
   }
 
