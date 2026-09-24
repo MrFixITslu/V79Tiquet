@@ -27,6 +27,7 @@ import { logger } from "./logger.js";
 import platformRoutes from "./platform.js";
 import { queuePlatformEvent, startPlatformEventPump } from "./platformEvents.js";
 import { consumeHubLaunchTicket, hubPublicUrl } from "./hubAccess.js";
+import { resolveLegacyAccount } from "./legacyAccountLink.js";
 import { sanitizeString, sanitizeObject, isValidEmail, isValidUUID, isNonEmptyString, secureFilePath, validatePassword, badRequest } from "./security.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -423,15 +424,15 @@ async function provisionHubIdentity(hubSession) {
       "SELECT id, name, hub_organization_id FROM accounts WHERE hub_organization_id = ? LIMIT 1"
     ).get(hubOrgId);
 
-    if (!account && process.env.V79_ALLOW_EMAIL_ACCOUNT_LINK === "1" && hubSession.role === "owner") {
-      account = await txDb.prepare(`
-        SELECT a.id, a.name, a.hub_organization_id
+    if (!account && hubSession.role === "owner") {
+      const candidates = await txDb.prepare(`
+        SELECT DISTINCT a.id, a.name, a.hub_organization_id
         FROM users u
         JOIN accounts a ON a.id = u.account_id
         WHERE LOWER(u.email) = LOWER(?) AND u.role = 'Admin'
-          AND a.hub_organization_id IS NULL
-        LIMIT 1
-      `).get(email);
+        LIMIT 2
+      `).all(email);
+      account = resolveLegacyAccount(candidates, hubOrgId, process.env.V79_ALLOW_EMAIL_ACCOUNT_LINK === "1");
       if (account) {
         await txDb.prepare("UPDATE accounts SET hub_organization_id = ? WHERE id = ?").run(hubOrgId, account.id);
       }
@@ -460,6 +461,9 @@ async function provisionHubIdentity(hubSession) {
     if (!user) {
       user = await txDb.prepare("SELECT * FROM users WHERE LOWER(email) = LOWER(?) AND account_id = ? LIMIT 1")
         .get(email, accountId);
+    }
+    if (user?.hub_user_id && user.hub_user_id !== hubUserId) {
+      throw new Error("This Tiquet user is already linked to another Hub identity.");
     }
 
     if (!user) {
