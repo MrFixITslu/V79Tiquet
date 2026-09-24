@@ -26,6 +26,7 @@ import { sendPaidEvent, generateEventId } from "./gatewayClient.js";
 import { logger } from "./logger.js";
 import platformRoutes from "./platform.js";
 import { queuePlatformEvent, startPlatformEventPump } from "./platformEvents.js";
+import { consumeHubLaunchTicket, hubPublicUrl } from "./hubAccess.js";
 import { sanitizeString, sanitizeObject, isValidEmail, isValidUUID, isNonEmptyString, secureFilePath, validatePassword, badRequest } from "./security.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -160,7 +161,11 @@ app.use(express.json({
 
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
+  const bearerToken = authHeader && authHeader.split(' ')[1];
+  const cookieHeader = req.headers.cookie || "";
+  const sessionCookie = cookieHeader.split(";").map(v => v.trim()).find(v => v.startsWith("tiquet_session="));
+  const cookieToken = sessionCookie ? decodeURIComponent(sessionCookie.slice("tiquet_session=".length)) : null;
+  const token = bearerToken || cookieToken;
   if (token == null) return res.status(401).json({
     error: "Unauthorized"
   });
@@ -382,12 +387,164 @@ const uploadLimiter = rateLimit({
 });
 app.use("/api/auth", authLimiter);
 app.use("/api/", apiLimiter);
+
+const HUB_SESSION_TTL_MS = 30 * 60 * 1000;
+const LEGACY_AUTH_ENABLED = process.env.V79_ALLOW_LEGACY_AUTH === "1";
+
+function setHubSessionCookie(res, token) {
+  const parts = [
+    `tiquet_session=${encodeURIComponent(token)}`,
+    "HttpOnly",
+    "Path=/",
+    "SameSite=Lax",
+    `Max-Age=${Math.floor(HUB_SESSION_TTL_MS/1000)}`,
+  ];
+  if (isProduction) parts.push("Secure");
+  res.setHeader("Set-Cookie", parts.join("; "));
+}
+
+function clearHubSessionCookie(res) {
+  const parts = ["tiquet_session=", "HttpOnly", "Path=/", "SameSite=Lax", "Max-Age=0"];
+  if (isProduction) parts.push("Secure");
+  res.setHeader("Set-Cookie", parts.join("; "));
+}
+
+async function provisionHubIdentity(hubSession) {
+  const now = new Date().toISOString();
+  const hubOrgId = String(hubSession.organization.id);
+  const hubUserId = String(hubSession.user.id);
+  const email = String(hubSession.user.email || "").toLowerCase();
+  const localRole = ["owner","admin"].includes(hubSession.role) ? "Admin" : "Member";
+  let accountId;
+  let userId;
+
+  const tx = db.transaction(async (txDb) => {
+    let account = await txDb.prepare(
+      "SELECT id, name, hub_organization_id FROM accounts WHERE hub_organization_id = ? LIMIT 1"
+    ).get(hubOrgId);
+
+    if (!account && process.env.V79_ALLOW_EMAIL_ACCOUNT_LINK === "1" && hubSession.role === "owner") {
+      account = await txDb.prepare(`
+        SELECT a.id, a.name, a.hub_organization_id
+        FROM users u
+        JOIN accounts a ON a.id = u.account_id
+        WHERE LOWER(u.email) = LOWER(?) AND u.role = 'Admin'
+          AND a.hub_organization_id IS NULL
+        LIMIT 1
+      `).get(email);
+      if (account) {
+        await txDb.prepare("UPDATE accounts SET hub_organization_id = ? WHERE id = ?").run(hubOrgId, account.id);
+      }
+    }
+
+    if (!account) {
+      accountId = uuidv4();
+      await txDb.prepare(`
+        INSERT INTO accounts (id, name, createdAt, status, plan, hub_organization_id)
+        VALUES (?, ?, ?, 'active', ?, ?)
+      `).run(accountId, hubSession.organization.name, now, hubSession.plan || "hub", hubOrgId);
+      await txDb.prepare("INSERT INTO settings (id, name, email, account_id) VALUES (?, ?, ?, ?)")
+        .run(uuidv4(), hubSession.organization.name, email, accountId);
+    } else {
+      accountId = account.id;
+      await txDb.prepare("UPDATE accounts SET name = ?, status = 'active', plan = ?, hub_organization_id = ? WHERE id = ?")
+        .run(hubSession.organization.name, hubSession.plan || "hub", hubOrgId, accountId);
+      const settings = await txDb.prepare("SELECT id FROM settings WHERE account_id = ? LIMIT 1").get(accountId);
+      if (!settings) {
+        await txDb.prepare("INSERT INTO settings (id, name, email, account_id) VALUES (?, ?, ?, ?)")
+          .run(uuidv4(), hubSession.organization.name, email, accountId);
+      }
+    }
+
+    let user = await txDb.prepare("SELECT * FROM users WHERE hub_user_id = ? LIMIT 1").get(hubUserId);
+    if (!user) {
+      user = await txDb.prepare("SELECT * FROM users WHERE LOWER(email) = LOWER(?) AND account_id = ? LIMIT 1")
+        .get(email, accountId);
+    }
+
+    if (!user) {
+      userId = uuidv4();
+      await txDb.prepare(`
+        INSERT INTO users
+          (id, name, email, role, password_hash, oauth_provider, oauth_id, account_id, permissions, must_change_password, hub_user_id)
+        VALUES (?, ?, ?, ?, NULL, 'v79-hub', ?, ?, ?, 0, ?)
+      `).run(
+        userId,
+        hubSession.user.name,
+        email,
+        localRole,
+        hubUserId,
+        accountId,
+        localRole === "Admin" ? null : JSON.stringify(["dashboard","jobs","clients"]),
+        hubUserId
+      );
+    } else {
+      userId = user.id;
+      await txDb.prepare(`
+        UPDATE users
+        SET name = ?, email = ?, role = ?, account_id = ?, hub_user_id = ?, oauth_provider = 'v79-hub', oauth_id = ?
+        WHERE id = ?
+      `).run(hubSession.user.name, email, localRole, accountId, hubUserId, hubUserId, userId);
+    }
+  });
+  await tx();
+  await seedDefaultTemplatesForAccount(accountId);
+  return { accountId, userId, email, role: localRole };
+}
+
+app.get("/api/platform/start", (_req, res) => {
+  const target = new URL(hubPublicUrl());
+  target.searchParams.set("return", "tiquet");
+  res.redirect(302, target.toString());
+});
+
+app.get("/api/platform/launch", async (req, res) => {
+  const ticket = String(req.query.ticket || "").trim();
+  if (!/^[A-Za-z0-9_-]{32,180}$/.test(ticket)) return res.status(400).send("Invalid V79 Hub launch ticket.");
+  try {
+    const hubSession = await consumeHubLaunchTicket(ticket);
+    const local = await provisionHubIdentity(hubSession);
+    const token = jwt.sign({
+      id: local.userId,
+      email: local.email,
+      account_id: local.accountId,
+      hub_managed: true,
+      hub_organization_id: hubSession.organization.id,
+    }, JWT_SECRET, { expiresIn: "30m" });
+    setHubSessionCookie(res, token);
+    logger.audit("hub_login_success", {
+      userId:local.userId,
+      accountId:local.accountId,
+      hubOrganizationId:hubSession.organization.id,
+    });
+    res.redirect(302, "/");
+  } catch (error) {
+    logger.warn(`[V79 Hub] Tiquet launch denied: ${error?.message || error}`);
+    const target = new URL(hubPublicUrl());
+    target.searchParams.set("return", "tiquet");
+    target.searchParams.set("error", "launch_denied");
+    res.redirect(302, target.toString());
+  }
+});
+
+app.post("/api/auth/logout", (_req, res) => {
+  clearHubSessionCookie(res);
+  res.json({ ok:true });
+});
+
 app.use("/api/platform", platformRoutes);
 
 // --- AUTHENTICATION ROUTES ---
-registerOAuthRoutes(app, JWT_SECRET); // Google + Apple OAuth
+if (LEGACY_AUTH_ENABLED) {
+  registerOAuthRoutes(app, JWT_SECRET);
+}
 
 app.post("/api/auth/register", async (req, res) => {
+  if (!LEGACY_AUTH_ENABLED) return res.status(410).json({
+    error:"V79 Tiquet accounts are created and managed through V79 Hub.",
+    code:"HUB_SIGNUP_REQUIRED",
+    hubUrl:hubPublicUrl(),
+  });
   const {
     name,
     email,
@@ -444,6 +601,11 @@ app.post("/api/auth/register", async (req, res) => {
   }
 });
 app.post("/api/auth/login", async (req, res) => {
+  if (!LEGACY_AUTH_ENABLED) return res.status(410).json({
+    error:"Sign in through V79 Hub.",
+    code:"HUB_AUTH_REQUIRED",
+    hubUrl:hubPublicUrl(),
+  });
   const {
     email,
     password
