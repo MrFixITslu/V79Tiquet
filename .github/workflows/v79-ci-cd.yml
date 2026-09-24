@@ -87,7 +87,8 @@ jobs:
       - name: Create delivery bundle
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
         run: |
-          tar --exclude=.git --exclude=node_modules --exclude='*.tar.gz' \
+          tar --exclude=.git --exclude=node_modules --exclude=.env --exclude='.env.*' \
+              --exclude=data --exclude=uploads --exclude=backups --exclude=dist --exclude='*.tar.gz' \
               -czf "${RUNNER_TEMP}/${GITHUB_REPOSITORY##*/}-${GITHUB_SHA::12}.tar.gz" .
       - name: Upload delivery bundle
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
@@ -116,3 +117,58 @@ jobs:
           docker build -t "$IMAGE:latest" -t "$IMAGE:$SHORT_SHA" .
           docker push "$IMAGE:latest"
           docker push "$IMAGE:$SHORT_SHA"
+
+  deploy:
+    name: Deploy validated release to server
+    runs-on: ubuntu-latest
+    needs: [validate, deliver-container]
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    environment: production
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-${{ github.sha }}
+          path: ${{ runner.temp }}/release
+      - name: Join deployment tailnet
+        uses: tailscale/github-action@v4
+        with:
+          authkey: ${{ secrets.TAILSCALE_AUTHKEY }}
+          ping: ${{ secrets.DEPLOY_HOST }}
+      - name: Configure pinned SSH host
+        shell: bash
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          test -n "$DEPLOY_SSH_KEY" && test -n "$DEPLOY_KNOWN_HOSTS"
+          install -d -m 700 "$HOME/.ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+          ssh-keygen -y -f "$HOME/.ssh/id_ed25519" >/dev/null
+      - name: Transfer and deploy release
+        shell: bash
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_PORT: ${{ vars.DEPLOY_SSH_PORT }}
+          DEPLOY_ROOT: ${{ vars.DEPLOY_ROOT }}
+          DEPLOY_PROJECT: ${{ vars.DEPLOY_PROJECT }}
+        run: |
+          set -euo pipefail
+          for name in RELEASE_SHA DEPLOY_HOST DEPLOY_USER DEPLOY_ROOT DEPLOY_PROJECT; do
+            test -n "${!name}" || { echo "Missing production setting: $name" >&2; exit 1; }
+          done
+          port="${DEPLOY_SSH_PORT:-22}"
+          [[ "$port" =~ ^[0-9]+$ ]] || exit 1
+          archive="$(find "$RUNNER_TEMP/release" -maxdepth 1 -name '*.tar.gz' -type f -print -quit)"
+          test -n "$archive"
+          target="${DEPLOY_USER}@${DEPLOY_HOST}"
+          scp -P "$port" -o StrictHostKeyChecking=yes "$archive" "$target:v79-release-${RELEASE_SHA}.tar.gz"
+          ssh -p "$port" -o StrictHostKeyChecking=yes "$target" bash -s -- "$RELEASE_SHA" "$DEPLOY_ROOT" "$DEPLOY_PROJECT" "v79-tiquet-manager" < scripts/deploy-server.sh
