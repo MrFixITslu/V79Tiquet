@@ -88,8 +88,10 @@ export async function flushPlatformEvents() {
   try {
     const now = new Date().toISOString();
     const rows = await db.prepare(`
-      SELECT id, account_id, event_type, subject_id, correlation_id, occurred_at, payload_json, attempts
-      FROM platform_event_outbox
+      SELECT o.id, o.account_id, o.event_type, o.subject_id, o.correlation_id, o.occurred_at, o.payload_json, o.attempts,
+             a.hub_organization_id
+      FROM platform_event_outbox o
+      LEFT JOIN accounts a ON a.id = o.account_id
       WHERE status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
       ORDER BY created_at ASC
       LIMIT ${MAX_BATCH}
@@ -103,7 +105,7 @@ export async function flushPlatformEvents() {
         type: row.event_type,
         version: 1,
         occurredAt: row.occurred_at,
-        organizationRef: row.account_id,
+        organizationRef: row.hub_organization_id || row.account_id,
         subjectId: row.subject_id || undefined,
         correlationId: row.correlation_id || undefined,
         payload,

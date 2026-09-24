@@ -24,6 +24,33 @@ const PLANS = {
  * @param {Function} authenticateToken - existing auth middleware
  */
 export function registerStripeRoutes(app, authenticateToken) {
+  const hubManagedBilling = process.env.V79_HUB_MANAGED_BILLING !== '0';
+  if (hubManagedBilling) {
+    const hubUrl = String(process.env.V79_HUB_PUBLIC_URL || 'https://hub.v79sl.com').replace(/\/$/, '');
+    app.get('/api/stripe/plans', (_req, res) => {
+      res.json({ billingManagedBy: 'v79-hub', hubUrl, plans: [] });
+    });
+    app.get('/api/stripe/subscription-status', authenticateToken, (req, res) => {
+      res.json({
+        status: 'hub_managed',
+        plan: null,
+        accountId: req.accountId,
+        billingManagedBy: 'v79-hub',
+        hubUrl,
+      });
+    });
+    const hubOnly = (_req, res) => res.status(410).json({
+      error: 'V79 subscriptions and billing are managed through V79 Hub.',
+      code: 'HUB_BILLING_MANAGED',
+      hubUrl,
+    });
+    app.post('/api/stripe/create-checkout-session', authenticateToken, hubOnly);
+    app.post('/api/stripe/simulate-subscribe', authenticateToken, hubOnly);
+    app.post('/api/stripe/cancel-subscription', authenticateToken, hubOnly);
+    app.post('/api/stripe/create-portal-session', authenticateToken, hubOnly);
+    return;
+  }
+
 
   // ── GET /api/stripe/plans ─────────────────────────────────────────────────
   // Public: return available plan details

@@ -73,7 +73,9 @@ const CAMEL_MAP = {
   employeename: 'employeeName',
   suspendedat: 'suspendedAt',
   trialendsat: 'trialEndsAt',
-  stripecustomerid: 'stripeCustomerId'
+  stripecustomerid: 'stripeCustomerId',
+  huborganizationid: 'hubOrganizationId',
+  hubuserid: 'hubUserId'
 };
 
 function normalizeRow(row) {
