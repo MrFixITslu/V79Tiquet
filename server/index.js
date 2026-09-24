@@ -618,6 +618,13 @@ app.post("/api/auth/login", async (req, res) => {
         error: "Invalid credentials"
       });
     }
+    if (user.oauth_provider === "v79-hub" || user.hub_user_id) {
+      return res.status(410).json({
+        error: "This V79 Tiquet account is managed through V79 Hub.",
+        code: "HUB_AUTH_REQUIRED",
+        hubUrl: hubPublicUrl()
+      });
+    }
     // OAuth-only users have no password — direct them to the right login method
     if (!user.password_hash) {
       const provider = user.oauth_provider;
@@ -2033,6 +2040,34 @@ app.put("/api/payroll/:id", authenticateToken, async (req, res) => {
 
 // --- Team user management (distinct from /api/auth/*: these are teammates
 // within the current account, managed by an Admin) ---
+app.get("/api/team-management-mode", authenticateToken, async (req, res) => {
+  try {
+    const account = await db.prepare("SELECT hub_organization_id FROM accounts WHERE id = ?").get(req.accountId);
+    res.json({
+      managedByHub: Boolean(account?.hub_organization_id),
+      hubUrl: hubPublicUrl()
+    });
+  } catch (error) {
+    res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+  }
+});
+
+const requireLocalTeamManagement = async (req, res, next) => {
+  try {
+    const account = await db.prepare("SELECT hub_organization_id FROM accounts WHERE id = ?").get(req.accountId);
+    if (account?.hub_organization_id) {
+      return res.status(410).json({
+        error: "Team seats and Tiquet access are managed through V79 Hub for this workspace.",
+        code: "HUB_TEAM_MANAGED",
+        hubUrl: hubPublicUrl()
+      });
+    }
+    next();
+  } catch (error) {
+    res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+  }
+};
+
 app.get("/api/users", authenticateToken, async (req, res) => {
   try {
     const users = await db.prepare("SELECT id, name, email, role, permissions FROM users WHERE account_id = ?").all(req.accountId);
@@ -2049,7 +2084,7 @@ app.get("/api/users", authenticateToken, async (req, res) => {
 
 // Invite a new teammate: creates a real login account with a random temporary
 // password, emailed to them, and forces a password change on first login.
-app.post("/api/users", authenticateToken, requireAdmin, async (req, res) => {
+app.post("/api/users", authenticateToken, requireAdmin, requireLocalTeamManagement, async (req, res) => {
   const {
     name,
     email,
@@ -2091,7 +2126,7 @@ app.post("/api/users", authenticateToken, requireAdmin, async (req, res) => {
     });
   }
 });
-app.put("/api/users/:id", authenticateToken, requireAdmin, async (req, res) => {
+app.put("/api/users/:id", authenticateToken, requireAdmin, requireLocalTeamManagement, async (req, res) => {
   const {
     id
   } = req.params;
@@ -2119,7 +2154,7 @@ app.put("/api/users/:id", authenticateToken, requireAdmin, async (req, res) => {
     });
   }
 });
-app.delete("/api/users/:id", authenticateToken, requireAdmin, async (req, res) => {
+app.delete("/api/users/:id", authenticateToken, requireAdmin, requireLocalTeamManagement, async (req, res) => {
   const {
     id
   } = req.params;

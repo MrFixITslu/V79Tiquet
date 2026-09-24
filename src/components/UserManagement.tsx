@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { AppUser, PagePermission } from "../types";
 import { UserPlus, Shield, Mail, User, Trash2, CheckSquare, Square } from "lucide-react";
 
@@ -21,12 +21,61 @@ export function UserManagement({
 }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<AppUser | null>(null);
+  const [hubManagement, setHubManagement] = useState<{managedByHub:boolean;hubUrl:string}|null>(null);
+
+  useEffect(() => {
+    fetch("/api/team-management-mode", { credentials:"same-origin" })
+      .then(async (response) => response.ok ? response.json() : null)
+      .then((body) => { if (body) setHubManagement(body); })
+      .catch(() => {});
+  }, []);
 
   const handleDelete = (id: string) => {
     if (confirm("Are you sure you want to delete this user?")) {
       setUsers(users.filter((u) => u.id !== id));
     }
   };
+
+  if (hubManagement?.managedByHub) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h2 className="text-2xl font-bold text-slate-900">Team Access</h2>
+          <p className="text-slate-500 text-sm mt-1">
+            This Tiquet workspace uses V79 Hub for team seats, roles and app access.
+          </p>
+        </div>
+        <div className="rounded-2xl border border-indigo-200 bg-indigo-50 p-6">
+          <div className="flex items-start gap-4">
+            <div className="rounded-xl bg-indigo-600 p-3 text-white"><Shield className="w-5 h-5" /></div>
+            <div className="flex-1">
+              <h3 className="font-bold text-slate-900">Managed in V79 Hub</h3>
+              <p className="mt-2 text-sm leading-6 text-slate-600">
+                Add or remove team members, assign Tiquet access and manage plan seats in Hub. Tiquet will provision those users automatically the next time they open the app.
+              </p>
+              <a href={hubManagement.hubUrl} className="mt-4 inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-indigo-700">
+                Open V79 Hub <UserPlus className="w-4 h-4" />
+              </a>
+            </div>
+          </div>
+        </div>
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+          <div className="px-6 py-4 border-b border-slate-200">
+            <h3 className="font-semibold text-slate-900">Current Tiquet users</h3>
+            <p className="mt-1 text-xs text-slate-500">Shown for operational visibility. Changes are made in Hub.</p>
+          </div>
+          <div className="divide-y divide-slate-100">
+            {users.map(user => (
+              <div key={user.id} className="flex flex-wrap items-center justify-between gap-3 px-6 py-4">
+                <div><div className="font-semibold text-slate-900">{user.name}</div><div className="text-xs text-slate-500">{user.email}</div></div>
+                <span className="rounded-md bg-slate-100 px-2 py-1 text-sm text-slate-600">{user.role}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-8">
