@@ -274,3 +274,13 @@ CREATE TABLE IF NOT EXISTS platform_event_outbox (
 );
 CREATE INDEX IF NOT EXISTS idx_platform_event_outbox_pending
     ON platform_event_outbox(status, next_attempt_at, created_at);
+
+
+-- 20. V79 Hub managed identity links
+ALTER TABLE accounts ADD COLUMN IF NOT EXISTS hub_organization_id TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_hub_organization
+  ON accounts(hub_organization_id) WHERE hub_organization_id IS NOT NULL;
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS hub_user_id TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_hub_user
+  ON users(hub_user_id) WHERE hub_user_id IS NOT NULL;
