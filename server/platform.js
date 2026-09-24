@@ -63,18 +63,20 @@ router.get("/summary/:accountId", async (req, res) => {
       "SELECT id, name, status, plan, createdAt, hub_organization_id FROM accounts WHERE id = ? OR hub_organization_id = ? LIMIT 1"
     ).get(accountId, accountId);
     if (!account) return res.status(404).json({ error: "Tiquet account not found." });
+    // The requested subject can be the Hub organisation ID; data rows use Tiquet's account ID.
+    const resolvedAccountId = account.id;
 
     const [clientsRow, jobsRow, statusRows, teamRow, unreadRow] = await Promise.all([
-      db.prepare("SELECT COUNT(*) AS count FROM clients WHERE account_id = ?").get(accountId),
-      db.prepare("SELECT COUNT(*) AS count FROM jobs WHERE account_id = ?").get(accountId),
-      db.prepare("SELECT status, COUNT(*) AS count FROM jobs WHERE account_id = ? GROUP BY status ORDER BY status").all(accountId),
-      db.prepare("SELECT COUNT(*) AS count FROM users WHERE account_id = ?").get(accountId),
-      db.prepare("SELECT COUNT(*) AS count FROM notifications WHERE account_id = ? AND isRead = 0").get(accountId),
+      db.prepare("SELECT COUNT(*) AS count FROM clients WHERE account_id = ?").get(resolvedAccountId),
+      db.prepare("SELECT COUNT(*) AS count FROM jobs WHERE account_id = ?").get(resolvedAccountId),
+      db.prepare("SELECT status, COUNT(*) AS count FROM jobs WHERE account_id = ? GROUP BY status ORDER BY status").all(resolvedAccountId),
+      db.prepare("SELECT COUNT(*) AS count FROM users WHERE account_id = ?").get(resolvedAccountId),
+      db.prepare("SELECT COUNT(*) AS count FROM notifications WHERE account_id = ? AND isRead = 0").get(resolvedAccountId),
     ]);
 
     const amountRow = await db.prepare(
       "SELECT COALESCE(SUM(amount), 0) AS total FROM jobs WHERE account_id = ? AND amount IS NOT NULL"
-    ).get(accountId);
+    ).get(resolvedAccountId);
 
     res.json({
       product: "tiquet",
