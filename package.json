@@ -10,7 +10,7 @@
     "build": "vite build",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit",
-    "test": "node tests/security.test.cjs && node tests/e2e.test.cjs",
+    "test": "node --test tests/legacyAccountLink.test.js && node tests/security.test.cjs && node tests/e2e.test.cjs",
     "migrate": "node scripts/migrate-sqlite-to-pg.js",
     "backup": "node scripts/backup-db.js",
     "generate-secrets": "node scripts/generate-secrets.js"
