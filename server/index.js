@@ -2040,6 +2040,18 @@ app.put("/api/payroll/:id", authenticateToken, async (req, res) => {
 
 // --- Team user management (distinct from /api/auth/*: these are teammates
 // within the current account, managed by an Admin) ---
+app.get("/api/team-management-mode", authenticateToken, async (req, res) => {
+  try {
+    const account = await db.prepare("SELECT hub_organization_id FROM accounts WHERE id = ?").get(req.accountId);
+    res.json({
+      managedByHub: Boolean(account?.hub_organization_id),
+      hubUrl: hubPublicUrl()
+    });
+  } catch (error) {
+    res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+  }
+});
+
 const requireLocalTeamManagement = async (req, res, next) => {
   try {
     const account = await db.prepare("SELECT hub_organization_id FROM accounts WHERE id = ?").get(req.accountId);
