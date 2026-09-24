@@ -15,3 +15,9 @@ uploads/*
 *.db-shm
 *.db-wal
 .env
+.env.*
+!.env.example
+backups
+.incoming.*
+.deployed_sha
+*.tar.gz
