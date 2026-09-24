@@ -44,6 +44,9 @@ jobs:
       # Existing security tests still exercise the compatibility auth path.
       # Production remains Hub-only because V79_ALLOW_LEGACY_AUTH defaults to 0.
       V79_ALLOW_LEGACY_AUTH: "1"
+      # E2E compatibility suite still verifies the historical Stripe stub.
+      # Production defaults to Hub-managed billing.
+      V79_HUB_MANAGED_BILLING: "0"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
