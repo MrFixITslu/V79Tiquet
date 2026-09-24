@@ -426,7 +426,7 @@ async function provisionHubIdentity(hubSession) {
 
     if (!account && hubSession.role === "owner") {
       const candidates = await txDb.prepare(`
-        SELECT a.id, a.name, a.hub_organization_id
+        SELECT DISTINCT a.id, a.name, a.hub_organization_id
         FROM users u
         JOIN accounts a ON a.id = u.account_id
         WHERE LOWER(u.email) = LOWER(?) AND u.role = 'Admin'
