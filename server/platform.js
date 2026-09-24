@@ -60,8 +60,8 @@ router.get("/summary/:accountId", async (req, res) => {
 
   try {
     const account = await db.prepare(
-      "SELECT id, name, status, plan, createdAt FROM accounts WHERE id = ?"
-    ).get(accountId);
+      "SELECT id, name, status, plan, createdAt, hub_organization_id FROM accounts WHERE id = ? OR hub_organization_id = ? LIMIT 1"
+    ).get(accountId, accountId);
     if (!account) return res.status(404).json({ error: "Tiquet account not found." });
 
     const [clientsRow, jobsRow, statusRows, teamRow, unreadRow] = await Promise.all([
