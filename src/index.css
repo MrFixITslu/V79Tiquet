@@ -1,1 +1,29 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700&family=Public+Sans:wght@400;500;600;700&display=swap');
 @import "tailwindcss";
+
+@theme {
+  --font-sans: "Public Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Outfit", ui-sans-serif, system-ui, sans-serif;
+}
+
+:root {
+  --v79-canvas: #f6f8fc;
+  --v79-ink: #0f172a;
+  --v79-muted: #475569;
+  --v79-border: #e2e8f0;
+  --v79-nav: #0b1220;
+  --v79-accent: #0e7490;
+}
+
+@layer base {
+  body { font-family: var(--font-sans); color: var(--v79-ink); }
+  h1, h2, h3, h4 { font-family: var(--font-display); }
+}
+:where(button, a, input, select, textarea, [tabindex]):focus-visible {
+  outline: 3px solid var(--v79-accent);
+  outline-offset: 3px;
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+}
+@media (max-width: 640px) { input, select, textarea { font-size: 16px; } }
