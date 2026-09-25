@@ -192,7 +192,7 @@ export default function App() {
   if (restoringSession) {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center">
-        <Loader2 className="w-6 h-6 text-indigo-500 animate-spin" />
+        <Loader2 className="w-6 h-6 text-cyan-700 animate-spin" />
       </div>
     );
   }
@@ -202,7 +202,7 @@ export default function App() {
     return (
       <div className="min-h-screen bg-slate-50 flex items-center justify-center">
         <div className="text-center">
-          <Loader2 className="mx-auto w-6 h-6 text-indigo-500 animate-spin" />
+          <Loader2 className="mx-auto w-6 h-6 text-cyan-700 animate-spin" />
           <p className="mt-3 text-sm text-slate-500">Checking your V79 Hub access…</p>
         </div>
       </div>
@@ -228,6 +228,7 @@ export default function App() {
           <div className="flex items-center gap-3">
             <button
               onClick={() => setIsMobileSidebarOpen(true)}
+              aria-label="Open navigation menu"
               className="p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-xl lg:hidden cursor-pointer"
               title="Open Navigation Menu"
             >
@@ -245,7 +246,7 @@ export default function App() {
               </kbd>
             </button>
 
-            <div className="hidden xl:flex items-center gap-1 bg-indigo-50 border border-indigo-100 px-3 py-1.5 rounded-full text-[10px] font-bold text-indigo-700 uppercase tracking-wide">
+            <div className="hidden xl:flex items-center gap-1 bg-cyan-50 border border-cyan-100 px-3 py-1.5 rounded-full text-[10px] font-bold text-cyan-800 uppercase tracking-wide">
               <Shield className="w-3.5 h-3.5" />
               Workspace: {activeBusiness!.id.slice(0, 8)}
             </div>
@@ -261,7 +262,7 @@ export default function App() {
               <button
                 id="btn-quick-actions"
                 onClick={() => setIsQuickActionsOpen(!isQuickActionsOpen)}
-                className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all shadow-md active:scale-[0.98] cursor-pointer"
+                className="flex min-h-11 items-center gap-2 bg-cyan-700 hover:bg-cyan-800 text-white px-3.5 py-1.5 rounded-xl text-xs font-bold transition-all shadow-md active:scale-[0.98] cursor-pointer"
               >
                 <Zap className="w-3.5 h-3.5 text-amber-300 fill-amber-300 animate-pulse" />
                 <span>Quick Actions</span>
@@ -278,7 +279,7 @@ export default function App() {
                     onClick={() => { setIsNewClientModalOpen(true); setIsQuickActionsOpen(false); }}
                     className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-slate-50 text-left text-xs font-bold text-slate-700 transition-colors cursor-pointer"
                   >
-                    <UserPlus className="w-4 h-4 text-indigo-500" />
+                    <UserPlus className="w-4 h-4 text-cyan-700" />
                     New Client
                   </button>
 
@@ -298,11 +299,11 @@ export default function App() {
                 <img
                   src={currentUser!.photoUrl}
                   alt={currentUser!.name}
-                  className="w-8 h-8 rounded-full border-2 border-indigo-100 object-cover"
+                  className="w-8 h-8 rounded-full border-2 border-cyan-100 object-cover"
                   referrerPolicy="no-referrer"
                 />
               ) : (
-                <div className="w-8 h-8 bg-indigo-100 text-indigo-700 rounded-full flex items-center justify-center font-bold text-xs uppercase">
+                <div className="w-8 h-8 bg-cyan-100 text-cyan-800 rounded-full flex items-center justify-center font-bold text-xs uppercase">
                   {currentUser!.name.slice(0, 2)}
                 </div>
               )}
