@@ -185,8 +185,9 @@ export interface AuthenticatedUser {
   id: string;
   name: string;
   email: string;
+  role: string;
   photoUrl?: string;
-  provider: "google" | "apple" | "email";
+  provider: "google" | "apple" | "email" | "v79-hub";
 }
 
 export interface FileItem {
