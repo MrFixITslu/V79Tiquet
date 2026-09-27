@@ -67,8 +67,9 @@ export function AuthGate({
         id: me.id,
         name: me.name,
         email: me.email,
+        role: me.role,
         photoUrl: me.photoUrl || me.picture,
-        provider: (me.oauth_provider as any) || (me.id ? "google" : "email"),
+        provider: (me.oauth_provider as any) || "email",
       };
       const business: Business = {
         id: me.account_id,
