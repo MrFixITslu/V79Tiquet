@@ -432,7 +432,7 @@ async function provisionHubIdentity(hubSession) {
         WHERE LOWER(u.email) = LOWER(?) AND u.role = 'Admin'
         LIMIT 2
       `).all(email);
-      account = resolveLegacyAccount(candidates, hubOrgId, process.env.V79_ALLOW_EMAIL_ACCOUNT_LINK === "1");
+      account = resolveLegacyAccount(candidates, hubOrgId);
       if (account) {
         await txDb.prepare("UPDATE accounts SET hub_organization_id = ? WHERE id = ?").run(hubOrgId, account.id);
       }
