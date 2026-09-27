@@ -67,9 +67,15 @@ export default function App() {
   useEffect(() => {
     const restore = async () => {
       try {
-        const me = await api.get<{ id: string; name: string; email: string; account_id: string }>("/auth/me");
+        const me = await api.get<{ id: string; name: string; email: string; role: string; account_id: string; oauth_provider?: string }>("/auth/me");
         const settings = await api.get<any>("/settings");
-        setCurrentUser({ id: me.id, name: me.name, email: me.email, provider: "email" });
+        setCurrentUser({
+          id: me.id,
+          name: me.name,
+          email: me.email,
+          role: me.role,
+          provider: (me.oauth_provider as AuthenticatedUser["provider"]) || "email",
+        });
         setActiveBusiness({
           id: me.account_id,
           name: settings?.name || "My Business",
