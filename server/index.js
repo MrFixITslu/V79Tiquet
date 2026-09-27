@@ -511,6 +511,7 @@ app.get("/api/platform/launch", async (req, res) => {
     const token = jwt.sign({
       id: local.userId,
       email: local.email,
+      role: local.role,
       account_id: local.accountId,
       hub_managed: true,
       hub_organization_id: hubSession.organization.id,
@@ -583,6 +584,7 @@ app.post("/api/auth/register", async (req, res) => {
     const token = jwt.sign({
       id: userId,
       email,
+      role: "Admin",
       account_id: accountId
     }, JWT_SECRET, {
       expiresIn: '8h'
@@ -682,6 +684,7 @@ app.post("/api/auth/login", async (req, res) => {
     const token = jwt.sign({
       id: user.id,
       email: user.email,
+      role: user.role,
       account_id: user.account_id
     }, JWT_SECRET, {
       expiresIn: '8h'
@@ -738,6 +741,7 @@ app.post("/api/auth/login/2fa", (req, res) => {
     const token = jwt.sign({
       id: user.id,
       email: user.email,
+      role: user.role,
       account_id: user.account_id
     }, JWT_SECRET, {
       expiresIn: '1d'
