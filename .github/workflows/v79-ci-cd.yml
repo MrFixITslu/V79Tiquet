@@ -154,8 +154,18 @@ jobs:
           set -euo pipefail
           test -n "$DEPLOY_SSH_KEY" && test -n "$DEPLOY_KNOWN_HOSTS"
           install -d -m 700 "$HOME/.ssh"
-          printf '%s\n' "$DEPLOY_SSH_KEY" > "$HOME/.ssh/id_ed25519"
-          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          key="$DEPLOY_SSH_KEY"
+          if [[ "$key" != *$'\n'* && "$key" == *'\\n'* ]]; then
+            key="$(printf '%b' "$key")"
+          fi
+          printf '%s\n' "$key" | tr -d '\r' > "$HOME/.ssh/id_ed25519"
+
+          known_hosts="$DEPLOY_KNOWN_HOSTS"
+          if [[ "$known_hosts" != *$'\n'* && "$known_hosts" == *'\\n'* ]]; then
+            known_hosts="$(printf '%b' "$known_hosts")"
+          fi
+          printf '%s\n' "$known_hosts" | tr -d '\r' > "$HOME/.ssh/known_hosts"
+
           chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
           ssh-keygen -y -f "$HOME/.ssh/id_ed25519" >/dev/null
       - name: Transfer and deploy release
