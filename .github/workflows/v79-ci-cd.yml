@@ -49,6 +49,13 @@ jobs:
       V79_HUB_MANAGED_BILLING: "0"
     steps:
       - uses: actions/checkout@v4
+      - name: Reject tracked runtime data
+        shell: bash
+        run: |
+          if [ -n "$(git ls-files -- data uploads logs)" ]; then
+            echo "Runtime backups, uploads or logs must not be committed." >&2
+            exit 1
+          fi
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
