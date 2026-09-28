@@ -48,7 +48,7 @@ COPY --from=builder /app/dist ./dist
 
 # Runtime volumes (mounted by docker-compose): /app/data holds the SQLite
 # file, /app/uploads holds uploaded job/client files.
-RUN mkdir -p data uploads && chown appuser:appgroup data uploads
+RUN mkdir -p data uploads logs && chown appuser:appgroup data uploads logs
 
 USER appuser
 
