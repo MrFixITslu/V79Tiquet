@@ -119,7 +119,7 @@ router.get("/admin/stats", async (_req, res) => {
       db.prepare("SELECT COUNT(*) AS c FROM subscriptions WHERE status = 'active'").get(),
       db.prepare("SELECT COUNT(*) AS c FROM subscriptions WHERE status = 'trialing'").get(),
       db.prepare("SELECT COUNT(*) AS c FROM subscriptions WHERE status = 'canceled'").get(),
-      db.prepare("SELECT COUNT(*) AS c FROM accounts WHERE createdAt >= datetime('now', '-30 days')").get(),
+      db.prepare("SELECT COUNT(*) AS c FROM accounts WHERE createdAt >= ?").get(new Date(Date.now() - 30 * 86400000).toISOString()),
     ]);
 
     const planPrices = { starter: 29, pro: 79, enterprise: 199, trial: 0 };
