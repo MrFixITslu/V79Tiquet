@@ -27,7 +27,7 @@ import { logger } from "./logger.js";
 import platformRoutes from "./platform.js";
 import { queuePlatformEvent, startPlatformEventPump } from "./platformEvents.js";
 import { consumeHubLaunchTicket, hubPublicUrl } from "./hubAccess.js";
-import { resolveLegacyAccount } from "./legacyAccountLink.js";
+import { resolveLegacyAccount, assertHubUserAccount } from "./legacyAccountLink.js";
 import { sanitizeString, sanitizeObject, isValidEmail, isValidUUID, isNonEmptyString, secureFilePath, validatePassword, badRequest } from "./security.js";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -462,9 +462,7 @@ async function provisionHubIdentity(hubSession) {
       user = await txDb.prepare("SELECT * FROM users WHERE LOWER(email) = LOWER(?) AND account_id = ? LIMIT 1")
         .get(email, accountId);
     }
-    if (user?.hub_user_id && user.hub_user_id !== hubUserId) {
-      throw new Error("This Tiquet user is already linked to another Hub identity.");
-    }
+    assertHubUserAccount(user, accountId, hubUserId);
 
     if (!user) {
       userId = uuidv4();

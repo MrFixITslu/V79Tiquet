@@ -8,3 +8,10 @@ export function resolveLegacyAccount(candidates, hubOrgId) {
   }
   return account;
 }
+
+export function assertHubUserAccount(user, accountId, hubUserId) {
+  if (!user) return;
+  if (user.account_id !== accountId || (user.hub_user_id && user.hub_user_id !== hubUserId)) {
+    throw new Error('This Tiquet identity belongs to another account or Hub user.');
+  }
+}
