@@ -2,6 +2,7 @@ import express from "express";
 import crypto from "node:crypto";
 import db from "./db.js";
 import { provisionHubIdentity } from "./hubProvisioning.js";
+import { hubTeamRoles } from "./hubTeamAccess.js";
 
 const router = express.Router();
 const MAX_SKEW_MS = 5 * 60 * 1000;
@@ -104,6 +105,65 @@ router.post("/provision", async (req, res) => {
   } catch (error) {
     console.warn("[platform] Tiquet provisioning denied:", error?.message || error);
     return res.status(409).json({ error: "Tiquet workspace provisioning could not be completed." });
+  }
+});
+
+router.post("/members/provision", async (req, res) => {
+  const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+  const organization = body.organization && typeof body.organization === "object" && !Array.isArray(body.organization)
+    ? body.organization : {};
+  const user = body.user && typeof body.user === "object" && !Array.isArray(body.user) ? body.user : {};
+  const organizationId = String(organization.id || "").trim();
+  const organizationName = String(organization.name || "").trim();
+  const organizationSlug = String(organization.slug || "").trim();
+  const hubUserId = String(user.id || "").trim();
+  const email = String(user.email || "").trim().toLowerCase();
+  const name = String(user.name || email.split("@")[0] || "").trim();
+  const role = String(body.role || "").trim();
+
+  if (
+    !hubTeamRoles.includes(role) ||
+    !/^[A-Za-z0-9._:@-]{8,180}$/.test(organizationId) ||
+    organizationName.length < 1 || organizationName.length > 180 ||
+    !/^[a-z0-9][a-z0-9-]{0,99}$/.test(organizationSlug) ||
+    !/^[A-Za-z0-9._:@-]{8,180}$/.test(hubUserId) ||
+    !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email) ||
+    name.length < 1 || name.length > 180
+  ) {
+    return res.status(400).json({ error: "Invalid Tiquet team provisioning request." });
+  }
+
+  try {
+    const local = await provisionHubIdentity({
+      organization: { id: organizationId, name: organizationName, slug: organizationSlug },
+      user: { id: hubUserId, email, name },
+      role,
+      plan: body.plan || "hub",
+      entitlement: { product: "tiquet", enabled: true, access: "team" },
+    });
+
+    if (
+      local.hubOrganizationId !== organizationId ||
+      local.hubUserId !== hubUserId ||
+      local.role !== "Member" ||
+      !Array.isArray(local.permissions)
+    ) {
+      throw new Error("Tiquet team identity mismatch.");
+    }
+
+    res.setHeader("Cache-Control", "no-store");
+    return res.json({
+      provisioned: true,
+      organizationId,
+      hubUserId,
+      accountId: local.accountId,
+      userId: local.userId,
+      localRole: local.role,
+      permissions: local.permissions,
+    });
+  } catch (error) {
+    console.warn("[platform] Tiquet team provisioning denied:", error?.message || error);
+    return res.status(409).json({ error: "Tiquet team workspace provisioning could not be completed." });
   }
 });
 

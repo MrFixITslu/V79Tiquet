@@ -186,6 +186,7 @@ export interface AuthenticatedUser {
   name: string;
   email: string;
   role: string;
+  permissions?: PagePermission[];
   photoUrl?: string;
   provider: "google" | "apple" | "email" | "v79-hub";
 }

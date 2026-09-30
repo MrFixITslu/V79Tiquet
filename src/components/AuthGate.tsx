@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { Briefcase, Shield, ArrowRight, Loader2, KeyRound } from "lucide-react";
-import { AuthenticatedUser, Business } from "../types";
+import { AuthenticatedUser, Business, PagePermission } from "../types";
 import { api, setToken, ApiError } from "../api";
 import { GoogleAuthButton } from "./GoogleAuthButton";
 
@@ -60,7 +60,7 @@ export function AuthGate({
   const finishLogin = async (token: string) => {
     setToken(token);
     try {
-      const me = await api.get<{ id: string; name: string; email: string; role: string; account_id: string; oauth_provider?: string; picture?: string; photoUrl?: string }>("/auth/me");
+      const me = await api.get<{ id: string; name: string; email: string; role: string; account_id: string; permissions?: PagePermission[]; oauth_provider?: string; picture?: string; photoUrl?: string }>("/auth/me");
       const settings = await api.get<any>("/settings");
 
       const user: AuthenticatedUser = {
@@ -68,6 +68,7 @@ export function AuthGate({
         name: me.name,
         email: me.email,
         role: me.role,
+        permissions: me.permissions || [],
         photoUrl: me.photoUrl || me.picture,
         provider: (me.oauth_provider as any) || "email",
       };

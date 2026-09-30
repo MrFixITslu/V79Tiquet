@@ -15,7 +15,7 @@ import { ResetPasswordPage } from "./components/ResetPasswordPage";
 import { ClientPortal } from "./components/ClientPortal";
 import { CommandPalette } from "./components/CommandPalette";
 import { JobDetailModal } from "./components/JobDetailModal";
-import { Job, Employee, PayrollRecord, AppUser, Client, BusinessSettings, AuthenticatedUser, Business, Industry } from "./types";
+import { Job, Employee, PayrollRecord, AppUser, Client, BusinessSettings, AuthenticatedUser, Business, Industry, PagePermission } from "./types";
 import { api, getToken, setToken } from "./api";
 import { useSyncedCollection } from "./useSyncedCollection";
 
@@ -61,19 +61,43 @@ export default function App() {
   const [selectedJobForModal, setSelectedJobForModal] = useState<Job | null>(null);
 
   const authenticated = !!currentUser && !!activeBusiness;
+  const canAccess = useCallback((permission: PagePermission) => {
+    if (!currentUser) return false;
+    return currentUser.role === "Admin" || Boolean(currentUser.permissions?.includes(permission));
+  }, [currentUser]);
+  const canOpenTab = useCallback((tab: string) => {
+    if (!currentUser) return false;
+    if (currentUser.role === "Admin") return true;
+    const permissionByTab: Partial<Record<string, PagePermission>> = {
+      dashboard: "dashboard",
+      jobs: "jobs",
+      clients: "clients",
+      payroll: "payroll",
+      files: "files",
+      invoices: "invoices",
+      "new-request": "new-request",
+    };
+    const permission = permissionByTab[tab];
+    return Boolean(permission && canAccess(permission));
+  }, [currentUser, canAccess]);
+
+  useEffect(() => {
+    if (currentUser && !canOpenTab(activeTab)) setActiveTab("dashboard");
+  }, [activeTab, currentUser, canOpenTab]);
 
   // On load, if a session token already exists (page refresh, not a fresh
   // login), restore the session instead of bouncing back to the login screen.
   useEffect(() => {
     const restore = async () => {
       try {
-        const me = await api.get<{ id: string; name: string; email: string; role: string; account_id: string; oauth_provider?: string }>("/auth/me");
+        const me = await api.get<{ id: string; name: string; email: string; role: string; account_id: string; permissions?: PagePermission[]; oauth_provider?: string }>("/auth/me");
         const settings = await api.get<any>("/settings");
         setCurrentUser({
           id: me.id,
           name: me.name,
           email: me.email,
           role: me.role,
+          permissions: me.permissions || [],
           provider: (me.oauth_provider as AuthenticatedUser["provider"]) || "email",
         });
         setActiveBusiness({
@@ -102,8 +126,14 @@ export default function App() {
   }, []);
 
   // ── Data collections, synced with the backend ──────────────────────────
-  const { items: jobs, setItems: setJobs } = useSyncedCollection<Job>("/jobs", authenticated);
-  const { items: clients, setItems: setClients } = useSyncedCollection<Client>("/clients", authenticated);
+  const canReadJobs = authenticated && (
+    canAccess("dashboard") || canAccess("jobs") || canAccess("invoices") || canAccess("new-request")
+  );
+  const canReadClients = authenticated && (
+    canAccess("clients") || canAccess("jobs") || canAccess("new-request")
+  );
+  const { items: jobs, setItems: setJobs } = useSyncedCollection<Job>("/jobs", canReadJobs);
+  const { items: clients, setItems: setClients } = useSyncedCollection<Client>("/clients", canReadClients);
 
   // Surfaces whether the welcome email on a newly-created client actually
   // went out. Previously this was invisible — client creation "succeeded"
@@ -135,21 +165,21 @@ export default function App() {
       }
     }
   }, [clients]);
-  const { items: employees, setItems: setEmployees } = useSyncedCollection<Employee>("/employees", authenticated);
-  const { items: payrollRecords, setItems: setPayrollRecords } = useSyncedCollection<PayrollRecord>("/payroll", authenticated);
-  const { items: users, setItems: setUsers } = useSyncedCollection<AppUser>("/users", authenticated);
-  const { items: industries, setItems: setIndustries } = useSyncedCollection<Industry>("/industries", authenticated);
+  const { items: employees, setItems: setEmployees } = useSyncedCollection<Employee>("/employees", authenticated && canAccess("payroll"));
+  const { items: payrollRecords, setItems: setPayrollRecords } = useSyncedCollection<PayrollRecord>("/payroll", authenticated && canAccess("payroll"));
+  const { items: users, setItems: setUsers } = useSyncedCollection<AppUser>("/users", authenticated && currentUser?.role === "Admin");
+  const { items: industries, setItems: setIndustries } = useSyncedCollection<Industry>("/industries", authenticated && canAccess("clients"));
 
   const [files, setFilesState] = useState<import("./types").FileItem[]>([]);
   const reloadFiles = useCallback(async () => {
-    if (!authenticated) return;
+    if (!authenticated || !canAccess("files")) return;
     try {
       const data = await api.get<import("./types").FileItem[]>("/files");
       setFilesState(data);
     } catch {
       // non-fatal — file repository will just show empty state
     }
-  }, [authenticated]);
+  }, [authenticated, canAccess]);
   useEffect(() => { reloadFiles(); }, [reloadFiles]);
 
   const [settings, setSettingsState] = useState<BusinessSettings>(DEFAULT_SETTINGS);
@@ -227,6 +257,8 @@ export default function App() {
         openInvoiceCount={jobs.filter((j) => j.status === "invoiced").length}
         isOpenMobile={isMobileSidebarOpen}
         onCloseMobile={() => setIsMobileSidebarOpen(false)}
+        role={currentUser!.role}
+        permissions={currentUser!.permissions || []}
       />
 
       <main className="flex-1 flex flex-col overflow-hidden">

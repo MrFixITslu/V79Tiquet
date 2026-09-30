@@ -1,6 +1,7 @@
 import db, { seedDefaultTemplatesForAccount } from "./db.js";
 import { v4 as uuidv4 } from "uuid";
 import { resolveLegacyAccount, assertHubUserAccount } from "./legacyAccountLink.js";
+import { tiquetAccessForHubRole } from "./hubTeamAccess.js";
 
 export async function provisionHubIdentity(hubSession) {
   const now = new Date().toISOString();
@@ -9,7 +10,9 @@ export async function provisionHubIdentity(hubSession) {
   const organizationName = String(hubSession?.organization?.name || "").trim();
   const email = String(hubSession?.user?.email || "").trim().toLowerCase();
   const userName = String(hubSession?.user?.name || email.split("@")[0] || "").trim();
-  const localRole = ["owner", "admin"].includes(hubSession?.role) ? "Admin" : "Member";
+  const access = tiquetAccessForHubRole(hubSession?.role);
+  const localRole = access.localRole;
+  const permissionsJson = access.permissions ? JSON.stringify(access.permissions) : null;
 
   if (
     !/^[A-Za-z0-9._:@-]{8,180}$/.test(hubOrgId) ||
@@ -44,6 +47,10 @@ export async function provisionHubIdentity(hubSession) {
       if (account) {
         await txDb.prepare("UPDATE accounts SET hub_organization_id = ? WHERE id = ?").run(hubOrgId, account.id);
       }
+    }
+
+    if (!account && hubSession.role !== "owner") {
+      throw new Error("Tiquet workspace must be provisioned by its Hub owner before team access.");
     }
 
     if (!account) {
@@ -85,20 +92,20 @@ export async function provisionHubIdentity(hubSession) {
         localRole,
         hubUserId,
         accountId,
-        localRole === "Admin" ? null : JSON.stringify(["dashboard", "jobs", "clients"]),
+        permissionsJson,
         hubUserId
       );
     } else {
       userId = user.id;
       await txDb.prepare(`
         UPDATE users
-        SET name = ?, email = ?, role = ?, account_id = ?, hub_user_id = ?, oauth_provider = 'v79-hub', oauth_id = ?
+        SET name = ?, email = ?, role = ?, permissions = ?, account_id = ?, hub_user_id = ?, oauth_provider = 'v79-hub', oauth_id = ?
         WHERE id = ?
-      `).run(userName, email, localRole, accountId, hubUserId, hubUserId, userId);
+      `).run(userName, email, localRole, permissionsJson, accountId, hubUserId, hubUserId, userId);
     }
   });
 
   await tx();
   await seedDefaultTemplatesForAccount(accountId);
-  return { accountId, userId, email, role: localRole, hubOrganizationId: hubOrgId, hubUserId };
+  return { accountId, userId, email, role: localRole, permissions: access.permissions, hubOrganizationId: hubOrgId, hubUserId };
 }
