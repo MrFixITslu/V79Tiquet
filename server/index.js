@@ -215,7 +215,7 @@ const authenticateToken = (req, res, next) => {
 // already uses for account suspension.
 const requireAdmin = async (req, res, next) => {
   try {
-    const current = await db.prepare("SELECT role FROM users WHERE id = ?").get(req.user?.id);
+    const current = await db.prepare("SELECT role FROM users WHERE id = ? AND account_id = ?").get(req.user?.id, req.accountId);
     if (!current || current.role !== 'Admin') {
       return res.status(403).json({
         error: "Forbidden: Admin access required"
@@ -226,6 +226,31 @@ const requireAdmin = async (req, res, next) => {
     res.status(500).json({
       error: "Internal Server Error"
     });
+  }
+};
+
+function parsePagePermissions(value) {
+  if (!value) return [];
+  try {
+    const parsed = typeof value === "string" ? JSON.parse(value) : value;
+    return Array.isArray(parsed) ? parsed.filter(item => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+const requireAnyPagePermission = (...required) => async (req, res, next) => {
+  try {
+    const current = await db.prepare(
+      "SELECT role, permissions FROM users WHERE id = ? AND account_id = ?"
+    ).get(req.user?.id, req.accountId);
+    if (!current) return res.status(403).json({ error: "Forbidden" });
+    if (current.role === "Admin") return next();
+    const granted = new Set(parsePagePermissions(current.permissions));
+    if (required.some(permission => granted.has(permission))) return next();
+    return res.status(403).json({ error: "Forbidden: permission required" });
+  } catch (e) {
+    res.status(500).json({ error: "Internal Server Error" });
   }
 };
 
@@ -272,7 +297,7 @@ if (!isProduction) {
  * SECURE FILE SERVING
  * All file access in production must go through this authenticated route.
  */
-app.get('/api/files/:accountId/*', authenticateToken, (req, res) => {
+app.get('/api/files/:accountId/*', authenticateToken, requireAnyPagePermission("files"), (req, res) => {
   const {
     accountId
   } = req.params;
@@ -767,11 +792,11 @@ app.post("/api/auth/reset-password", async (req, res) => {
 });
 app.get("/api/auth/me", authenticateToken, async (req, res) => {
   try {
-    const user = await db.prepare("SELECT id, name, email, role, account_id, twoFactorEnabled FROM users WHERE id = ? AND account_id = ?").get(req.user.id, req.accountId);
+    const user = await db.prepare("SELECT id, name, email, role, account_id, permissions, oauth_provider, twoFactorEnabled FROM users WHERE id = ? AND account_id = ?").get(req.user.id, req.accountId);
     if (!user) return res.status(404).json({
       error: "User not found"
     });
-    res.json(user);
+    res.json({ ...user, permissions: parsePagePermissions(user.permissions) });
   } catch (error) {
     res.status(500).json({
       error: isProduction ? "Internal Server Error" : error.message
@@ -1022,7 +1047,7 @@ setInterval(async () => {
 // --- API ROUTES (PROTECTED) ---
 
 // Get all jobs
-app.get("/api/jobs", authenticateToken, async (req, res) => {
+app.get("/api/jobs", authenticateToken, requireAnyPagePermission("dashboard", "jobs", "invoices", "new-request"), async (req, res) => {
   try {
     const jobs = await db.prepare("SELECT * FROM jobs WHERE account_id = ? ORDER BY createdAt DESC").all(req.accountId);
     const populatedJobs = await Promise.all(jobs.map(async job => ({
@@ -1043,7 +1068,7 @@ app.get("/api/jobs", authenticateToken, async (req, res) => {
 });
 
 // Notifications
-app.get("/api/notifications", authenticateToken, async (req, res) => {
+app.get("/api/notifications", authenticateToken, requireAnyPagePermission("dashboard", "jobs"), async (req, res) => {
   try {
     const notifications = await db.prepare("SELECT * FROM notifications WHERE (user_id = ? OR user_id IS NULL) AND account_id = ? ORDER BY createdAt DESC LIMIT 50").all(req.user.id, req.accountId);
     res.json(notifications);
@@ -1053,7 +1078,7 @@ app.get("/api/notifications", authenticateToken, async (req, res) => {
     });
   }
 });
-app.put("/api/notifications/read", authenticateToken, async (req, res) => {
+app.put("/api/notifications/read", authenticateToken, requireAnyPagePermission("dashboard", "jobs"), async (req, res) => {
   const {
     id
   } = req.body;
@@ -1074,7 +1099,7 @@ app.put("/api/notifications/read", authenticateToken, async (req, res) => {
 });
 
 // Create a new job
-app.post("/api/jobs", authenticateToken, async (req, res) => {
+app.post("/api/jobs", authenticateToken, requireAnyPagePermission("jobs", "new-request"), async (req, res) => {
   const {
     id: reqId,
     title,
@@ -1442,7 +1467,7 @@ app.post("/api/public/intake", intakeLimiter, requireIntakeSecret, async (req, r
     });
   }
 });
-app.put("/api/jobs/:id", authenticateToken, async (req, res) => {
+app.put("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"), async (req, res) => {
   const {
     id
   } = req.params;
@@ -1569,7 +1594,7 @@ app.put("/api/jobs/:id", authenticateToken, async (req, res) => {
 });
 
 // Delete job endpoint
-app.delete("/api/jobs/:id", authenticateToken, async (req, res) => {
+app.delete("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"), async (req, res) => {
   const {
     id
   } = req.params;
@@ -1600,7 +1625,7 @@ app.delete("/api/jobs/:id", authenticateToken, async (req, res) => {
 });
 
 // Send portal link email
-app.post("/api/jobs/:id/send-portal", authenticateToken, async (req, res) => {
+app.post("/api/jobs/:id/send-portal", authenticateToken, requireAnyPagePermission("jobs", "invoices"), async (req, res) => {
   const {
     id
   } = req.params;
@@ -1631,7 +1656,7 @@ app.post("/api/jobs/:id/send-portal", authenticateToken, async (req, res) => {
 });
 
 // Send Quote workflow email
-app.post("/api/jobs/:id/send-quote", authenticateToken, async (req, res) => {
+app.post("/api/jobs/:id/send-quote", authenticateToken, requireAnyPagePermission("jobs", "invoices"), async (req, res) => {
   const {
     id
   } = req.params;
@@ -1682,7 +1707,7 @@ app.get("/api/settings", authenticateToken, async (req, res) => {
 });
 
 // Update business settings
-app.put("/api/settings", authenticateToken, async (req, res) => {
+app.put("/api/settings", authenticateToken, requireAdmin, async (req, res) => {
   const {
     name,
     address,
@@ -1736,7 +1761,7 @@ const logoUpload = multer({
     cb(null, true);
   }
 });
-app.post("/api/settings/logo", authenticateToken, uploadLimiter, (req, res) => {
+app.post("/api/settings/logo", authenticateToken, requireAdmin, uploadLimiter, (req, res) => {
   logoUpload.single('logo')(req, res, async err => {
     if (err) return badRequest(res, err.message || 'Upload failed');
     if (!req.file) return badRequest(res, 'No logo file provided');
@@ -1785,7 +1810,7 @@ app.get("/public/logos/:filename", (req, res) => {
 });
 
 // Get all employees
-app.get("/api/employees", authenticateToken, async (req, res) => {
+app.get("/api/employees", authenticateToken, requireAnyPagePermission("payroll"), async (req, res) => {
   try {
     const employees = await db.prepare("SELECT * FROM employees WHERE account_id = ?").all(req.accountId);
     res.json(employees.map(e => ({
@@ -1802,7 +1827,7 @@ app.get("/api/employees", authenticateToken, async (req, res) => {
 // Create an employee. Accepts an optional client-supplied id so the frontend
 // (which generates ids locally for optimistic UI) stays in sync with what's
 // actually persisted, rather than drifting from a server-generated id.
-app.post("/api/employees", authenticateToken, async (req, res) => {
+app.post("/api/employees", authenticateToken, requireAnyPagePermission("payroll"), async (req, res) => {
   const body = sanitizeObject(req.body);
   const {
     name,
@@ -1835,7 +1860,7 @@ app.post("/api/employees", authenticateToken, async (req, res) => {
 
 // Update an employee — also used to append time cards (client sends full
 // timeCards array; server stores it as JSON since sqlite has no array type).
-app.put("/api/employees/:id", authenticateToken, async (req, res) => {
+app.put("/api/employees/:id", authenticateToken, requireAnyPagePermission("payroll"), async (req, res) => {
   const {
     id
   } = req.params;
@@ -1875,7 +1900,7 @@ app.put("/api/employees/:id", authenticateToken, async (req, res) => {
     });
   }
 });
-app.delete("/api/employees/:id", authenticateToken, async (req, res) => {
+app.delete("/api/employees/:id", authenticateToken, requireAnyPagePermission("payroll"), async (req, res) => {
   const {
     id
   } = req.params;
@@ -1895,7 +1920,7 @@ app.delete("/api/employees/:id", authenticateToken, async (req, res) => {
 });
 
 // --- Payroll records ---
-app.get("/api/payroll", authenticateToken, async (req, res) => {
+app.get("/api/payroll", authenticateToken, requireAnyPagePermission("payroll"), async (req, res) => {
   try {
     const records = await db.prepare("SELECT * FROM payroll_records WHERE account_id = ? ORDER BY date DESC").all(req.accountId);
     res.json(records);
@@ -1905,7 +1930,7 @@ app.get("/api/payroll", authenticateToken, async (req, res) => {
     });
   }
 });
-app.post("/api/payroll", authenticateToken, async (req, res) => {
+app.post("/api/payroll", authenticateToken, requireAnyPagePermission("payroll"), async (req, res) => {
   const body = sanitizeObject(req.body);
   const {
     employeeId,
@@ -1936,7 +1961,7 @@ app.post("/api/payroll", authenticateToken, async (req, res) => {
     });
   }
 });
-app.put("/api/payroll/:id", authenticateToken, async (req, res) => {
+app.put("/api/payroll/:id", authenticateToken, requireAnyPagePermission("payroll"), async (req, res) => {
   const {
     id
   } = req.params;
@@ -1993,7 +2018,7 @@ const requireLocalTeamManagement = async (req, res, next) => {
   }
 };
 
-app.get("/api/users", authenticateToken, async (req, res) => {
+app.get("/api/users", authenticateToken, requireAdmin, async (req, res) => {
   try {
     const users = await db.prepare("SELECT id, name, email, role, permissions FROM users WHERE account_id = ?").all(req.accountId);
     res.json(users.map(u => ({
@@ -2110,7 +2135,7 @@ const generalUpload = multer({
     fileSize: 50 * 1024 * 1024
   }
 });
-app.get("/api/files", authenticateToken, async (req, res) => {
+app.get("/api/files", authenticateToken, requireAnyPagePermission("files"), async (req, res) => {
   try {
     const files = await db.prepare("SELECT * FROM files WHERE account_id = ? ORDER BY uploadedAt DESC").all(req.accountId);
     res.json(files);
@@ -2120,7 +2145,7 @@ app.get("/api/files", authenticateToken, async (req, res) => {
     });
   }
 });
-app.post("/api/files", authenticateToken, uploadLimiter, generalUpload.array("files", 20), async (req, res) => {
+app.post("/api/files", authenticateToken, requireAnyPagePermission("files"), uploadLimiter, generalUpload.array("files", 20), async (req, res) => {
   try {
     // NOTE: this used to be a non-async handler that did
     // `(req.files || []).map(async f => {...})` and immediately responded
@@ -2156,7 +2181,7 @@ app.post("/api/files", authenticateToken, uploadLimiter, generalUpload.array("fi
     });
   }
 });
-app.get("/api/files/:id/download", authenticateToken, async (req, res) => {
+app.get("/api/files/:id/download", authenticateToken, requireAnyPagePermission("files"), async (req, res) => {
   const {
     id
   } = req.params;
@@ -2178,7 +2203,7 @@ app.get("/api/files/:id/download", authenticateToken, async (req, res) => {
     });
   }
 });
-app.delete("/api/files/:id", authenticateToken, async (req, res) => {
+app.delete("/api/files/:id", authenticateToken, requireAnyPagePermission("files"), async (req, res) => {
   const {
     id
   } = req.params;
@@ -2201,7 +2226,7 @@ app.delete("/api/files/:id", authenticateToken, async (req, res) => {
 });
 
 // Get all clients with job summary
-app.get("/api/clients", authenticateToken, async (req, res) => {
+app.get("/api/clients", authenticateToken, requireAnyPagePermission("clients", "jobs", "new-request"), async (req, res) => {
   try {
     const clients = await db.prepare("SELECT * FROM clients WHERE account_id = ? ORDER BY name ASC").all(req.accountId);
     const clientsWithStats = await Promise.all(clients.map(async c => {
@@ -2262,7 +2287,7 @@ async function sendWelcomeEmailForClient(client, accountId) {
 }
 
 // Create a new client
-app.post("/api/clients", authenticateToken, async (req, res) => {
+app.post("/api/clients", authenticateToken, requireAnyPagePermission("clients"), async (req, res) => {
   const {
     name,
     company,
@@ -2332,7 +2357,7 @@ app.post("/api/clients", authenticateToken, async (req, res) => {
 });
 
 // Update client contact info
-app.put("/api/clients/:id", authenticateToken, async (req, res) => {
+app.put("/api/clients/:id", authenticateToken, requireAnyPagePermission("clients"), async (req, res) => {
   const {
     id
   } = req.params;
@@ -2361,7 +2386,7 @@ app.put("/api/clients/:id", authenticateToken, async (req, res) => {
 });
 
 // Delete a client
-app.delete("/api/clients/:id", authenticateToken, async (req, res) => {
+app.delete("/api/clients/:id", authenticateToken, requireAnyPagePermission("clients"), async (req, res) => {
   const {
     id
   } = req.params;
@@ -2382,7 +2407,7 @@ app.delete("/api/clients/:id", authenticateToken, async (req, res) => {
 
 // ── Industries (editable dropdown for client grouping) ─────────────────────────
 
-app.get("/api/industries", authenticateToken, async (req, res) => {
+app.get("/api/industries", authenticateToken, requireAnyPagePermission("clients"), async (req, res) => {
   try {
     const rows = await db.prepare("SELECT * FROM industries WHERE account_id = ? ORDER BY name ASC").all(req.accountId);
     res.json(rows);
@@ -2392,7 +2417,7 @@ app.get("/api/industries", authenticateToken, async (req, res) => {
     });
   }
 });
-app.post("/api/industries", authenticateToken, async (req, res) => {
+app.post("/api/industries", authenticateToken, requireAnyPagePermission("clients"), async (req, res) => {
   const {
     name
   } = sanitizeObject(req.body);
@@ -2407,7 +2432,7 @@ app.post("/api/industries", authenticateToken, async (req, res) => {
     });
   }
 });
-app.put("/api/industries/:id", authenticateToken, async (req, res) => {
+app.put("/api/industries/:id", authenticateToken, requireAnyPagePermission("clients"), async (req, res) => {
   const {
     id
   } = req.params;
@@ -2427,7 +2452,7 @@ app.put("/api/industries/:id", authenticateToken, async (req, res) => {
     });
   }
 });
-app.delete("/api/industries/:id", authenticateToken, async (req, res) => {
+app.delete("/api/industries/:id", authenticateToken, requireAnyPagePermission("clients"), async (req, res) => {
   const {
     id
   } = req.params;
@@ -2454,7 +2479,7 @@ app.delete("/api/industries/:id", authenticateToken, async (req, res) => {
 // ── Email templates (welcome + newsletter, admin-editable) ─────────────────────
 
 const VALID_TEMPLATE_TYPES = new Set(['welcome', 'newsletter']);
-app.get("/api/templates", authenticateToken, async (req, res) => {
+app.get("/api/templates", authenticateToken, requireAdmin, async (req, res) => {
   try {
     const rows = await db.prepare("SELECT type, subject, body, updatedAt FROM email_templates WHERE account_id = ?").all(req.accountId);
     res.json(rows);
@@ -2464,7 +2489,7 @@ app.get("/api/templates", authenticateToken, async (req, res) => {
     });
   }
 });
-app.put("/api/templates/:type", authenticateToken, async (req, res) => {
+app.put("/api/templates/:type", authenticateToken, requireAdmin, async (req, res) => {
   const {
     type
   } = req.params;
@@ -2492,7 +2517,7 @@ app.put("/api/templates/:type", authenticateToken, async (req, res) => {
     });
   }
 });
-app.post("/api/templates/:type/test", authenticateToken, async (req, res) => {
+app.post("/api/templates/:type/test", authenticateToken, requireAdmin, async (req, res) => {
   const {
     type
   } = req.params;
@@ -2567,7 +2592,7 @@ function escapeHtmlForConfirmPage(str) {
 
 // ── Newsletter broadcast ────────────────────────────────────────────────────────
 
-app.get("/api/newsletter/sends", authenticateToken, async (req, res) => {
+app.get("/api/newsletter/sends", authenticateToken, requireAdmin, async (req, res) => {
   try {
     const rows = await db.prepare("SELECT id, industryId, subject, recipientCount, sentAt, sentBy FROM newsletter_sends WHERE account_id = ? ORDER BY sentAt DESC LIMIT 50").all(req.accountId);
     res.json(rows);
@@ -2577,7 +2602,7 @@ app.get("/api/newsletter/sends", authenticateToken, async (req, res) => {
     });
   }
 });
-app.post("/api/newsletter/broadcast", authenticateToken, async (req, res) => {
+app.post("/api/newsletter/broadcast", authenticateToken, requireAdmin, async (req, res) => {
   const {
     industryId
   } = req.body || {};
@@ -2646,7 +2671,7 @@ app.post("/api/newsletter/broadcast", authenticateToken, async (req, res) => {
 });
 
 // Job Messages (Chat)
-app.get("/api/jobs/:id/messages", authenticateToken, async (req, res) => {
+app.get("/api/jobs/:id/messages", authenticateToken, requireAnyPagePermission("jobs"), async (req, res) => {
   try {
     // SECURITY: verify the job belongs to the caller's account before returning messages
     const job = await db.prepare("SELECT id FROM jobs WHERE id = ? AND account_id = ?").get(req.params.id, req.accountId);
@@ -2661,7 +2686,7 @@ app.get("/api/jobs/:id/messages", authenticateToken, async (req, res) => {
     });
   }
 });
-app.post("/api/jobs/:id/messages", authenticateToken, async (req, res) => {
+app.post("/api/jobs/:id/messages", authenticateToken, requireAnyPagePermission("jobs"), async (req, res) => {
   const {
     id: jobId
   } = req.params;
@@ -2735,7 +2760,7 @@ const upload = multer({
 });
 
 // POST /api/jobs/:id/files  — upload one or many files into the job folder
-app.post("/api/jobs/:id/files", authenticateToken, uploadLimiter, upload.array('files', 20), async (req, res) => {
+app.post("/api/jobs/:id/files", authenticateToken, requireAnyPagePermission("jobs", "files"), uploadLimiter, upload.array('files', 20), async (req, res) => {
   const {
     id: jobId
   } = req.params;
@@ -2776,7 +2801,7 @@ app.post("/api/jobs/:id/files", authenticateToken, uploadLimiter, upload.array('
 });
 
 // GET /api/jobs/:id/files  — list all files in the job folder
-app.get("/api/jobs/:id/files", authenticateToken, async (req, res) => {
+app.get("/api/jobs/:id/files", authenticateToken, requireAnyPagePermission("jobs", "files"), async (req, res) => {
   const {
     id: jobId
   } = req.params;
@@ -2819,7 +2844,7 @@ app.get("/api/jobs/:id/files", authenticateToken, async (req, res) => {
 });
 
 // DELETE /api/jobs/:id/files/:filename  — delete a specific file from the job folder
-app.delete("/api/jobs/:id/files/:filename", authenticateToken, async (req, res) => {
+app.delete("/api/jobs/:id/files/:filename", authenticateToken, requireAnyPagePermission("jobs", "files"), async (req, res) => {
   const {
     id: jobId,
     filename

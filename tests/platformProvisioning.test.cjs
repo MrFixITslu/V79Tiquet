@@ -1,8 +1,10 @@
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
+const jwt = require("jsonwebtoken");
 
 const base = process.env.TEST_BASE_URL || "http://127.0.0.1:3000";
 const secret = process.env.V79_PLATFORM_SHARED_SECRET || "";
+const jwtSecret = process.env.JWT_SECRET || "";
 
 function signature(method, pathname, timestamp, body = "") {
   const hash = crypto.createHash("sha256").update(body).digest("hex");
@@ -43,6 +45,44 @@ async function provision(organizationId, name, hubUserId, email) {
   return result.payload;
 }
 
+async function provisionMember(organizationId, name, hubUserId, email, role) {
+  const body = JSON.stringify({
+    organization: { id: organizationId, name, slug: name.toLowerCase().replace(/[^a-z0-9]+/g, "-") },
+    user: { id: hubUserId, email, name: `${role} Member` },
+    role,
+    plan: "hub",
+  });
+  const result = await platformRequest("/api/platform/members/provision", { method: "POST", body });
+  assert.equal(result.response.status, 200, JSON.stringify(result.payload));
+  assert.equal(result.payload.provisioned, true);
+  assert.equal(result.payload.organizationId, organizationId);
+  assert.equal(result.payload.hubUserId, hubUserId);
+  assert.equal(result.payload.localRole, "Member");
+  assert.ok(Array.isArray(result.payload.permissions));
+  assert.ok(result.payload.accountId);
+  assert.ok(result.payload.userId);
+  return result.payload;
+}
+
+function memberToken(member, email) {
+  return jwt.sign(
+    { id: member.userId, email, account_id: member.accountId },
+    jwtSecret,
+    { expiresIn: "10m" }
+  );
+}
+
+async function memberRequest(pathname, token, { method = "GET", body } = {}) {
+  return fetch(base + pathname, {
+    method,
+    headers: {
+      authorization: `Bearer ${token}`,
+      ...(body !== undefined ? { "content-type": "application/json" } : {}),
+    },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+}
+
 (async () => {
   assert.ok(secret.length >= 32, "V79_PLATFORM_SHARED_SECRET must be configured for platform tests");
 
@@ -52,6 +92,59 @@ async function provision(organizationId, name, hubUserId, email) {
 
   assert.notEqual(a.accountId, b.accountId, "separate Hub workspaces must get separate Tiquet accounts");
   assert.notEqual(a.userId, b.userId, "separate Hub workspaces must get separate Tiquet users");
+  assert.ok(jwtSecret.length >= 32, "JWT_SECRET must be configured for platform permission tests");
+
+  const managerEmail = "manager-a@example.test";
+  const manager = await provisionMember(
+    "hub-org-a-1234",
+    "Tiquet Business A",
+    "hub-manager-a-1234",
+    managerEmail,
+    "manager"
+  );
+  assert.deepEqual(
+    new Set(manager.permissions),
+    new Set(["dashboard", "jobs", "clients", "invoices", "files", "new-request"])
+  );
+  const managerJwt = memberToken(manager, managerEmail);
+  assert.equal((await memberRequest("/api/jobs", managerJwt)).status, 200);
+  assert.equal((await memberRequest("/api/clients", managerJwt)).status, 200);
+  assert.equal((await memberRequest("/api/files", managerJwt)).status, 200);
+  assert.equal((await memberRequest("/api/users", managerJwt)).status, 403);
+  assert.equal((await memberRequest("/api/settings", managerJwt, { method: "PUT", body: { name: "Nope" } })).status, 403);
+
+  const viewerEmail = "viewer-a@example.test";
+  const viewer = await provisionMember(
+    "hub-org-a-1234",
+    "Tiquet Business A",
+    "hub-viewer-a-1234",
+    viewerEmail,
+    "viewer"
+  );
+  assert.deepEqual(viewer.permissions, ["dashboard"]);
+  const viewerJwt = memberToken(viewer, viewerEmail);
+  const viewerMe = await memberRequest("/api/auth/me", viewerJwt);
+  assert.equal(viewerMe.status, 200);
+  const viewerMeBody = await viewerMe.json();
+  assert.equal(viewerMeBody.role, "Member");
+  assert.deepEqual(viewerMeBody.permissions, ["dashboard"]);
+  assert.equal((await memberRequest("/api/jobs", viewerJwt)).status, 200, "viewer may read dashboard job feed");
+  assert.equal((await memberRequest("/api/jobs", viewerJwt, {
+    method: "POST",
+    body: { title: "Should fail", client: "No access" },
+  })).status, 403);
+  assert.equal((await memberRequest("/api/clients", viewerJwt)).status, 403);
+  assert.equal((await memberRequest("/api/files", viewerJwt)).status, 403);
+  assert.equal((await memberRequest("/api/payroll", viewerJwt)).status, 403);
+  assert.equal((await memberRequest("/api/users", viewerJwt)).status, 403);
+  assert.equal((await memberRequest("/api/settings", viewerJwt, { method: "PUT", body: { name: "Nope" } })).status, 403);
+
+  const wrongAccountJwt = jwt.sign(
+    { id: viewer.userId, email: viewerEmail, account_id: b.accountId },
+    jwtSecret,
+    { expiresIn: "10m" }
+  );
+  assert.equal((await memberRequest("/api/jobs", wrongAccountJwt)).status, 403);
 
   const repeatedA = await provision("hub-org-a-1234", "Tiquet Business A", "hub-user-a-1234", email);
   assert.equal(repeatedA.accountId, a.accountId, "provisioning must be idempotent for the same workspace");

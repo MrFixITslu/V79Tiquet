@@ -1,4 +1,5 @@
 import React from "react";
+import { PagePermission } from "../types";
 import {
   LayoutDashboard,
   Briefcase,
@@ -26,6 +27,8 @@ interface SidebarProps {
   openInvoiceCount?: number;
   isOpenMobile?: boolean;
   onCloseMobile?: () => void;
+  role: string;
+  permissions: PagePermission[];
 }
 
 export function Sidebar({
@@ -38,7 +41,10 @@ export function Sidebar({
   openInvoiceCount,
   isOpenMobile,
   onCloseMobile,
+  role,
+  permissions,
 }: SidebarProps) {
+  const can = (permission: PagePermission) => role === "Admin" || permissions.includes(permission);
   const handleNavClick = (tab: string) => {
     setActiveTab(tab);
     if (onCloseMobile) onCloseMobile();
@@ -91,38 +97,48 @@ export function Sidebar({
             <p className="px-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">
               Operations
             </p>
-            <NavItem
-              icon={<LayoutDashboard className="w-4 h-4" />}
-              label="Dashboard"
-              active={activeTab === "dashboard"}
-              onClick={() => handleNavClick("dashboard")}
-            />
-            <NavItem
-              icon={<Briefcase className="w-4 h-4" />}
-              label="Jobs Pipeline"
-              badge={jobCount !== undefined && jobCount > 0 ? jobCount : undefined}
-              active={activeTab === "jobs"}
-              onClick={() => handleNavClick("jobs")}
-            />
-            <NavItem
-              icon={<Contact className="w-4 h-4" />}
-              label="Clients"
-              active={activeTab === "clients"}
-              onClick={() => handleNavClick("clients")}
-            />
-            <NavItem
-              icon={<FileText className="w-4 h-4" />}
-              label="Invoices & Billing"
-              badge={openInvoiceCount !== undefined && openInvoiceCount > 0 ? openInvoiceCount : undefined}
-              active={activeTab === "invoices"}
-              onClick={() => handleNavClick("invoices")}
-            />
-            <NavItem
-              icon={<PlusCircle className="w-4 h-4 text-emerald-400" />}
-              label="New Request"
-              active={activeTab === "new-request"}
-              onClick={() => handleNavClick("new-request")}
-            />
+            {can("dashboard") && (
+              <NavItem
+                icon={<LayoutDashboard className="w-4 h-4" />}
+                label="Dashboard"
+                active={activeTab === "dashboard"}
+                onClick={() => handleNavClick("dashboard")}
+              />
+            )}
+            {can("jobs") && (
+              <NavItem
+                icon={<Briefcase className="w-4 h-4" />}
+                label="Jobs Pipeline"
+                badge={jobCount !== undefined && jobCount > 0 ? jobCount : undefined}
+                active={activeTab === "jobs"}
+                onClick={() => handleNavClick("jobs")}
+              />
+            )}
+            {can("clients") && (
+              <NavItem
+                icon={<Contact className="w-4 h-4" />}
+                label="Clients"
+                active={activeTab === "clients"}
+                onClick={() => handleNavClick("clients")}
+              />
+            )}
+            {can("invoices") && (
+              <NavItem
+                icon={<FileText className="w-4 h-4" />}
+                label="Invoices & Billing"
+                badge={openInvoiceCount !== undefined && openInvoiceCount > 0 ? openInvoiceCount : undefined}
+                active={activeTab === "invoices"}
+                onClick={() => handleNavClick("invoices")}
+              />
+            )}
+            {can("new-request") && (
+              <NavItem
+                icon={<PlusCircle className="w-4 h-4 text-emerald-400" />}
+                label="New Request"
+                active={activeTab === "new-request"}
+                onClick={() => handleNavClick("new-request")}
+              />
+            )}
           </div>
 
           {/* Group 2: Resources & Operations */}
@@ -130,18 +146,22 @@ export function Sidebar({
             <p className="px-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">
               Resources
             </p>
-            <NavItem
-              icon={<FolderOpen className="w-4 h-4" />}
-              label="Files Repository"
-              active={activeTab === "files"}
-              onClick={() => handleNavClick("files")}
-            />
-            <NavItem
-              icon={<CreditCard className="w-4 h-4" />}
-              label="Payroll"
-              active={activeTab === "payroll"}
-              onClick={() => handleNavClick("payroll")}
-            />
+            {can("files") && (
+              <NavItem
+                icon={<FolderOpen className="w-4 h-4" />}
+                label="Files Repository"
+                active={activeTab === "files"}
+                onClick={() => handleNavClick("files")}
+              />
+            )}
+            {can("payroll") && (
+              <NavItem
+                icon={<CreditCard className="w-4 h-4" />}
+                label="Payroll"
+                active={activeTab === "payroll"}
+                onClick={() => handleNavClick("payroll")}
+              />
+            )}
           </div>
 
           {/* Group 3: Administration */}
@@ -149,18 +169,22 @@ export function Sidebar({
             <p className="px-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">
               Administration
             </p>
-            <NavItem
-              icon={<Users className="w-4 h-4" />}
-              label="Users & Roles"
-              active={activeTab === "users"}
-              onClick={() => handleNavClick("users")}
-            />
-            <NavItem
-              icon={<Settings className="w-4 h-4" />}
-              label="Settings"
-              active={activeTab === "settings"}
-              onClick={() => handleNavClick("settings")}
-            />
+            {role === "Admin" && (
+              <NavItem
+                icon={<Users className="w-4 h-4" />}
+                label="Users & Roles"
+                active={activeTab === "users"}
+                onClick={() => handleNavClick("users")}
+              />
+            )}
+            {role === "Admin" && (
+              <NavItem
+                icon={<Settings className="w-4 h-4" />}
+                label="Settings"
+                active={activeTab === "settings"}
+                onClick={() => handleNavClick("settings")}
+              />
+            )}
           </div>
         </nav>
 
