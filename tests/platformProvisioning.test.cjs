@@ -45,6 +45,11 @@ async function provision(organizationId, name, hubUserId, email) {
   return result.payload;
 }
 
+async function deprovisionMember(organizationId, hubUserId) {
+  const body = JSON.stringify({ organizationId, user: { id: hubUserId } });
+  return platformRequest("/api/platform/members/deprovision", { method: "POST", body });
+}
+
 async function provisionMember(organizationId, name, hubUserId, email, role) {
   const body = JSON.stringify({
     organization: { id: organizationId, name, slug: name.toLowerCase().replace(/[^a-z0-9]+/g, "-") },
@@ -144,7 +149,25 @@ async function memberRequest(pathname, token, { method = "GET", body } = {}) {
     jwtSecret,
     { expiresIn: "10m" }
   );
-  assert.equal((await memberRequest("/api/jobs", wrongAccountJwt)).status, 403);
+  assert.equal((await memberRequest("/api/jobs", wrongAccountJwt)).status, 401);
+
+  const wrongWorkspaceRemoval = await deprovisionMember("hub-org-b-1234", "hub-viewer-a-1234");
+  assert.equal(wrongWorkspaceRemoval.response.status, 200, JSON.stringify(wrongWorkspaceRemoval.payload));
+  assert.equal(wrongWorkspaceRemoval.payload.alreadyAbsent, true);
+  assert.equal((await memberRequest("/api/auth/me", viewerJwt)).status, 200, "wrong-workspace deprovision must not affect the member");
+
+  const ownerRemoval = await deprovisionMember("hub-org-a-1234", "hub-user-a-1234");
+  assert.equal(ownerRemoval.response.status, 409, "Hub team revocation must never remove the Tiquet owner/admin");
+
+  const removedViewer = await deprovisionMember("hub-org-a-1234", "hub-viewer-a-1234");
+  assert.equal(removedViewer.response.status, 200, JSON.stringify(removedViewer.payload));
+  assert.equal(removedViewer.payload.deprovisioned, true);
+  assert.equal(removedViewer.payload.organizationId, "hub-org-a-1234");
+  assert.equal((await memberRequest("/api/auth/me", viewerJwt)).status, 401, "existing JWT must stop working immediately after deprovision");
+
+  const repeatedRemoval = await deprovisionMember("hub-org-a-1234", "hub-viewer-a-1234");
+  assert.equal(repeatedRemoval.response.status, 200);
+  assert.equal(repeatedRemoval.payload.alreadyAbsent, true);
 
   const repeatedA = await provision("hub-org-a-1234", "Tiquet Business A", "hub-user-a-1234", email);
   assert.equal(repeatedA.accountId, a.accountId, "provisioning must be idempotent for the same workspace");

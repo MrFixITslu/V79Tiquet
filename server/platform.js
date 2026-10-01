@@ -167,6 +167,54 @@ router.post("/members/provision", async (req, res) => {
   }
 });
 
+router.post("/members/deprovision", async (req, res) => {
+  const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+  const organizationId = String(body.organizationId || "").trim();
+  const user = body.user && typeof body.user === "object" && !Array.isArray(body.user) ? body.user : {};
+  const hubUserId = String(user.id || "").trim();
+
+  if (
+    !/^[A-Za-z0-9._:@-]{8,180}$/.test(organizationId) ||
+    !/^[A-Za-z0-9._:@-]{8,180}$/.test(hubUserId)
+  ) {
+    return res.status(400).json({ error: "Invalid Tiquet team deprovisioning request." });
+  }
+
+  try {
+    const account = await db.prepare(
+      "SELECT id FROM accounts WHERE hub_organization_id = ? LIMIT 1"
+    ).get(organizationId);
+    if (!account) {
+      return res.status(409).json({ error: "Tiquet workspace is not provisioned." });
+    }
+
+    const member = await db.prepare(
+      "SELECT id, role, oauth_provider, hub_user_id FROM users WHERE account_id = ? AND hub_user_id = ? LIMIT 1"
+    ).get(account.id, hubUserId);
+
+    if (!member) {
+      res.setHeader("Cache-Control", "no-store");
+      return res.json({ deprovisioned: true, organizationId, hubUserId, alreadyAbsent: true });
+    }
+    if (member.role === "Admin") {
+      return res.status(409).json({ error: "Tiquet owner/admin identity cannot be deprovisioned through the Hub team endpoint." });
+    }
+    if (member.oauth_provider !== "v79-hub" || member.hub_user_id !== hubUserId) {
+      return res.status(409).json({ error: "Tiquet member is not a Hub-managed team identity." });
+    }
+
+    await db.prepare(
+      "DELETE FROM users WHERE id = ? AND account_id = ? AND hub_user_id = ? AND role <> 'Admin'"
+    ).run(member.id, account.id, hubUserId);
+
+    res.setHeader("Cache-Control", "no-store");
+    return res.json({ deprovisioned: true, organizationId, hubUserId, userId: member.id });
+  } catch (error) {
+    console.warn("[platform] Tiquet team deprovisioning denied:", error?.message || error);
+    return res.status(409).json({ error: "Tiquet team member could not be deprovisioned." });
+  }
+});
+
 router.get("/summary/:accountId", async (req, res) => {
   const accountId = String(req.params.accountId || "").trim();
   if (!/^[A-Za-z0-9._:@-]{1,180}$/.test(accountId)) {

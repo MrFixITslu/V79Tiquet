@@ -177,6 +177,15 @@ const authenticateToken = (req, res, next) => {
     if (err) return res.status(403).json({
       error: "Forbidden"
     });
+    try {
+      const liveUser = await db.prepare(
+        "SELECT id FROM users WHERE id = ? AND account_id = ?"
+      ).get(user.id, user.account_id);
+      if (!liveUser) return res.status(401).json({ error: "Unauthorized" });
+    } catch (e) {
+      return res.status(503).json({ error: "Authentication service unavailable" });
+    }
+
     req.user = user;
     req.accountId = user.account_id;
 
