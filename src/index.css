@@ -27,3 +27,48 @@
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
 }
 @media (max-width: 640px) { input, select, textarea { font-size: 16px; } }
+
+
+/* V79 Digital / Tiquet premium application theme */
+.v79-tiquet-app {
+  --v79-bg: #07111f;
+  --v79-panel: #091728;
+  --v79-panel-2: #0b1a2c;
+  --v79-border-dark: #1a3854;
+  --v79-blue: #0a86ff;
+  --v79-orange: #ff7a00;
+  color-scheme: dark;
+  background: var(--v79-bg);
+}
+.v79-tiquet-app .bg-white { background-color: var(--v79-panel) !important; }
+.v79-tiquet-app .bg-slate-50 { background-color: var(--v79-bg) !important; }
+.v79-tiquet-app .bg-slate-100 { background-color: var(--v79-panel-2) !important; }
+.v79-tiquet-app .border-slate-100,
+.v79-tiquet-app .border-slate-200,
+.v79-tiquet-app .border-slate-300 { border-color: var(--v79-border-dark) !important; }
+.v79-tiquet-app .text-slate-900,
+.v79-tiquet-app .text-slate-800 { color: #f8fafc !important; }
+.v79-tiquet-app .text-slate-700 { color: #d5deea !important; }
+.v79-tiquet-app .text-slate-600 { color: #94a3b8 !important; }
+.v79-tiquet-app .text-slate-500 { color: #718096 !important; }
+.v79-tiquet-app input,
+.v79-tiquet-app select,
+.v79-tiquet-app textarea {
+  background-color: #07121f !important;
+  border-color: #244560 !important;
+  color: #e8eef7 !important;
+}
+.v79-tiquet-app input::placeholder,
+.v79-tiquet-app textarea::placeholder { color: #526276 !important; }
+.v79-tiquet-app input:focus,
+.v79-tiquet-app select:focus,
+.v79-tiquet-app textarea:focus {
+  border-color: rgba(10,134,255,.65) !important;
+  box-shadow: 0 0 0 3px rgba(10,134,255,.12) !important;
+}
+.v79-tiquet-app .shadow-xs,
+.v79-tiquet-app .shadow-sm { box-shadow: 0 14px 36px rgba(0,0,0,.14) !important; }
+.v79-tiquet-app ::-webkit-scrollbar { width: 9px; height: 9px; }
+.v79-tiquet-app ::-webkit-scrollbar-track { background: #06101d; }
+.v79-tiquet-app ::-webkit-scrollbar-thumb { background: #1d3d59; border-radius: 999px; border: 2px solid #06101d; }
+.v79-tiquet-app ::-webkit-scrollbar-thumb:hover { background: #2c5677; }
