@@ -120,9 +120,10 @@ async function runE2ETests() {
         status: 'paid'
       }, authHeader);
       assert(
-        markPaid.status === 200 && markPaid.body && markPaid.body.status === 'paid',
-        `Marked job as paid by invoice manager (Got: ${markPaid.status})`
+        markPaid.status === 409 && markPaid.body && markPaid.body.code === 'PAYMENT_REQUIRED',
+        `Unfunded job cannot be marked paid directly (Got: ${markPaid.status})`
       );
+      job.secureToken = updateJob.body.secureToken;
     }
 
     // 3. Client Portal Access Flow
@@ -130,17 +131,58 @@ async function runE2ETests() {
     if (job && job.secureToken) {
       const portalData = await request('GET', `/api/portal/${job.secureToken}`);
       assert(portalData.status === 200 && portalData.body && portalData.body.job, `Client accessed portal using secure token (Got: ${portalData.status})`);
+      assert(!portalData.body.job.secureToken, 'Client portal response does not leak its bearer credential');
 
       const approveQuote = await request('POST', `/api/portal/${job.secureToken}/approve-quote`);
       assert(approveQuote.status === 200, `Client approved quote via portal link (Got: ${approveQuote.status})`);
 
       const payDeposit = await request('POST', `/api/portal/${job.secureToken}/pay-deposit`);
-      assert(payDeposit.status === 200, `Client paid deposit via portal link (Got: ${payDeposit.status})`);
+      assert(
+        payDeposit.status === 409 && payDeposit.body && payDeposit.body.code === 'PAYMENT_GATEWAY_REQUIRED',
+        `Portal cannot self-certify a deposit (Got: ${payDeposit.status})`
+      );
 
       const clientMsg = await request('POST', `/api/portal/${job.secureToken}/messages`, {
         content: 'Excited for this project!'
       });
       assert(clientMsg.status === 201, `Client sent message via portal chat (Got: ${clientMsg.status})`);
+
+      const partial = await request('POST', '/api/payments', {
+        jobId: job.id,
+        amount: 1350,
+        method: 'bank_transfer',
+        reference: 'E2E-DEPOSIT',
+        receivedAt: new Date().toISOString()
+      }, authHeader);
+      assert(
+        partial.status === 201 && partial.body && partial.body.summary && partial.body.summary.paidAmount === 1350,
+        `Recorded partial payment without marking job paid (Got: ${partial.status})`
+      );
+      assert(partial.body.job.status !== 'paid', 'Partial payment does not falsely mark the job paid');
+
+      const invoiceJob = await request('PUT', `/api/jobs/${job.id}`, {
+        ...partial.body.job,
+        status: 'invoiced'
+      }, authHeader);
+      assert(invoiceJob.status === 200 && invoiceJob.body.status === 'invoiced', `Moved funded job to invoiced (Got: ${invoiceJob.status})`);
+
+      const finalPayment = await request('POST', '/api/payments', {
+        jobId: job.id,
+        amount: 3150,
+        method: 'bank_transfer',
+        reference: 'E2E-FINAL',
+        receivedAt: new Date().toISOString()
+      }, authHeader);
+      assert(
+        finalPayment.status === 201 && finalPayment.body && finalPayment.body.job && finalPayment.body.job.status === 'paid',
+        `Full recorded settlement closes invoiced job as paid (Got: ${finalPayment.status})`
+      );
+
+      const paymentList = await request('GET', `/api/payments?jobId=${job.id}`, null, authHeader);
+      assert(
+        paymentList.status === 200 && Array.isArray(paymentList.body) && paymentList.body.length === 2,
+        `Payment ledger retained both partial and final payments (Got: ${paymentList.status})`
+      );
 
       // Test Job Deletion
       const deleteJob = await request('DELETE', `/api/jobs/${job.id}`, null, authHeader);
