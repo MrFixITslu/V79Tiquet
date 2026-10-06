@@ -1140,6 +1140,25 @@ async function triggerFfproSync(jobId, accountId) {
   // else: leave as 'pending' — the periodic sweep below will retry it.
 }
 
+async function triggerFfproPaymentSync(paymentId, accountId) {
+  const payment = await db.prepare(
+    "SELECT * FROM payments WHERE id = ? AND account_id = ? AND status = 'recorded'"
+  ).get(paymentId, accountId);
+  if (!payment || !payment.ffproEventId) return;
+
+  const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?")
+    .get(payment.jobId, accountId);
+  if (!job) return;
+
+  const settings = await db.prepare("SELECT currency FROM settings WHERE account_id = ?").get(accountId);
+  const delivered = await sendPaymentEvent(payment, job, accountId, settings);
+  if (delivered) {
+    await db.prepare(
+      "UPDATE payments SET ffproSyncStatus = 'sent' WHERE id = ? AND account_id = ?"
+    ).run(paymentId, accountId);
+  }
+}
+
 // Periodic sweep: catches any job whose FFPRO2 delivery didn't succeed via
 // the inline retries in gatewayClient.js (e.g. FFPRO2 was down for longer
 // than those cover). Mirrors the existing wsHeartbeat setInterval pattern
@@ -1150,7 +1169,16 @@ setInterval(async () => {
     const pending = await db.prepare("SELECT id, account_id FROM jobs WHERE ffproSyncStatus = 'pending'").all();
     for (const row of pending) {
       triggerFfproSync(row.id, row.account_id).catch(err => {
-        logger.error(`[FFPRO Gateway] Sweep retry failed for job ${row.id}: ${err.message}`);
+        logger.error(`[FFPRO Gateway] Sweep retry failed for legacy job ${row.id}: ${err.message}`);
+      });
+    }
+
+    const pendingPayments = await db.prepare(
+      "SELECT id, account_id FROM payments WHERE ffproSyncStatus = 'pending' AND status = 'recorded'"
+    ).all();
+    for (const row of pendingPayments) {
+      triggerFfproPaymentSync(row.id, row.account_id).catch(err => {
+        logger.error(`[FFPRO Gateway] Sweep retry failed for payment ${row.id}: ${err.message}`);
       });
     }
   } catch (err) {
@@ -1838,6 +1866,157 @@ app.post("/api/jobs/:id/send-quote", authenticateToken, requireAnyPagePermission
     res.status(500).json({
       error: isProduction ? "Internal Server Error" : error.message
     });
+  }
+});
+
+// Customer payment ledger
+app.get("/api/payments", authenticateToken, requireAnyPagePermission("invoices"), async (req, res) => {
+  try {
+    const jobId = String(req.query.jobId || "").trim();
+    const rows = jobId
+      ? await db.prepare(
+          "SELECT * FROM payments WHERE account_id = ? AND jobId = ? ORDER BY receivedAt DESC, recordedAt DESC"
+        ).all(req.accountId, jobId)
+      : await db.prepare(
+          "SELECT * FROM payments WHERE account_id = ? ORDER BY receivedAt DESC, recordedAt DESC"
+        ).all(req.accountId);
+    res.json(rows);
+  } catch (error) {
+    res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+  }
+});
+
+app.get("/api/payments/summary", authenticateToken, requireAnyPagePermission("dashboard", "invoices"), async (req, res) => {
+  try {
+    const totals = await db.prepare(`
+      SELECT
+        COALESCE(SUM(CASE WHEN status = 'recorded' THEN amount ELSE 0 END), 0) AS received,
+        COUNT(*) FILTER (WHERE status = 'recorded') AS count
+      FROM payments
+      WHERE account_id = ?
+    `).get(req.accountId);
+    res.json({
+      received: Number(totals?.received || 0),
+      count: Number(totals?.count || 0)
+    });
+  } catch (error) {
+    res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+  }
+});
+
+app.post("/api/payments", authenticateToken, requireAnyPagePermission("invoices"), async (req, res) => {
+  const body = sanitizeObject(req.body || {});
+  const jobId = String(body.jobId || "").trim();
+  const amount = Number(body.amount);
+  const method = String(body.method || "").trim();
+  const reference = String(body.reference || "").trim().slice(0, 120) || null;
+  const note = String(body.note || "").trim().slice(0, 500) || null;
+  const receivedAt = body.receivedAt ? new Date(body.receivedAt) : new Date();
+  const allowedMethods = new Set(["cash", "bank_transfer", "card_external", "cheque", "other"]);
+
+  if (!jobId || !Number.isFinite(amount) || amount <= 0) {
+    return badRequest(res, "A valid job and payment amount are required");
+  }
+  if (!allowedMethods.has(method)) return badRequest(res, "Invalid payment method");
+  if (Number.isNaN(receivedAt.getTime()) || receivedAt.getTime() > Date.now() + 24 * 60 * 60 * 1000) {
+    return badRequest(res, "Invalid payment date");
+  }
+
+  try {
+    const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(jobId, req.accountId);
+    if (!job) return res.status(404).json({ error: "Job not found" });
+
+    const jobValue = Math.max(0, Number(job.amount || 0));
+    if (jobValue <= 0) return res.status(409).json({
+      error: "Set the job or invoice amount before recording a payment.",
+      code: "JOB_AMOUNT_REQUIRED"
+    });
+
+    const alreadyPaid = await recordedPaymentTotal(job.id, req.accountId);
+    const outstanding = Math.max(0, jobValue - alreadyPaid);
+    if (outstanding <= 0.005) {
+      return res.status(409).json({ error: "This job is already fully paid.", code: "ALREADY_PAID" });
+    }
+    if (amount - outstanding > 0.005) {
+      return res.status(409).json({
+        error: `Payment exceeds the outstanding balance by ${(amount - outstanding).toFixed(2)}.`,
+        code: "OVERPAYMENT"
+      });
+    }
+
+    const id = uuidv4();
+    const recordedAt = new Date().toISOString();
+    const ffproEventId = generateEventId();
+    await db.prepare(`
+      INSERT INTO payments
+        (id, jobId, amount, method, reference, note, receivedAt, recordedAt, recordedBy, status, ffproSyncStatus, ffproEventId, account_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'recorded', 'pending', ?, ?)
+    `).run(
+      id,
+      job.id,
+      amount,
+      method,
+      reference,
+      note,
+      receivedAt.toISOString(),
+      recordedAt,
+      req.user?.email || req.user?.id || "Team",
+      ffproEventId,
+      req.accountId
+    );
+
+    const totalPaid = alreadyPaid + amount;
+    const depositThreshold = jobValue * 0.3;
+    if (totalPaid + 0.005 >= depositThreshold && !job.depositPaid) {
+      await db.prepare("UPDATE jobs SET depositPaid = 1 WHERE id = ? AND account_id = ?")
+        .run(job.id, req.accountId);
+    }
+
+    await db.prepare(
+      "INSERT INTO activity_logs (id, job_id, action, timestamp, user, account_id) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run(
+      uuidv4(),
+      job.id,
+      `Payment recorded: ${amount.toFixed(2)} via ${method.replace(/_/g, " ")}${reference ? ` (${reference})` : ""}`,
+      recordedAt,
+      req.user?.email || "Team",
+      req.accountId
+    );
+
+    const settings = await db.prepare("SELECT currency FROM settings WHERE account_id = ?").get(req.accountId);
+    await safeQueuePlatformEvent({
+      accountId: req.accountId,
+      type: "payment.recorded",
+      subjectId: id,
+      correlationId: ffproEventId,
+      occurredAt: receivedAt.toISOString(),
+      payload: {
+        jobId: job.id,
+        title: job.title,
+        amount,
+        currency: settings?.currency || "USD",
+        method,
+        reference
+      }
+    });
+
+    if (totalPaid + 0.005 >= jobValue && ["invoiced", "completed"].includes(job.status)) {
+      await updateJobStage(job.id, "paid", req.accountId, req.user?.email || "Team");
+    }
+
+    triggerFfproPaymentSync(id, req.accountId).catch(err => {
+      logger.error(`[FFPRO Gateway] Unexpected error syncing payment ${id}: ${err.message}`);
+    });
+
+    const payment = await db.prepare("SELECT * FROM payments WHERE id = ? AND account_id = ?").get(id, req.accountId);
+    const refreshedJob = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(job.id, req.accountId);
+    res.status(201).json({
+      payment,
+      job: refreshedJob,
+      summary: await paymentSummary(refreshedJob)
+    });
+  } catch (error) {
+    res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
   }
 });
 
