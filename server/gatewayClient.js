@@ -55,7 +55,7 @@ async function deliverPayload(payload, label) {
   }
 
   logger.warn(`[FFPRO Gateway] ${label} still pending after inline retries — periodic sweep will keep trying.`);
-  return false;
+  return 'pending';
 }
 
 /**
