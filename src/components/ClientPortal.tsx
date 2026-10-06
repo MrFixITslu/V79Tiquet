@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { formatMoney } from "../currency";
 import {
   Briefcase,
   CheckCircle2,
@@ -31,7 +32,6 @@ interface PortalData {
     depositPaid?: number;
     dueDate?: string;
     createdAt: string;
-    secureToken: string;
     messages?: Array<{ id: string; sender: string; content: string; timestamp: string }>;
     lineItems?: Array<{ id?: string; description: string; quantity: number; rate: number; total?: number }>;
     deliverables?: Array<{ id: string; name: string; url?: string; completed?: boolean }>;
@@ -46,6 +46,11 @@ interface PortalData {
     logoUrl?: string;
     currency?: string;
     paymentTerms?: string;
+  };
+  payments: {
+    paidAmount: number;
+    outstandingAmount: number;
+    fullyPaid: boolean;
   };
 }
 
@@ -154,34 +159,6 @@ export function ClientPortal({ token }: { token: string }) {
     }
   };
 
-  const handlePayDeposit = async () => {
-    setActionLoading("deposit");
-    try {
-      const res = await fetch(`/api/portal/${token}/pay-deposit`, { method: "POST" });
-      if (!res.ok) throw new Error("Deposit payment failed.");
-      setSuccessToast("30% Deposit confirmed! Thank you.");
-      await loadData();
-    } catch (err: any) {
-      alert(err.message);
-    } finally {
-      setActionLoading(null);
-    }
-  };
-
-  const handlePayFinal = async () => {
-    setActionLoading("final");
-    try {
-      const res = await fetch(`/api/portal/${token}/pay-final`, { method: "POST" });
-      if (!res.ok) throw new Error("Final payment failed.");
-      setSuccessToast("Final payment confirmed! Job marked as Paid.");
-      await loadData();
-    } catch (err: any) {
-      alert(err.message);
-    } finally {
-      setActionLoading(null);
-    }
-  };
-
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!messageText.trim() || sendingMessage) return;
@@ -230,12 +207,12 @@ export function ClientPortal({ token }: { token: string }) {
     );
   }
 
-  const { job, settings } = data;
-  const currencySymbol = settings.currency === "EUR" ? "€" : settings.currency === "GBP" ? "£" : "$";
+  const { job, settings, payments } = data;
+  const currency = settings.currency || "USD";
   const currentStageIndex = STAGES.findIndex((s) => s.id === job.status);
   const totalAmount = job.amount || 0;
   const depositAmount = Math.round(totalAmount * 0.3 * 100) / 100;
-  const remainingAmount = Math.max(0, totalAmount - (job.depositPaid ? depositAmount : 0));
+  const remainingAmount = payments.outstandingAmount;
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col antialiased">
@@ -299,17 +276,16 @@ export function ClientPortal({ token }: { token: string }) {
             <div className="bg-slate-950/80 border border-slate-800 rounded-2xl p-5 shrink-0 flex flex-col items-start md:items-end justify-center min-w-[200px]">
               <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Total Valuation</span>
               <span className="text-3xl font-black text-emerald-400 tracking-tight mt-1">
-                {currencySymbol}
-                {totalAmount.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                {formatMoney(totalAmount, currency, { minimumFractionDigits: 2 })}
               </span>
               <div className="mt-2 flex items-center gap-2 text-[11px] font-medium">
-                {job.depositPaid ? (
+                {payments.paidAmount > 0 ? (
                   <span className="text-emerald-400 flex items-center gap-1">
-                    <CheckCircle2 className="w-3 h-3" /> 30% Deposit Paid
+                    <CheckCircle2 className="w-3 h-3" /> {formatMoney(payments.paidAmount, currency)} received
                   </span>
                 ) : (
                   <span className="text-amber-400 flex items-center gap-1">
-                    <Clock className="w-3 h-3" /> Deposit Pending
+                    <Clock className="w-3 h-3" /> No payment recorded
                   </span>
                 )}
               </div>
@@ -386,53 +362,45 @@ export function ClientPortal({ token }: { token: string }) {
                   )}
                 </div>
 
-                {/* Action 2: 30% Deposit */}
-                <div className="flex items-center justify-between p-4 rounded-2xl bg-slate-950/70 border border-slate-800">
+                {/* Action 2: Deposit status */}
+                <div className="flex items-center justify-between gap-4 p-4 rounded-2xl bg-slate-950/70 border border-slate-800">
                   <div className="space-y-0.5">
                     <p className="text-sm font-bold text-slate-200">
-                      2. Initial Deposit ({currencySymbol}
-                      {depositAmount.toLocaleString()})
+                      2. Initial Deposit ({formatMoney(depositAmount, currency)})
                     </p>
-                    <p className="text-xs text-slate-400">Required prior to kickoff and milestone allocation.</p>
+                    <p className="text-xs text-slate-400">
+                      Payments are recorded here only after the service team confirms receipt.
+                    </p>
                   </div>
-                  {job.depositPaid ? (
+                  {payments.paidAmount + 0.005 >= depositAmount && depositAmount > 0 ? (
                     <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-400 bg-emerald-950/80 border border-emerald-800 px-3 py-1.5 rounded-xl">
-                      <CheckCircle2 className="w-3.5 h-3.5" /> Paid
+                      <CheckCircle2 className="w-3.5 h-3.5" /> Recorded
                     </span>
                   ) : (
-                    <button
-                      onClick={handlePayDeposit}
-                      disabled={actionLoading === "deposit"}
-                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-xl transition-all shadow-md active:scale-95 disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
-                    >
-                      {actionLoading === "deposit" ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
-                      Pay Deposit
-                    </button>
+                    <span className="inline-flex items-center gap-1.5 text-xs font-bold text-amber-300 bg-amber-950/50 border border-amber-800/70 px-3 py-1.5 rounded-xl">
+                      <Clock className="w-3.5 h-3.5" /> Awaiting confirmation
+                    </span>
                   )}
                 </div>
 
-                {/* Action 3: Final Balance */}
-                <div className="flex items-center justify-between p-4 rounded-2xl bg-slate-950/70 border border-slate-800">
+                {/* Action 3: Outstanding balance */}
+                <div className="flex items-center justify-between gap-4 p-4 rounded-2xl bg-slate-950/70 border border-slate-800">
                   <div className="space-y-0.5">
                     <p className="text-sm font-bold text-slate-200">
-                      3. Final Settlement ({currencySymbol}
-                      {remainingAmount.toLocaleString()})
+                      3. Outstanding Balance ({formatMoney(remainingAmount, currency)})
                     </p>
-                    <p className="text-xs text-slate-400">Releases final project assets upon milestone completion.</p>
+                    <p className="text-xs text-slate-400">
+                      Use the payment instructions on your invoice. Tiquet does not self-confirm online payments.
+                    </p>
                   </div>
-                  {job.status === "paid" ? (
+                  {payments.fullyPaid ? (
                     <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-400 bg-emerald-950/80 border border-emerald-800 px-3 py-1.5 rounded-xl">
                       <CheckCircle2 className="w-3.5 h-3.5" /> Settled
                     </span>
                   ) : (
-                    <button
-                      onClick={handlePayFinal}
-                      disabled={actionLoading === "final" || !job.depositPaid}
-                      className="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold rounded-xl transition-all shadow-md active:scale-95 disabled:opacity-40 cursor-pointer flex items-center gap-1.5"
-                    >
-                      {actionLoading === "final" ? <Loader2 className="w-3 h-3 animate-spin" /> : null}
-                      Settle Balance
-                    </button>
+                    <span className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-300 bg-slate-900 border border-slate-700 px-3 py-1.5 rounded-xl">
+                      <ShieldCheck className="w-3.5 h-3.5" /> Verified manually
+                    </span>
                   )}
                 </div>
               </div>
@@ -462,8 +430,7 @@ export function ClientPortal({ token }: { token: string }) {
                           <td className="py-3 pr-4 font-medium">{item.description}</td>
                           <td className="py-3 text-center">{item.quantity}</td>
                           <td className="py-3 text-right font-mono">
-                            {currencySymbol}
-                            {item.rate.toLocaleString()}
+                            {formatMoney(item.rate, currency)}
                           </td>
                           <td className="py-3 text-right font-mono font-bold text-slate-100">
                             {currencySymbol}
