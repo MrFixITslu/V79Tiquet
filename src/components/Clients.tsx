@@ -14,15 +14,17 @@ import {
   Contact
 } from "lucide-react";
 import { Client, Job, COLUMNS, Industry } from "../types";
+import { formatMoney } from "../currency";
 
 interface ClientsProps {
   clients: Client[];
   setClients: React.Dispatch<React.SetStateAction<Client[]>>;
   jobs: Job[];
   industries: Industry[];
+  currency: string;
 }
 
-export function Clients({ clients, setClients, jobs, industries }: ClientsProps) {
+export function Clients({ clients, setClients, jobs, industries, currency }: ClientsProps) {
   const [searchQuery, setSearchQuery] = useState("");
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingClient, setEditingClient] = useState<Client | null>(null);
@@ -214,6 +216,7 @@ export function Clients({ clients, setClients, jobs, industries }: ClientsProps)
           industries={industries}
           jobs={jobs.filter(j => j.clientId === selectedClient.id || j.client === selectedClient.company)}
           onClose={() => setSelectedClient(null)}
+          currency={currency}
         />
       )}
     </div>
@@ -357,11 +360,13 @@ function ClientDetailModal({
   industries,
   jobs,
   onClose,
+  currency,
 }: {
   client: Client;
   industries: Industry[];
   jobs: Job[];
   onClose: () => void;
+  currency: string;
 }) {
   const industryName = industries.find((i) => i.id === client.industryId)?.name;
   return (
@@ -476,7 +481,7 @@ function ClientDetailModal({
                       <div className="flex items-center gap-6">
                         <div className="text-right">
                           <div className="text-sm font-bold text-slate-900">
-                            {job.amount ? `$${job.amount.toLocaleString()}` : '—'}
+                            {job.amount ? formatMoney(job.amount, currency) : '—'}
                           </div>
                           <div className={`text-[10px] font-bold uppercase tracking-widest px-2 py-0.5 rounded mt-1 ${statusConfig?.color}`}>
                             {statusConfig?.label}
