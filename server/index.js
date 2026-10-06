@@ -22,7 +22,7 @@ import crypto from "crypto";
 import multer from "multer";
 import { registerStripeRoutes } from "./stripe.js";
 import { registerHealthCheck } from "./healthcheck.js";
-import { sendPaidEvent, generateEventId } from "./gatewayClient.js";
+import { sendPaidEvent, sendPaymentEvent, generateEventId } from "./gatewayClient.js";
 import { logger } from "./logger.js";
 import platformRoutes from "./platform.js";
 import { queuePlatformEvent, startPlatformEventPump } from "./platformEvents.js";
@@ -946,6 +946,53 @@ const getJobActivityLogs = async jobId => {
 const getJobMessages = async jobId => {
   return await db.prepare("SELECT * FROM job_messages WHERE job_id = ? ORDER BY timestamp ASC").all(jobId);
 };
+
+const PORTAL_LINK_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+
+function createPortalCredential() {
+  return {
+    token: crypto.randomBytes(32).toString("base64url"),
+    expiresAt: new Date(Date.now() + PORTAL_LINK_TTL_MS).toISOString()
+  };
+}
+
+async function rotatePortalCredential(jobId, accountId) {
+  const credential = createPortalCredential();
+  const result = await db.prepare(
+    "UPDATE jobs SET secureToken = ?, secureTokenExpires = ?, secureTokenRevokedAt = NULL WHERE id = ? AND account_id = ?"
+  ).run(credential.token, credential.expiresAt, jobId, accountId);
+  if (!result?.changes) return null;
+  return credential;
+}
+
+async function getActivePortalJob(token) {
+  const cleanToken = String(token || "").trim();
+  if (!/^[A-Za-z0-9_-]{32,180}$/.test(cleanToken)) return null;
+  const job = await db.prepare(
+    "SELECT * FROM jobs WHERE secureToken = ? AND secureTokenRevokedAt IS NULL LIMIT 1"
+  ).get(cleanToken);
+  if (!job) return null;
+  if (!job.secureTokenExpires || new Date(job.secureTokenExpires).getTime() <= Date.now()) return null;
+  return job;
+}
+
+async function recordedPaymentTotal(jobId, accountId) {
+  const row = await db.prepare(
+    "SELECT COALESCE(SUM(amount), 0) AS total FROM payments WHERE jobId = ? AND account_id = ? AND status = 'recorded'"
+  ).get(jobId, accountId);
+  return Number(row?.total || 0);
+}
+
+async function paymentSummary(job) {
+  const paidAmount = await recordedPaymentTotal(job.id, job.account_id);
+  const totalAmount = Math.max(0, Number(job.amount || 0));
+  return {
+    paidAmount,
+    outstandingAmount: Math.max(0, totalAmount - paidAmount),
+    fullyPaid: totalAmount > 0 && paidAmount + 0.005 >= totalAmount
+  };
+}
+
 async function safeQueuePlatformEvent(event) {
   try {
     return await queuePlatformEvent(event);
