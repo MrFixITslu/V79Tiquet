@@ -1135,11 +1135,17 @@ async function triggerFfproSync(jobId, accountId) {
   const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(jobId, accountId);
   if (!job || job.status !== 'paid' || !job.ffproEventId) return;
   const settings = await db.prepare("SELECT currency FROM settings WHERE account_id = ?").get(accountId);
-  const delivered = await sendPaidEvent(job, accountId, settings);
-  if (delivered) {
+  const account = await db.prepare("SELECT hub_organization_id FROM accounts WHERE id = ?").get(accountId);
+  const organizationRef = account?.hub_organization_id || accountId;
+  const delivery = await sendPaidEvent(job, organizationRef, settings);
+  if (delivery === 'sent') {
     await db.prepare("UPDATE jobs SET ffproSyncStatus = 'sent' WHERE id = ? AND account_id = ?").run(jobId, accountId);
+  } else if (delivery === 'permanent-failure') {
+    await db.prepare("UPDATE jobs SET ffproSyncStatus = 'failed' WHERE id = ? AND account_id = ?").run(jobId, accountId);
+  } else if (delivery === 'disabled') {
+    await db.prepare("UPDATE jobs SET ffproSyncStatus = 'disabled' WHERE id = ? AND account_id = ?").run(jobId, accountId);
   }
-  // else: leave as 'pending' — the periodic sweep below will retry it.
+  // pending stays pending for the periodic retry sweep.
 }
 
 async function triggerFfproPaymentSync(paymentId, accountId) {
@@ -1153,11 +1159,20 @@ async function triggerFfproPaymentSync(paymentId, accountId) {
   if (!job) return;
 
   const settings = await db.prepare("SELECT currency FROM settings WHERE account_id = ?").get(accountId);
-  const delivered = await sendPaymentEvent(payment, job, accountId, settings);
-  if (delivered) {
+  const account = await db.prepare("SELECT hub_organization_id FROM accounts WHERE id = ?").get(accountId);
+  const organizationRef = account?.hub_organization_id || accountId;
+  const delivery = await sendPaymentEvent(payment, job, organizationRef, settings);
+  const nextStatus = delivery === 'sent'
+    ? 'sent'
+    : delivery === 'permanent-failure'
+      ? 'failed'
+      : delivery === 'disabled'
+        ? 'disabled'
+        : 'pending';
+  if (nextStatus !== 'pending') {
     await db.prepare(
-      "UPDATE payments SET ffproSyncStatus = 'sent' WHERE id = ? AND account_id = ?"
-    ).run(paymentId, accountId);
+      "UPDATE payments SET ffproSyncStatus = ? WHERE id = ? AND account_id = ?"
+    ).run(nextStatus, paymentId, accountId);
   }
 }
 
