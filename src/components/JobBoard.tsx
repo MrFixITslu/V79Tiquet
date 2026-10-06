@@ -3,6 +3,7 @@ import { Job, JobStatus, ActivityLogEntry, COLUMNS, Employee, Client, BusinessSe
 import { Plus, Search, Filter, Clock, DollarSign, ArrowRight, ArrowLeft, User, ShieldAlert, Sparkles, Folder } from "lucide-react";
 import { JobModal } from "./JobModal";
 import { JobDetailModal } from "./JobDetailModal";
+import { formatMoney } from "../currency";
 
 export function JobBoard({
   jobs,
@@ -151,6 +152,7 @@ export function JobBoard({
                     key={job.id}
                     job={job}
                     moveJob={moveJob}
+                    currency={settings.currency}
                     onClick={() => setSelectedJobId(job.id)}
                   />
                 ))}
@@ -196,11 +198,16 @@ export function JobBoard({
 const JobCard: React.FC<{
   job: Job;
   moveJob: (id: string, status: JobStatus) => void;
+  currency: string;
   onClick: () => void;
-}> = ({ job, moveJob, onClick }) => {
+}> = ({ job, moveJob, currency, onClick }) => {
   const currentIndex = COLUMNS.findIndex((c) => c.id === job.status);
   const prevStatus = currentIndex > 0 ? COLUMNS[currentIndex - 1].id : null;
-  const nextStatus = currentIndex < COLUMNS.length - 1 ? COLUMNS[currentIndex + 1].id : null;
+  const nextStatus = job.status === "completed"
+    ? null
+    : currentIndex < COLUMNS.length - 1
+      ? COLUMNS[currentIndex + 1].id
+      : null;
 
   return (
     <div
@@ -267,7 +274,7 @@ const JobCard: React.FC<{
         <div className="flex items-center gap-2.5 text-slate-500">
           {job.amount !== undefined && (
             <div className="text-xs font-extrabold text-slate-800">
-              ${job.amount.toLocaleString()}
+              {formatMoney(job.amount, currency)}
             </div>
           )}
           {job.assignedTo && (
