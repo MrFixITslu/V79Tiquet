@@ -1678,6 +1678,16 @@ app.put("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"), as
       console.log(`AUTO-ADVANCE: Job ${id} assigned to ${finalAssignedTo}. Moving to 'estimation'.`);
     }
 
+    // If work is being completed and the ledger already shows full settlement,
+    // close the lifecycle as Paid in the same transition. Unpaid completed work
+    // stays Completed until a payment is recorded from the Invoices screen.
+    if (finalStatus === "completed" && Number(existingJob.amount || 0) > 0) {
+      const paidAmount = await recordedPaymentTotal(id, req.accountId);
+      if (paidAmount + 0.005 >= Number(existingJob.amount || 0)) {
+        finalStatus = "paid";
+      }
+    }
+
     // AUTOMATION: If status changed (either manually or via auto-advance)
     if (finalStatus !== existingJob.status) {
       const result = await updateJobStage(id, finalStatus, req.accountId, req.user?.email || "User");
@@ -1740,7 +1750,7 @@ app.put("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"), as
     const jobTitle = title || existingJob?.title;
     const token = existingJob?.secureToken;
     if (statusChanged && recipientEmail && token) {
-      sendStatusUpdate(recipientEmail, jobTitle, status, token).then(r => console.log(`📧 Status update email ${r.success ? 'sent' : 'failed'} to ${recipientEmail}`)).catch(e => console.error('Email error:', e));
+      sendStatusUpdate(recipientEmail, jobTitle, finalStatus, token).then(r => console.log(`📧 Status update email ${r.success ? 'sent' : 'failed'} to ${recipientEmail}`)).catch(e => console.error('Email error:', e));
     }
 
     // --- NOTIFICATION ---
