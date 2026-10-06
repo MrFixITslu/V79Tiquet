@@ -103,6 +103,7 @@ async function runE2ETests() {
     assert(createJob.status === 201 || createJob.status === 200, `Created new job (Got: ${createJob.status})`);
     const job = createJob.body;
     assert(job && job.secureToken, `Job assigned unique secure token for client portal`);
+    const initialPortalToken = job?.secureToken;
 
     // Update job stage
     if (job && job.id) {
@@ -124,11 +125,16 @@ async function runE2ETests() {
         `Unfunded job cannot be marked paid directly (Got: ${markPaid.status})`
       );
       job.secureToken = updateJob.body.secureToken;
+      assert(job.secureToken && job.secureToken !== initialPortalToken, 'Status update rotates the client portal bearer credential');
     }
 
     // 3. Client Portal Access Flow
     console.log('\n[3/4] Testing Client Portal Interactivity...');
     if (job && job.secureToken) {
+      if (initialPortalToken && initialPortalToken !== job.secureToken) {
+        const oldPortal = await request('GET', `/api/portal/${initialPortalToken}`);
+        assert(oldPortal.status === 404, `Previous portal link is invalidated after rotation (Got: ${oldPortal.status})`);
+      }
       const portalData = await request('GET', `/api/portal/${job.secureToken}`);
       assert(portalData.status === 200 && portalData.body && portalData.body.job, `Client accessed portal using secure token (Got: ${portalData.status})`);
       assert(!portalData.body.job.secureToken, 'Client portal response does not leak its bearer credential');
