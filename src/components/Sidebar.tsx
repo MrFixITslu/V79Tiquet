@@ -106,7 +106,7 @@ export function Sidebar({
             <p className="px-3 mb-2 text-[9px] font-black uppercase tracking-[0.2em] text-slate-600">Resources</p>
             <div className="space-y-1">
               {can("files") && <NavItem icon={<FolderOpen className="w-4 h-4" />} label="Files" active={activeTab === "files"} onClick={() => handleNavClick("files")} className={itemClass(activeTab === "files")} />}
-              {can("payroll") && <NavItem icon={<CreditCard className="w-4 h-4" />} label="Payroll" active={activeTab === "payroll"} onClick={() => handleNavClick("payroll")} className={itemClass(activeTab === "payroll")} />}
+              {can("payroll") && <NavItem icon={<CreditCard className="w-4 h-4" />} label="Payroll Tracker" active={activeTab === "payroll"} onClick={() => handleNavClick("payroll")} className={itemClass(activeTab === "payroll")} />}
             </div>
           </div>
 
@@ -145,7 +145,7 @@ export function Sidebar({
           </button>
 
           <div className="pt-1 text-center text-[8px] text-slate-700 flex items-center justify-center gap-1">
-            <Sparkles className="w-2.5 h-2.5" /> V79 Digital � From Idea to Advantage
+            <Sparkles className="w-2.5 h-2.5" /> V79 Digital · From Idea to Advantage
           </div>
         </div>
       </aside>
