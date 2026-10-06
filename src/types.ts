@@ -77,6 +77,19 @@ export interface PayrollRecord {
   status: "pending" | "paid";
 }
 
+export interface PaymentRecord {
+  id: string;
+  jobId: string;
+  amount: number;
+  method: "cash" | "bank_transfer" | "card_external" | "cheque" | "other";
+  reference?: string | null;
+  note?: string | null;
+  receivedAt: string;
+  recordedAt: string;
+  recordedBy?: string | null;
+  status: "recorded" | "voided";
+}
+
 export interface Client {
   id: string;
   name: string;
