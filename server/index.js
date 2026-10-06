@@ -735,12 +735,16 @@ app.post("/api/auth/login/2fa", (req, res) => {
         error: "2FA is not properly set up for this user"
       });
     }
+    const twoFactorSecret = decryptSensitive(user.twoFactorSecret);
     const verified = speakeasy.totp.verify({
-      secret: user.twoFactorSecret,
+      secret: twoFactorSecret,
       encoding: 'base32',
       token: code,
       window: 1
     });
+    if (verified && !String(user.twoFactorSecret).startsWith("enc:v1:")) {
+      await db.prepare("UPDATE users SET twoFactorSecret = ? WHERE id = ?").run(encryptSensitive(twoFactorSecret), user.id);
+    }
     if (!verified) return res.status(400).json({
       error: "Invalid 2FA code"
     });
@@ -875,7 +879,7 @@ app.post("/api/auth/2fa/generate", authenticateToken, async (req, res) => {
       name: `V79 Tiquet (${req.user.email})`
     });
     const dataUrl = await qrcode.toDataURL(secret.otpauth_url);
-    await db.prepare("UPDATE users SET twoFactorSecret = ? WHERE id = ?").run(secret.base32, req.user.id);
+    await db.prepare("UPDATE users SET twoFactorSecret = ? WHERE id = ?").run(encryptSensitive(secret.base32), req.user.id);
     res.json({
       secret: secret.base32,
       qrCode: dataUrl
@@ -895,14 +899,16 @@ app.post("/api/auth/2fa/verify", authenticateToken, async (req, res) => {
     if (!user || !user.twoFactorSecret) return res.status(400).json({
       error: "No 2FA secret found. Generate one first."
     });
+    const twoFactorSecret = decryptSensitive(user.twoFactorSecret);
     const verified = speakeasy.totp.verify({
-      secret: user.twoFactorSecret,
+      secret: twoFactorSecret,
       encoding: 'base32',
       token: code,
       window: 1
     });
     if (verified) {
-      await db.prepare("UPDATE users SET twoFactorEnabled = 1 WHERE id = ?").run(req.user.id);
+      await db.prepare("UPDATE users SET twoFactorEnabled = 1, twoFactorSecret = ? WHERE id = ?")
+        .run(encryptSensitive(twoFactorSecret), req.user.id);
       res.json({
         success: true
       });
