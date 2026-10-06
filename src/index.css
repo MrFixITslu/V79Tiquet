@@ -49,8 +49,8 @@
 .v79-tiquet-app .text-slate-900,
 .v79-tiquet-app .text-slate-800 { color: #f8fafc !important; }
 .v79-tiquet-app .text-slate-700 { color: #d5deea !important; }
-.v79-tiquet-app .text-slate-600 { color: #94a3b8 !important; }
-.v79-tiquet-app .text-slate-500 { color: #718096 !important; }
+.v79-tiquet-app .text-slate-600 { color: #a7b4c5 !important; }
+.v79-tiquet-app .text-slate-500 { color: #8fa2b8 !important; }
 .v79-tiquet-app input,
 .v79-tiquet-app select,
 .v79-tiquet-app textarea {
@@ -72,3 +72,9 @@
 .v79-tiquet-app ::-webkit-scrollbar-track { background: #06101d; }
 .v79-tiquet-app ::-webkit-scrollbar-thumb { background: #1d3d59; border-radius: 999px; border: 2px solid #06101d; }
 .v79-tiquet-app ::-webkit-scrollbar-thumb:hover { background: #2c5677; }
+
+@media (min-width: 1024px) {
+  .v79-tiquet-app .text-\[8px\] { font-size: 0.625rem !important; }
+  .v79-tiquet-app .text-\[9px\] { font-size: 0.6875rem !important; }
+  .v79-tiquet-app .text-\[10px\] { font-size: 0.75rem !important; }
+}
