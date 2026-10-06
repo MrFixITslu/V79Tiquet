@@ -367,17 +367,18 @@ export default function App() {
         )}
 
         <div className="flex-1 overflow-auto p-4 sm:p-5 xl:p-6 bg-[#07111f]">
-          {activeTab === "dashboard" && <Dashboard jobs={jobs} />}
+          {activeTab === "dashboard" && <Dashboard jobs={jobs} currency={settings.currency} />}
           {activeTab === "jobs" && (
             <JobBoard jobs={jobs} setJobs={setJobs} employees={employees} clients={clients} settings={settings} />
           )}
-          {activeTab === "clients" && <Clients clients={clients} setClients={setClients} jobs={jobs} industries={industries} />}
+          {activeTab === "clients" && <Clients clients={clients} setClients={setClients} jobs={jobs} industries={industries} currency={settings.currency} />}
           {activeTab === "payroll" && (
             <Payroll
               employees={employees}
               setEmployees={setEmployees}
               payrollRecords={payrollRecords}
               setPayrollRecords={setPayrollRecords}
+              currency={settings.currency}
             />
           )}
           {activeTab === "users" && <UserManagement users={users} setUsers={setUsers} />}
