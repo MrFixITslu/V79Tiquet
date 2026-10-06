@@ -102,8 +102,8 @@ async function runSecurityTests() {
       `X-Content-Type-Options: nosniff present (Got: ${headersCheck.headers['x-content-type-options']})`
     );
     assert(
-      headersCheck.headers['x-frame-options'] !== undefined || headersCheck.headers['x-content-type-options'] !== undefined,
-      `Helmet security headers present on API responses`
+      String(headersCheck.headers['x-frame-options'] || '').toUpperCase() === 'SAMEORIGIN',
+      `X-Frame-Options blocks cross-origin framing (Got: ${headersCheck.headers['x-frame-options']})`
     );
 
     // 5. Public Client Portal Link Protection
