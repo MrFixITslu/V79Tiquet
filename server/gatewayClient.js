@@ -33,18 +33,19 @@ async function attemptDelivery(payload) {
     return 'permanent-failure';
   }
 
-  return false;
+  return 'pending';
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function deliverPayload(payload, label) {
-  if (!isConfigured()) return true;
+  if (!isConfigured()) return 'disabled';
 
   for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
     try {
       const result = await attemptDelivery(payload);
-      if (result === true || result === 'permanent-failure') return true;
+      if (result === true) return 'sent';
+      if (result === 'permanent-failure') return 'permanent-failure';
     } catch (err) {
       logger.warn(`[FFPRO Gateway] ${label} attempt ${attempt + 1} failed: ${err.message}`);
     }
