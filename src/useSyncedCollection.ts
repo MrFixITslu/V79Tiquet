@@ -140,6 +140,12 @@ async function syncDiff<T extends Row>(
   }
 
   if (didFail) {
-    console.warn(`Some changes to ${endpoint} failed to sync with the server.`);
+    console.warn(`Some changes to ${endpoint} failed to sync with the server. Reloading canonical state.`);
+    try {
+      const canonical = await api.get<T[]>(endpoint);
+      onReconciled(canonical);
+    } catch (reloadError) {
+      console.error(`Failed to reload canonical state for ${endpoint}`, reloadError);
+    }
   }
 }
