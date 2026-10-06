@@ -1026,6 +1026,17 @@ const createNotification = async ({
 const updateJobStage = async (id, newStatus, accountId, userName = "System") => {
   const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(id, accountId);
   if (!job) return null;
+
+  if (newStatus === "paid" && job.status !== "paid" && Number(job.amount || 0) > 0) {
+    const paidAmount = await recordedPaymentTotal(id, accountId);
+    if (paidAmount + 0.005 < Number(job.amount || 0)) {
+      const paymentError = new Error("Record the customer payment before marking this job as paid.");
+      paymentError.statusCode = 409;
+      paymentError.code = "PAYMENT_REQUIRED";
+      throw paymentError;
+    }
+  }
+
   let timeLogs = job.timeLogs ? JSON.parse(job.timeLogs) : [];
   const now = new Date().toISOString();
 
@@ -1064,23 +1075,9 @@ const updateJobStage = async (id, newStatus, accountId, userName = "System") => 
         WHERE id = ? AND account_id = ?
     `).run(newStatus, JSON.stringify(timeLogs), timerStartedAt, assignedTo, id, accountId);
 
-  // 4b. FFPRO2 Gateway: a job just became genuinely PAID (not completed,
-  // not invoiced — this only fires on the actual paid transition, and
-  // only once per job since the guard below requires the PREVIOUS status
-  // to not already be 'paid'). Mark it 'pending' synchronously, in the
-  // same write pass, before any network call is attempted — so this
-  // record survives even if the process crashes immediately after. The
-  // actual HTTP delivery happens afterward, off the request path, and can
-  // never fail this function or the payment confirmation that called it.
-  let ffproCorrelationId = null;
-  if (newStatus === 'paid' && job.status !== 'paid') {
-    const eventId = generateEventId();
-    ffproCorrelationId = eventId;
-    await db.prepare("UPDATE jobs SET ffproSyncStatus = 'pending', ffproEventId = ? WHERE id = ? AND account_id = ?").run(eventId, id, accountId);
-    triggerFfproSync(id, accountId).catch(err => {
-      logger.error(`[FFPRO Gateway] Unexpected error syncing job ${id}: ${err.message}`);
-    });
-  }
+  // FFPRO cash sync is payment-ledger driven. A job status transition must
+  // never manufacture revenue on its own.
+  const ffproCorrelationId = null;
 
   await safeQueuePlatformEvent({
     accountId,
@@ -1704,8 +1701,10 @@ app.put("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"), as
       stageAssignments: updatedJob.stageAssignments ? JSON.parse(updatedJob.stageAssignments) : {}
     });
   } catch (error) {
-    res.status(500).json({
-      error: isProduction ? "Internal Server Error" : error.message
+    const statusCode = Number(error?.statusCode || 500);
+    res.status(statusCode).json({
+      error: statusCode === 500 && isProduction ? "Internal Server Error" : error.message,
+      ...(error?.code ? { code: error.code } : {})
     });
   }
 });
