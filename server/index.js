@@ -948,6 +948,8 @@ const getJobMessages = async jobId => {
 };
 
 const PORTAL_LINK_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+const JOB_STATUSES = new Set(["request", "estimation", "in-progress", "review", "invoiced", "completed", "paid"]);
+
 
 function createPortalCredential() {
   return {
@@ -1269,6 +1271,14 @@ app.post("/api/jobs", authenticateToken, requireAnyPagePermission("jobs", "new-r
   const portalCredential = createPortalCredential();
   const secureToken = portalCredential.token;
   try {
+    const requestedStatus = String(status || "request").trim();
+    if (!JOB_STATUSES.has(requestedStatus)) return badRequest(res, "Invalid job status");
+    if (requestedStatus === "paid") {
+      return res.status(409).json({
+        error: "A new job cannot start as paid. Record a payment after invoicing.",
+        code: "PAYMENT_REQUIRED"
+      });
+    }
     if (clientId) {
       const linkedClient = await db.prepare("SELECT id FROM clients WHERE id = ? AND account_id = ?").get(clientId, req.accountId);
       if (!linkedClient) return badRequest(res, "Unknown client");
@@ -1282,7 +1292,7 @@ app.post("/api/jobs", authenticateToken, requireAnyPagePermission("jobs", "new-r
       title: title || 'Untitled Job',
       client: client || 'Unknown Client',
       description: description || null,
-      status: status || 'request',
+      status: requestedStatus,
       createdAt: createdAt || new Date().toISOString(),
       dueDate: dueDate || null,
       amount: amount !== undefined ? Number(amount) || 0 : 0,
@@ -1293,7 +1303,7 @@ app.post("/api/jobs", authenticateToken, requireAnyPagePermission("jobs", "new-r
       clientId: clientId || null,
       secureToken,
       secureTokenExpires: portalCredential.expiresAt,
-      depositPaid: depositPaid ? 1 : 0,
+      depositPaid: 0,
       account_id: req.accountId,
       lineItems: lineItems ? JSON.stringify(lineItems) : null,
       deliverables: deliverables ? JSON.stringify(deliverables) : null,
@@ -1662,6 +1672,9 @@ app.put("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"), as
     if (!existingJob) return res.status(404).json({
       error: "Job not found"
     });
+    if (status !== undefined && !JOB_STATUSES.has(String(status))) {
+      return badRequest(res, "Invalid job status");
+    }
     if (clientId !== undefined && clientId !== null) {
       const linkedClient = await db.prepare("SELECT id FROM clients WHERE id = ? AND account_id = ?").get(clientId, req.accountId);
       if (!linkedClient) return badRequest(res, "Unknown client");
@@ -1720,7 +1733,7 @@ app.put("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"), as
       assignedTo: finalAssignedTo !== undefined ? finalAssignedTo : existingJob.assignedTo || null,
       clientEmail: clientEmail !== undefined ? clientEmail : existingJob.clientEmail || null,
       clientId: clientId !== undefined ? clientId : existingJob.clientId || null,
-      depositPaid: depositPaid !== undefined ? depositPaid ? 1 : 0 : existingJob.depositPaid ? 1 : 0,
+      depositPaid: existingJob.depositPaid ? 1 : 0,
       quoteApproved: quoteApproved !== undefined ? quoteApproved ? 1 : 0 : existingJob.quoteApproved ? 1 : 0,
       account_id: req.accountId,
       lineItems: lineItems !== undefined ? lineItems ? JSON.stringify(lineItems) : null : existingJob.lineItems || null,
