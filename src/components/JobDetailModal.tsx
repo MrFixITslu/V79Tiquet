@@ -1,5 +1,6 @@
 import React, { useState } from "react";
 import { Job, Employee, JobNote, Client, BusinessSettings } from "../types";
+import { formatMoney } from "../currency";
 import {
   X,
   FileText,
@@ -176,7 +177,7 @@ export function JobDetailModal({
                   onClick={() => setEditingAmount(true)}
                   className="font-semibold text-slate-900 flex items-center gap-1.5 group w-full text-left"
                 >
-                  {job.amount ? `${settings.currency === "XCD" ? "EC$" : "$"}${job.amount.toLocaleString()}` : "TBD"}
+                  {job.amount ? formatMoney(job.amount, settings.currency) : "TBD"}
                   <Pencil className="w-3 h-3 text-slate-300 group-hover:text-slate-500 transition-colors" />
                 </button>
               )}
@@ -472,7 +473,7 @@ export function JobDetailModal({
                     <tr>
                       <td className="py-4 text-sm text-slate-700">{job.title} - Full Scope</td>
                       <td className="py-4 text-right text-sm font-medium text-slate-900">
-                        {settings.currency === "XCD" ? "EC$" : "$"}{job.amount?.toLocaleString() || "0"}
+                        {formatMoney(job.amount || 0, settings.currency)}
                       </td>
                     </tr>
                   )}
@@ -481,7 +482,7 @@ export function JobDetailModal({
                   <tr className="border-t-2 border-slate-900">
                     <td className="py-6 text-right font-bold text-slate-900 uppercase tracking-widest">Total Value</td>
                     <td className="py-6 text-right text-xl font-bold text-indigo-600">
-                      {settings.currency === "XCD" ? "EC$" : "$"}{job.amount?.toLocaleString() || "0"}
+                      {formatMoney(job.amount || 0, settings.currency)}
                     </td>
                   </tr>
                 </tfoot>
