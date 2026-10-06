@@ -16,7 +16,7 @@ const SMTP_HOST    = process.env.SMTP_HOST;
 const SMTP_PORT    = parseInt(process.env.SMTP_PORT || '587', 10);
 const SMTP_USER    = process.env.SMTP_USER;
 const SMTP_PASS    = process.env.SMTP_PASS;
-const SMTP_FROM    = process.env.SMTP_FROM || '"V79 Tick-It" <noreply@v79tickit.com>';
+const SMTP_FROM    = process.env.SMTP_FROM || '"V79 TIQUET" <noreply@v79tickit.com>';
 const APP_BASE_URL = (process.env.APP_BASE_URL || 'http://localhost:3000').replace(/\/$/, '');
 
 const isSmtpConfigured = !!(SMTP_HOST && SMTP_USER && SMTP_PASS);
@@ -83,7 +83,7 @@ export async function sendPortalLink(clientEmail, jobTitle, secureToken) {
     <tr><td align="center">
       <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)">
         <tr><td style="background:#1e293b;padding:28px 36px">
-          <h1 style="margin:0;color:#ffffff;font-size:20px;font-weight:600">V79 Tick-It</h1>
+          <h1 style="margin:0;color:#ffffff;font-size:20px;font-weight:600">V79 TIQUET</h1>
         </td></tr>
         <tr><td style="padding:36px">
           <h2 style="margin:0 0 16px;color:#1e293b;font-size:22px">Your Job Portal is Ready</h2>
@@ -94,12 +94,16 @@ export async function sendPortalLink(clientEmail, jobTitle, secureToken) {
           <a href="${portalUrl}" style="display:inline-block;background:#3b82f6;color:#ffffff;padding:14px 28px;border-radius:6px;text-decoration:none;font-weight:600;font-size:15px">
             View Job Portal →
           </a>
-          <p style="margin:24px 0 0;color:#94a3b8;font-size:13px">
-            Or copy this link: <span style="color:#3b82f6">${portalUrl}</span>
+          <p style="margin:24px 0 0;color:#64748b;font-size:13px;line-height:1.6">
+            This private link expires after 14 days and is replaced whenever a new portal link is issued.
+            If it expires, contact the service team for a fresh link.
+          </p>
+          <p style="margin:12px 0 0;color:#94a3b8;font-size:12px;word-break:break-all">
+            ${portalUrl}
           </p>
         </td></tr>
         <tr><td style="background:#f1f5f9;padding:20px 36px;color:#94a3b8;font-size:12px">
-          This is an automated message from V79 Tick-It. Please do not reply to this email.
+          This is an automated message from V79 TIQUET. Please do not reply to this email.
         </td></tr>
       </table>
     </td></tr>
@@ -129,7 +133,7 @@ export async function sendPasswordReset(userEmail, resetToken) {
     <tr><td align="center">
       <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)">
         <tr><td style="background:#1e293b;padding:28px 36px">
-          <h1 style="margin:0;color:#ffffff;font-size:20px;font-weight:600">V79 Tick-It</h1>
+          <h1 style="margin:0;color:#ffffff;font-size:20px;font-weight:600">V79 TIQUET</h1>
         </td></tr>
         <tr><td style="padding:36px">
           <h2 style="margin:0 0 16px;color:#1e293b;font-size:22px">Reset your password</h2>
@@ -145,7 +149,7 @@ export async function sendPasswordReset(userEmail, resetToken) {
           </p>
         </td></tr>
         <tr><td style="background:#f1f5f9;padding:20px 36px;color:#94a3b8;font-size:12px">
-          This is an automated message from V79 Tick-It. Please do not reply to this email.
+          This is an automated message from V79 TIQUET. Please do not reply to this email.
         </td></tr>
       </table>
     </td></tr>
@@ -194,7 +198,7 @@ export async function sendStatusUpdate(clientEmail, jobTitle, newStatus, secureT
     <tr><td align="center">
       <table width="600" cellpadding="0" cellspacing="0" style="background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)">
         <tr><td style="background:#1e293b;padding:28px 36px">
-          <h1 style="margin:0;color:#ffffff;font-size:20px;font-weight:600">V79 Tick-It</h1>
+          <h1 style="margin:0;color:#ffffff;font-size:20px;font-weight:600">V79 TIQUET</h1>
         </td></tr>
         <tr><td style="padding:36px">
           <h2 style="margin:0 0 16px;color:#1e293b;font-size:22px">Job Status Update</h2>
@@ -211,7 +215,7 @@ export async function sendStatusUpdate(clientEmail, jobTitle, newStatus, secureT
           </p>
         </td></tr>
         <tr><td style="background:#f1f5f9;padding:20px 36px;color:#94a3b8;font-size:12px">
-          This is an automated message from V79 Tick-It. Please do not reply to this email.
+          This is an automated message from V79 TIQUET. Please do not reply to this email.
         </td></tr>
       </table>
     </td></tr>
