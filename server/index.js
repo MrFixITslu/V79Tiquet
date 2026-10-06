@@ -80,6 +80,31 @@ function loadOrCreatePersistedSecret(envValue, filename, label) {
 const JWT_SECRET = isProduction ? loadOrCreatePersistedSecret(process.env.JWT_SECRET, ".jwt_secret", "JWT_SECRET") : process.env.JWT_SECRET || 'dev_jwt_secret_v79_tickit';
 const SA_JWT_SECRET = isProduction ? loadOrCreatePersistedSecret(process.env.SUPER_ADMIN_JWT_SECRET, ".sa_jwt_secret", "SUPER_ADMIN_JWT_SECRET") : process.env.SUPER_ADMIN_JWT_SECRET || 'dev_sa_jwt_secret_v79_tickit';
 
+const DATA_ENCRYPTION_SECRET = process.env.TIQUET_DATA_ENCRYPTION_KEY || JWT_SECRET;
+const DATA_ENCRYPTION_KEY = crypto.createHash("sha256").update(DATA_ENCRYPTION_SECRET).digest();
+
+function encryptSensitive(value) {
+  if (!value) return value;
+  if (String(value).startsWith("enc:v1:")) return value;
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", DATA_ENCRYPTION_KEY, iv);
+  const ciphertext = Buffer.concat([cipher.update(String(value), "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `enc:v1:${iv.toString("base64url")}:${tag.toString("base64url")}:${ciphertext.toString("base64url")}`;
+}
+
+function decryptSensitive(value) {
+  if (!value || !String(value).startsWith("enc:v1:")) return value;
+  const parts = String(value).split(":");
+  if (parts.length !== 5) throw new Error("Invalid encrypted value");
+  const iv = Buffer.from(parts[2], "base64url");
+  const tag = Buffer.from(parts[3], "base64url");
+  const ciphertext = Buffer.from(parts[4], "base64url");
+  const decipher = crypto.createDecipheriv("aes-256-gcm", DATA_ENCRYPTION_KEY, iv);
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
+}
+
 // ── Real-time chat: WebSocket job-room registry ───────────────────────────
 // Maps jobId -> Set of live ws connections subscribed to that job's chat.
 // Populated in the wss "connection" handler set up near the bottom of this
@@ -110,8 +135,23 @@ function broadcastToJob(jobId, payload) {
 // ── Security Middleware ───────────────────────────────────────────────────
 
 app.use(helmet({
-  frameguard: false,
-  contentSecurityPolicy: false
+  frameguard: { action: "sameorigin" },
+  referrerPolicy: { policy: "strict-origin-when-cross-origin" },
+  contentSecurityPolicy: isProduction ? {
+    directives: {
+      defaultSrc: ["'self'"],
+      baseUri: ["'self'"],
+      objectSrc: ["'none'"],
+      frameAncestors: ["'self'"],
+      formAction: ["'self'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+      fontSrc: ["'self'", "data:", "https://fonts.gstatic.com"],
+      imgSrc: ["'self'", "data:", "blob:", "https:"],
+      connectSrc: ["'self'", "https:", "wss:", "ws:"],
+      upgradeInsecureRequests: []
+    }
+  } : false
 }));
 app.use(compression());
 
@@ -423,7 +463,22 @@ const uploadLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false
 });
+const portalLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 120,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many client portal requests. Please try again shortly." }
+});
+const portalActionLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many client portal actions. Please try again shortly." }
+});
 app.use("/api/auth", authLimiter);
+app.use("/api/portal", portalLimiter);
 app.use("/api/", apiLimiter);
 
 const HUB_SESSION_TTL_MS = 30 * 60 * 1000;
