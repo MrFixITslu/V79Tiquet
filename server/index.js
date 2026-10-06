@@ -1895,9 +1895,23 @@ app.get("/api/payments/summary", authenticateToken, requireAnyPagePermission("da
       FROM payments
       WHERE account_id = ?
     `).get(req.accountId);
+
+    const outstanding = await db.prepare(`
+      SELECT COALESCE(SUM(GREATEST(COALESCE(j.amount, 0) - COALESCE(p.paid, 0), 0)), 0) AS total
+      FROM jobs j
+      LEFT JOIN (
+        SELECT jobId, SUM(amount) AS paid
+        FROM payments
+        WHERE account_id = ? AND status = 'recorded'
+        GROUP BY jobId
+      ) p ON p.jobId = j.id
+      WHERE j.account_id = ? AND j.status IN ('invoiced', 'completed')
+    `).get(req.accountId, req.accountId);
+
     res.json({
       received: Number(totals?.received || 0),
-      count: Number(totals?.count || 0)
+      count: Number(totals?.count || 0),
+      outstandingInvoices: Number(outstanding?.total || 0)
     });
   } catch (error) {
     res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
