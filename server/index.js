@@ -1774,12 +1774,20 @@ app.put("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"), as
         });
       }
     }
-    const recipientEmail = clientEmail || existingJob?.clientEmail;
+    const updatedJob = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(id, req.accountId);
+
+        const recipientEmail = clientEmail || existingJob?.clientEmail;
     const jobTitle = title || existingJob?.title;
     if (statusChanged && recipientEmail) {
-      const credential = await rotatePortalCredential(id, req.accountId);
-      if (credential) {
-        sendStatusUpdate(recipientEmail, jobTitle, finalStatus, credential.token)
+      let portalToken = updatedJob?.secureToken || existingJob?.secureToken;
+      const portalExpires = updatedJob?.secureTokenExpires || existingJob?.secureTokenExpires;
+      const portalRevoked = updatedJob?.secureTokenRevokedAt || existingJob?.secureTokenRevokedAt;
+      if (!portalToken || portalRevoked || !portalExpires || new Date(portalExpires).getTime() <= Date.now()) {
+        const credential = await rotatePortalCredential(id, req.accountId);
+        portalToken = credential?.token || null;
+      }
+      if (portalToken) {
+        sendStatusUpdate(recipientEmail, jobTitle, finalStatus, portalToken)
           .then(r => console.log(`📧 Status update email ${r.success ? 'sent' : 'failed'} to ${recipientEmail}`))
           .catch(e => console.error('Email error:', e));
       }
@@ -1788,7 +1796,6 @@ app.put("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"), as
     // --- NOTIFICATION ---
     // (Handled by updateJobStage for status/assignment changes)
 
-    const updatedJob = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(id, req.accountId);
     res.json({
       ...updatedJob,
       tags: await getJobTags(id),
@@ -1860,6 +1867,9 @@ app.post("/api/jobs/:id/send-portal", authenticateToken, requireAnyPagePermissio
         previewUrl: result.previewUrl
       });
     } else {
+      await db.prepare(
+        "UPDATE jobs SET secureToken = ?, secureTokenExpires = ?, secureTokenRevokedAt = ? WHERE id = ? AND account_id = ?"
+      ).run(job.secureToken, job.secureTokenExpires || null, job.secureTokenRevokedAt || null, job.id, req.accountId);
       res.status(500).json({
         error: result.error || "Failed to send email"
       });
@@ -1900,6 +1910,9 @@ app.post("/api/jobs/:id/send-quote", authenticateToken, requireAnyPagePermission
         previewUrl: result.previewUrl
       });
     } else {
+      await db.prepare(
+        "UPDATE jobs SET secureToken = ?, secureTokenExpires = ?, secureTokenRevokedAt = ? WHERE id = ? AND account_id = ?"
+      ).run(job.secureToken, job.secureTokenExpires || null, job.secureTokenRevokedAt || null, job.id, req.accountId);
       res.status(500).json({
         error: result.error || "Failed to send quote email"
       });
@@ -1908,6 +1921,23 @@ app.post("/api/jobs/:id/send-quote", authenticateToken, requireAnyPagePermission
     res.status(500).json({
       error: isProduction ? "Internal Server Error" : error.message
     });
+  }
+});
+
+app.post("/api/jobs/:id/revoke-portal", authenticateToken, requireAnyPagePermission("jobs", "invoices"), async (req, res) => {
+  const { id } = req.params;
+  try {
+    const now = new Date().toISOString();
+    const result = await db.prepare(
+      "UPDATE jobs SET secureTokenRevokedAt = ?, secureTokenExpires = ? WHERE id = ? AND account_id = ?"
+    ).run(now, now, id, req.accountId);
+    if (!result.changes) return res.status(404).json({ error: "Job not found" });
+    await db.prepare(
+      "INSERT INTO activity_logs (id, job_id, action, timestamp, user, account_id) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run(uuidv4(), id, "Client portal access revoked", now, req.user?.email || "Team", req.accountId);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
   }
 });
 
