@@ -59,7 +59,10 @@ CREATE TABLE IF NOT EXISTS jobs (
     invoiceNotes TEXT,
     assignedTo TEXT,
     clientEmail TEXT,
+    clientId TEXT,
     secureToken TEXT,
+    secureTokenExpires TEXT,
+    secureTokenRevokedAt TEXT,
     depositPaid INTEGER DEFAULT 0,
     timerStartedAt TEXT,
     stageAssignments TEXT,
@@ -75,6 +78,14 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS idx_jobs_account ON jobs(account_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_ffpro_sync_status ON jobs(ffproSyncStatus) WHERE ffproSyncStatus = 'pending';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_intake_event ON jobs(intakeEventId) WHERE intakeEventId IS NOT NULL;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS clientId TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS secureTokenExpires TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS secureTokenRevokedAt TEXT;
+CREATE INDEX IF NOT EXISTS idx_jobs_client_account ON jobs(account_id, clientId);
+CREATE INDEX IF NOT EXISTS idx_jobs_secure_token ON jobs(secureToken) WHERE secureToken IS NOT NULL;
+UPDATE jobs
+SET secureTokenExpires = (NOW() + INTERVAL '30 days')::text
+WHERE secureToken IS NOT NULL AND secureTokenExpires IS NULL;
 
 -- 5. Job Tags
 CREATE TABLE IF NOT EXISTS job_tags (
@@ -132,6 +143,26 @@ CREATE TABLE IF NOT EXISTS payroll_records (
     account_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_payroll_account ON payroll_records(account_id);
+
+-- 9b. Customer payment ledger
+CREATE TABLE IF NOT EXISTS payments (
+    id TEXT PRIMARY KEY,
+    jobId TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    amount DOUBLE PRECISION NOT NULL CHECK (amount > 0),
+    method TEXT NOT NULL,
+    reference TEXT,
+    note TEXT,
+    receivedAt TEXT NOT NULL,
+    recordedAt TEXT NOT NULL,
+    recordedBy TEXT,
+    status TEXT NOT NULL DEFAULT 'recorded',
+    voidedAt TEXT,
+    voidedBy TEXT,
+    account_id TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_payments_account ON payments(account_id);
+CREATE INDEX IF NOT EXISTS idx_payments_job_account ON payments(jobId, account_id);
+CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(account_id, status);
 
 -- 10. Files
 CREATE TABLE IF NOT EXISTS files (
