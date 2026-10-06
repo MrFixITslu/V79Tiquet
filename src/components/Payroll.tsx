@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { formatMoney } from "../currency";
 import { Employee, PayrollRecord } from "../types";
 import {
   Users,
@@ -18,11 +19,13 @@ export function Payroll({
   setEmployees,
   payrollRecords,
   setPayrollRecords,
+  currency,
 }: {
   employees: Employee[];
   setEmployees: React.Dispatch<React.SetStateAction<Employee[]>>;
   payrollRecords: PayrollRecord[];
   setPayrollRecords: React.Dispatch<React.SetStateAction<PayrollRecord[]>>;
+  currency: string;
 }) {
   const [activeSubTab, setActiveSubTab] = useState<"employees" | "history">(
     "employees"
@@ -53,7 +56,7 @@ export function Payroll({
     
     setPayrollRecords([...newRecords, ...payrollRecords]);
     setActiveSubTab("history");
-    alert(`Generated ${newRecords.length} payroll records for active employees.`);
+    alert(`Generated ${newRecords.length} payroll tracking records. No funds were transferred.`);
   };
 
   const markAsPaid = (id: string) => {
@@ -91,11 +94,11 @@ export function Payroll({
 
   return (
     <div className="space-y-8">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-bold text-slate-900">Payroll Management</h2>
+          <h2 className="text-2xl font-bold text-slate-900">Payroll Tracker</h2>
           <p className="text-slate-500 text-sm mt-1">
-            Manage employee compensation and payment history.
+            Track employee compensation and internal payment status. Tiquet does not transfer payroll funds or calculate statutory deductions.
           </p>
         </div>
         <div className="flex gap-3">
@@ -104,7 +107,7 @@ export function Payroll({
             className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors shadow-sm"
           >
             <CreditCard className="w-4 h-4" />
-            Process Monthly Payroll
+            Generate Payroll Records
           </button>
           <button
             onClick={() => setIsAddEmployeeModalOpen(true)}
@@ -138,7 +141,7 @@ export function Payroll({
               : "text-slate-500 hover:text-slate-700"
           }`}
         >
-          Payment History
+          Payroll Records
           {activeSubTab === "history" && (
             <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-600" />
           )}
@@ -192,8 +195,8 @@ export function Payroll({
                   </td>
                   <td className="px-6 py-4 text-sm font-semibold text-slate-900">
                     {employee.workerType === "hourly" 
-                      ? `$${employee.hourlyRate}/hr (${employee.hoursWorked}h)`
-                      : `$${employee.salary.toLocaleString()}${employee.workerType === "bi-weekly" ? "/bi-wk" : "/mo"}`}
+                      ? `${formatMoney(employee.hourlyRate || 0, currency)}/hr (${employee.hoursWorked || 0}h)`
+                      : `${formatMoney(employee.salary || 0, currency)}${employee.workerType === "bi-weekly" ? "/bi-wk" : "/mo"}`}
                   </td>
                   <td className="px-6 py-4 text-sm text-slate-600">
                     {employee.paymentMethod}
@@ -271,7 +274,7 @@ export function Payroll({
                     {record.employeeName}
                   </td>
                   <td className="px-6 py-4 text-sm font-semibold text-slate-900">
-                    ${record.amount.toLocaleString()}
+                    {formatMoney(record.amount, currency)}
                   </td>
                   <td className="px-6 py-4 text-sm text-slate-600">
                     {new Date(record.date).toLocaleDateString()}
@@ -297,7 +300,7 @@ export function Payroll({
                         onClick={() => markAsPaid(record.id)}
                         className="text-xs font-bold text-indigo-600 hover:text-indigo-700 uppercase tracking-widest"
                       >
-                        Mark as Paid
+                        Record as Paid
                       </button>
                     )}
                   </td>
