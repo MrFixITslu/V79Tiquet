@@ -125,16 +125,12 @@ async function runE2ETests() {
         `Unfunded job cannot be marked paid directly (Got: ${markPaid.status})`
       );
       job.secureToken = updateJob.body.secureToken;
-      assert(job.secureToken && job.secureToken !== initialPortalToken, 'Status update rotates the client portal bearer credential');
+      assert(job.secureToken === initialPortalToken, 'Normal status updates preserve the active client portal credential');
     }
 
     // 3. Client Portal Access Flow
     console.log('\n[3/4] Testing Client Portal Interactivity...');
     if (job && job.secureToken) {
-      if (initialPortalToken && initialPortalToken !== job.secureToken) {
-        const oldPortal = await request('GET', `/api/portal/${initialPortalToken}`);
-        assert(oldPortal.status === 404, `Previous portal link is invalidated after rotation (Got: ${oldPortal.status})`);
-      }
       const portalData = await request('GET', `/api/portal/${job.secureToken}`);
       assert(portalData.status === 200 && portalData.body && portalData.body.job, `Client accessed portal using secure token (Got: ${portalData.status})`);
       assert(!portalData.body.job.secureToken, 'Client portal response does not leak its bearer credential');
@@ -152,6 +148,21 @@ async function runE2ETests() {
         content: 'Excited for this project!'
       });
       assert(clientMsg.status === 201, `Client sent message via portal chat (Got: ${clientMsg.status})`);
+
+      const revokedToken = job.secureToken;
+      const revokePortal = await request('POST', `/api/jobs/${job.id}/revoke-portal`, null, authHeader);
+      assert(revokePortal.status === 200, `Staff can revoke a client portal link (Got: ${revokePortal.status})`);
+      const revokedPortal = await request('GET', `/api/portal/${revokedToken}`);
+      assert(revokedPortal.status === 404, `Revoked portal link is rejected (Got: ${revokedPortal.status})`);
+
+      const reissuePortal = await request('POST', `/api/jobs/${job.id}/send-portal`, null, authHeader);
+      assert(reissuePortal.status === 200, `Staff can issue a replacement portal link (Got: ${reissuePortal.status})`);
+      const refreshedJobs = await request('GET', '/api/jobs', null, authHeader);
+      const refreshedJob = Array.isArray(refreshedJobs.body) ? refreshedJobs.body.find((row) => row.id === job.id) : null;
+      assert(refreshedJob && refreshedJob.secureToken && refreshedJob.secureToken !== revokedToken, 'Replacement portal link rotates the bearer credential');
+      job.secureToken = refreshedJob?.secureToken || job.secureToken;
+      const replacementPortal = await request('GET', `/api/portal/${job.secureToken}`);
+      assert(replacementPortal.status === 200, `Replacement portal link is active (Got: ${replacementPortal.status})`);
 
       const partial = await request('POST', '/api/payments', {
         jobId: job.id,
