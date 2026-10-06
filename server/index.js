@@ -1781,7 +1781,9 @@ app.post("/api/jobs/:id/send-portal", authenticateToken, requireAnyPagePermissio
     if (!job.clientEmail) return res.status(400).json({
       error: "Client does not have an email address"
     });
-    const result = await sendPortalLink(job.clientEmail, job.title, job.secureToken);
+    const credential = await rotatePortalCredential(job.id, req.accountId);
+    if (!credential) return res.status(409).json({ error: "Could not issue a client portal link." });
+    const result = await sendPortalLink(job.clientEmail, job.title, credential.token);
     if (result.success) {
       res.json({
         success: true,
@@ -1818,8 +1820,9 @@ app.post("/api/jobs/:id/send-quote", authenticateToken, requireAnyPagePermission
       await db.prepare("UPDATE jobs SET status = 'estimation' WHERE id = ? AND account_id = ?").run(id, req.accountId);
     }
 
-    // We can reuse sendPortalLink for now, or imagine adapting it to explicitly say "Quote Approval"
-    const result = await sendPortalLink(job.clientEmail, `Quote Ready: ${job.title}`, job.secureToken);
+    const credential = await rotatePortalCredential(job.id, req.accountId);
+    if (!credential) return res.status(409).json({ error: "Could not issue a quote approval link." });
+    const result = await sendPortalLink(job.clientEmail, `Quote Ready: ${job.title}`, credential.token);
     if (result.success) {
       await db.prepare("INSERT INTO activity_logs (id, job_id, action, timestamp, user, account_id) VALUES (?, ?, ?, ?, ?, ?)").run(uuidv4(), job.id, "Quote link sent to client", new Date().toISOString(), req.user.email, req.accountId);
       res.json({
@@ -3026,23 +3029,29 @@ app.delete("/api/jobs/:id/files/:filename", authenticateToken, requireAnyPagePer
 
 // --- CLIENT PORTAL PUBLIC SECURE ROUTES ---
 
-// Helper to get settings for a public portal
 const getSettingsForPortal = async accountId => {
   return (await db.prepare("SELECT * FROM settings WHERE account_id = ? LIMIT 1").get(accountId)) || {};
 };
 
-// Secure endpoint for client portal
 app.get("/api/portal/:token", async (req, res) => {
-  const {
-    token
-  } = req.params;
   try {
-    const job = await db.prepare("SELECT * FROM jobs WHERE secureToken = ?").get(token);
-    if (!job) return res.status(404).json({
-      error: "Invalid link"
-    });
+    const job = await getActivePortalJob(req.params.token);
+    if (!job) return res.status(404).json({ error: "Invalid or expired link" });
+
+    const summary = await paymentSummary(job);
+    const {
+      secureToken: _secureToken,
+      secureTokenExpires: _secureTokenExpires,
+      secureTokenRevokedAt: _secureTokenRevokedAt,
+      ffproSyncStatus: _ffproSyncStatus,
+      ffproEventId: _ffproEventId,
+      intakeEventId: _intakeEventId,
+      account_id: _accountId,
+      ...safeJob
+    } = job;
+
     const populatedJob = {
-      ...job,
+      ...safeJob,
       activityLog: await getJobActivityLogs(job.id),
       messages: await getJobMessages(job.id),
       lineItems: job.lineItems ? JSON.parse(job.lineItems) : [],
@@ -3052,128 +3061,85 @@ app.get("/api/portal/:token", async (req, res) => {
       timerStartedAt: job.timerStartedAt
     };
     const settings = await getSettingsForPortal(job.account_id);
-    res.json({
-      job: populatedJob,
-      settings
-    });
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ job: populatedJob, settings, payments: summary });
   } catch (error) {
-    res.status(500).json({
-      error: isProduction ? "Internal Server Error" : error.message
-    });
+    res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
   }
 });
-app.post("/api/portal/:token/approve-quote", async (req, res) => {
-  const {
-    token
-  } = req.params;
-  try {
-    const job = await db.prepare("SELECT id, account_id FROM jobs WHERE secureToken = ?").get(token);
-    if (!job) return res.status(404).json({
-      error: "Invalid link"
-    });
 
-    // Automate stage transition to 'in-progress'
-    await updateJobStage(job.id, 'in-progress', job.account_id, 'Client Portal');
-    await db.prepare("UPDATE jobs SET quoteApproved = 1 WHERE id = ?").run(job.id);
-    res.json({
-      success: true
-    });
-  } catch (error) {
-    res.status(500).json({
-      error: isProduction ? "Internal Server Error" : error.message
-    });
-  }
-});
-app.post("/api/portal/:token/pay-deposit", async (req, res) => {
-  const {
-    token
-  } = req.params;
+app.post("/api/portal/:token/approve-quote", portalActionLimiter, async (req, res) => {
   try {
-    const job = await db.prepare("SELECT id, account_id FROM jobs WHERE secureToken = ?").get(token);
-    if (!job) return res.status(404).json({
-      error: "Invalid link"
-    });
-    await db.prepare("UPDATE jobs SET depositPaid = 1 WHERE id = ?").run(job.id);
-    await db.prepare("INSERT INTO activity_logs (id, job_id, action, timestamp, user, account_id) VALUES (?, ?, ?, ?, ?, ?)").run(uuidv4(), job.id, "30% Deposit paid via portal", new Date().toISOString(), "Client", job.account_id);
-    res.json({
-      success: true
-    });
-  } catch (error) {
-    res.status(500).json({
-      error: isProduction ? "Internal Server Error" : error.message
-    });
-  }
-});
-app.post("/api/portal/:token/pay-final", async (req, res) => {
-  const {
-    token
-  } = req.params;
-  try {
-    const job = await db.prepare("SELECT id, account_id FROM jobs WHERE secureToken = ?").get(token);
-    if (!job) return res.status(404).json({
-      error: "Invalid link"
-    });
+    const job = await getActivePortalJob(req.params.token);
+    if (!job) return res.status(404).json({ error: "Invalid or expired link" });
 
-    // Automate stage transition to 'paid' (this will stop the timer)
-    await updateJobStage(job.id, 'paid', job.account_id, 'Client Portal');
-    res.json({
-      success: true
-    });
+    if (!job.quoteApproved) {
+      if (job.status === "request" || job.status === "estimation") {
+        await updateJobStage(job.id, "in-progress", job.account_id, "Client Portal");
+      }
+      await db.prepare("UPDATE jobs SET quoteApproved = 1 WHERE id = ? AND account_id = ?")
+        .run(job.id, job.account_id);
+      await db.prepare(
+        "INSERT INTO activity_logs (id, job_id, action, timestamp, user, account_id) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run(uuidv4(), job.id, "Quote approved by client", new Date().toISOString(), "Client", job.account_id);
+    }
+
+    res.json({ success: true, alreadyApproved: Boolean(job.quoteApproved) });
   } catch (error) {
-    res.status(500).json({
-      error: isProduction ? "Internal Server Error" : error.message
-    });
+    res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
   }
 });
-app.post("/api/portal/:token/messages", async (req, res) => {
-  const {
-    token
-  } = req.params;
-  const {
-    content
-  } = req.body;
-  // SECURITY: this is a public, unauthenticated endpoint reachable by anyone with the
-  // portal link. Never trust a caller-supplied `sender` here — force it to "Client" so
-  // the portal cannot be used to spoof staff messages in the thread.
+
+// Payments cannot be self-certified from a bearer portal link. These legacy
+// paths remain as explicit failures so bookmarked clients get a clear answer
+// rather than a 404 while the UI transitions to real payment instructions.
+app.post("/api/portal/:token/pay-deposit", portalActionLimiter, async (req, res) => {
+  const job = await getActivePortalJob(req.params.token);
+  if (!job) return res.status(404).json({ error: "Invalid or expired link" });
+  return res.status(409).json({
+    error: "Online payment is not enabled. Please use the payment instructions on your invoice.",
+    code: "PAYMENT_GATEWAY_REQUIRED"
+  });
+});
+
+app.post("/api/portal/:token/pay-final", portalActionLimiter, async (req, res) => {
+  const job = await getActivePortalJob(req.params.token);
+  if (!job) return res.status(404).json({ error: "Invalid or expired link" });
+  return res.status(409).json({
+    error: "Online payment is not enabled. Please use the payment instructions on your invoice.",
+    code: "PAYMENT_GATEWAY_REQUIRED"
+  });
+});
+
+app.post("/api/portal/:token/messages", portalActionLimiter, async (req, res) => {
+  const { content } = req.body;
   const sender = "Client";
   try {
     if (!content || typeof content !== "string" || !content.trim()) {
-      return res.status(400).json({
-        error: "Message content is required"
-      });
+      return res.status(400).json({ error: "Message content is required" });
     }
-    const job = await db.prepare("SELECT id, account_id, client FROM jobs WHERE secureToken = ?").get(token);
-    if (!job) return res.status(404).json({
-      error: "Invalid link"
-    });
+    const job = await getActivePortalJob(req.params.token);
+    if (!job) return res.status(404).json({ error: "Invalid or expired link" });
+
     const id = uuidv4();
     const timestamp = new Date().toISOString();
     const trimmedContent = content.trim().slice(0, 2000);
-    await db.prepare("INSERT INTO job_messages (id, job_id, sender, content, timestamp, account_id) VALUES (?, ?, ?, ?, ?, ?)").run(id, job.id, sender, trimmedContent, timestamp, job.account_id);
+    await db.prepare(
+      "INSERT INTO job_messages (id, job_id, sender, content, timestamp, account_id) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run(id, job.id, sender, trimmedContent, timestamp, job.account_id);
+
     appendProjectLog(job.account_id, job.client, job.id, {
-      type: 'message',
+      type: "message",
       action: `Message sent by ${sender}`,
       user: sender,
-      details: {
-        content: trimmedContent.slice(0, 200)
-      }
+      details: { content: trimmedContent.slice(0, 200) }
     });
-    const message = {
-      id,
-      jobId: job.id,
-      sender,
-      content: trimmedContent,
-      timestamp
-    };
-    broadcastToJob(job.id, {
-      type: "message",
-      message
-    });
+
+    const message = { id, jobId: job.id, sender, content: trimmedContent, timestamp };
+    broadcastToJob(job.id, { type: "chat_message", message });
     res.status(201).json(message);
   } catch (error) {
-    res.status(500).json({
-      error: isProduction ? "Internal Server Error" : error.message
-    });
+    res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
   }
 });
 
@@ -3503,9 +3469,9 @@ wss.on("connection", async (ws, req) => {
     const authParam = url.searchParams.get("auth");
     let jobId = null;
     if (portalToken) {
-      const job = await db.prepare("SELECT id FROM jobs WHERE secureToken = ?").get(portalToken);
+      const job = await getActivePortalJob(portalToken);
       if (!job) {
-        ws.close(4004, "Invalid link");
+        ws.close(4004, "Invalid or expired link");
         return;
       }
       jobId = job.id;
