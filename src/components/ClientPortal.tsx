@@ -433,8 +433,7 @@ export function ClientPortal({ token }: { token: string }) {
                             {formatMoney(item.rate, currency)}
                           </td>
                           <td className="py-3 text-right font-mono font-bold text-slate-100">
-                            {currencySymbol}
-                            {(item.total || item.quantity * item.rate).toLocaleString()}
+                            {formatMoney(item.total ?? item.quantity * item.rate, currency)}
                           </td>
                         </tr>
                       ))}
