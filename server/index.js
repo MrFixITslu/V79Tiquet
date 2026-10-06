@@ -1748,9 +1748,13 @@ app.put("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"), as
     }
     const recipientEmail = clientEmail || existingJob?.clientEmail;
     const jobTitle = title || existingJob?.title;
-    const token = existingJob?.secureToken;
-    if (statusChanged && recipientEmail && token) {
-      sendStatusUpdate(recipientEmail, jobTitle, finalStatus, token).then(r => console.log(`📧 Status update email ${r.success ? 'sent' : 'failed'} to ${recipientEmail}`)).catch(e => console.error('Email error:', e));
+    if (statusChanged && recipientEmail) {
+      const credential = await rotatePortalCredential(id, req.accountId);
+      if (credential) {
+        sendStatusUpdate(recipientEmail, jobTitle, finalStatus, credential.token)
+          .then(r => console.log(`📧 Status update email ${r.success ? 'sent' : 'failed'} to ${recipientEmail}`))
+          .catch(e => console.error('Email error:', e));
+      }
     }
 
     // --- NOTIFICATION ---
