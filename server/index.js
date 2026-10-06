@@ -1227,6 +1227,7 @@ app.post("/api/jobs", authenticateToken, requireAnyPagePermission("jobs", "new-r
     invoiceNotes,
     assignedTo,
     clientEmail,
+    clientId,
     tags,
     activityLog,
     depositPaid,
@@ -1237,13 +1238,18 @@ app.post("/api/jobs", authenticateToken, requireAnyPagePermission("jobs", "new-r
     timeLogs
   } = req.body;
   const id = reqId || uuidv4();
-  const secureToken = uuidv4();
+  const portalCredential = createPortalCredential();
+  const secureToken = portalCredential.token;
   try {
+    if (clientId) {
+      const linkedClient = await db.prepare("SELECT id FROM clients WHERE id = ? AND account_id = ?").get(clientId, req.accountId);
+      if (!linkedClient) return badRequest(res, "Unknown client");
+    }
     const insertJob = db.prepare(`
-            INSERT INTO jobs (id, title, client, description, status, createdAt, dueDate, amount, priority, invoiceNotes, assignedTo, clientEmail, secureToken, depositPaid, account_id, lineItems, deliverables, timerStartedAt, stageAssignments, timeLogs)
-            VALUES (@id, @title, @client, @description, @status, @createdAt, @dueDate, @amount, @priority, @invoiceNotes, @assignedTo, @clientEmail, @secureToken, @depositPaid, @account_id, @lineItems, @deliverables, @timerStartedAt, @stageAssignments, @timeLogs)
+            INSERT INTO jobs (id, title, client, description, status, createdAt, dueDate, amount, priority, invoiceNotes, assignedTo, clientEmail, clientId, secureToken, secureTokenExpires, depositPaid, account_id, lineItems, deliverables, timerStartedAt, stageAssignments, timeLogs)
+            VALUES (@id, @title, @client, @description, @status, @createdAt, @dueDate, @amount, @priority, @invoiceNotes, @assignedTo, @clientEmail, @clientId, @secureToken, @secureTokenExpires, @depositPaid, @account_id, @lineItems, @deliverables, @timerStartedAt, @stageAssignments, @timeLogs)
         `);
-    insertJob.run({
+    await insertJob.run({
       id,
       title: title || 'Untitled Job',
       client: client || 'Unknown Client',
@@ -1256,7 +1262,9 @@ app.post("/api/jobs", authenticateToken, requireAnyPagePermission("jobs", "new-r
       invoiceNotes: invoiceNotes || null,
       assignedTo: assignedTo || null,
       clientEmail: clientEmail || null,
+      clientId: clientId || null,
       secureToken,
+      secureTokenExpires: portalCredential.expiresAt,
       depositPaid: depositPaid ? 1 : 0,
       account_id: req.accountId,
       lineItems: lineItems ? JSON.stringify(lineItems) : null,
@@ -1283,14 +1291,28 @@ app.post("/api/jobs", authenticateToken, requireAnyPagePermission("jobs", "new-r
       }
     }
 
-    // Auto-create/update client profile
+    // Link every job to a canonical client record. Legacy display-name
+    // fields remain for compatibility, but clientId is the durable relation.
     if (client) {
-      const existingClient = await db.prepare("SELECT id FROM clients WHERE name = ? AND account_id = ?").get(client, req.accountId);
-      if (existingClient) {
-        if (clientEmail) await db.prepare("UPDATE clients SET email = ? WHERE id = ?").run(clientEmail, existingClient.id);
-      } else {
-        await db.prepare("INSERT INTO clients (id, name, email, phone, company, notes, createdAt, account_id) VALUES (?, ?, ?, NULL, NULL, NULL, ?, ?)").run(uuidv4(), client, clientEmail || null, new Date().toISOString(), req.accountId);
+      let linkedClientId = clientId || null;
+      if (!linkedClientId) {
+        const existingClient = await db.prepare(
+          "SELECT id FROM clients WHERE account_id = ? AND (name = ? OR company = ?) LIMIT 1"
+        ).get(req.accountId, client, client);
+        linkedClientId = existingClient?.id || uuidv4();
+        if (existingClient) {
+          if (clientEmail) {
+            await db.prepare("UPDATE clients SET email = ? WHERE id = ? AND account_id = ?")
+              .run(clientEmail, linkedClientId, req.accountId);
+          }
+        } else {
+          await db.prepare(
+            "INSERT INTO clients (id, name, email, phone, company, notes, createdAt, account_id) VALUES (?, ?, ?, NULL, NULL, NULL, ?, ?)"
+          ).run(linkedClientId, client, clientEmail || null, new Date().toISOString(), req.accountId);
+        }
       }
+      await db.prepare("UPDATE jobs SET clientId = ? WHERE id = ? AND account_id = ?")
+        .run(linkedClientId, id, req.accountId);
     }
 
     // --- AUTO-CREATE FILE REPOSITORY FOLDER ---
@@ -1596,6 +1618,7 @@ app.put("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"), as
     invoiceNotes,
     assignedTo,
     clientEmail,
+    clientId,
     tags,
     activityLog,
     depositPaid,
@@ -1611,6 +1634,10 @@ app.put("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"), as
     if (!existingJob) return res.status(404).json({
       error: "Job not found"
     });
+    if (clientId !== undefined && clientId !== null) {
+      const linkedClient = await db.prepare("SELECT id FROM clients WHERE id = ? AND account_id = ?").get(clientId, req.accountId);
+      if (!linkedClient) return badRequest(res, "Unknown client");
+    }
     const statusChanged = status && existingJob.status !== status;
     let finalStatus = status || existingJob.status;
     let finalAssignedTo = assignedTo !== undefined ? assignedTo : existingJob.assignedTo;
@@ -1636,7 +1663,7 @@ app.put("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"), as
             UPDATE jobs SET 
                 title = @title, client = @client, description = @description, status = @status, 
                 dueDate = @dueDate, amount = @amount, priority = @priority, invoiceNotes = @invoiceNotes, 
-                assignedTo = @assignedTo, clientEmail = @clientEmail, depositPaid = @depositPaid,
+                assignedTo = @assignedTo, clientEmail = @clientEmail, clientId = @clientId, depositPaid = @depositPaid,
                 quoteApproved = COALESCE(@quoteApproved, quoteApproved),
                 lineItems = @lineItems, deliverables = @deliverables, timerStartedAt = @timerStartedAt,
                 stageAssignments = @stageAssignments, timeLogs = @timeLogs
@@ -1654,6 +1681,7 @@ app.put("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"), as
       invoiceNotes: invoiceNotes !== undefined ? invoiceNotes : existingJob.invoiceNotes || null,
       assignedTo: finalAssignedTo !== undefined ? finalAssignedTo : existingJob.assignedTo || null,
       clientEmail: clientEmail !== undefined ? clientEmail : existingJob.clientEmail || null,
+      clientId: clientId !== undefined ? clientId : existingJob.clientId || null,
       depositPaid: depositPaid !== undefined ? depositPaid ? 1 : 0 : existingJob.depositPaid ? 1 : 0,
       quoteApproved: quoteApproved !== undefined ? quoteApproved ? 1 : 0 : existingJob.quoteApproved ? 1 : 0,
       account_id: req.accountId,
