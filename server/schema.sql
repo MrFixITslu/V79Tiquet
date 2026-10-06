@@ -156,6 +156,8 @@ CREATE TABLE IF NOT EXISTS payments (
     recordedAt TEXT NOT NULL,
     recordedBy TEXT,
     status TEXT NOT NULL DEFAULT 'recorded',
+    ffproSyncStatus TEXT,
+    ffproEventId TEXT,
     voidedAt TEXT,
     voidedBy TEXT,
     account_id TEXT NOT NULL
@@ -163,6 +165,7 @@ CREATE TABLE IF NOT EXISTS payments (
 CREATE INDEX IF NOT EXISTS idx_payments_account ON payments(account_id);
 CREATE INDEX IF NOT EXISTS idx_payments_job_account ON payments(jobId, account_id);
 CREATE INDEX IF NOT EXISTS idx_payments_status ON payments(account_id, status);
+CREATE INDEX IF NOT EXISTS idx_payments_ffpro_pending ON payments(ffproSyncStatus) WHERE ffproSyncStatus = 'pending';
 
 -- 10. Files
 CREATE TABLE IF NOT EXISTS files (
