@@ -35,10 +35,19 @@ rsync -a --exclude='/.env' --exclude='/.env.*' --exclude='/data/' \
   --exclude='/uploads/' --exclude='/backups/' --exclude='/.git/' "$stage/" "$root/"
 cd "$root"
 docker compose --project-name "$project" config --services | grep -Fx "$service" >/dev/null
-docker compose --project-name "$project" up -d --build --wait --wait-timeout 180 "$service"
 
-# Compose-only status is insufficient for services without a container HEALTHCHECK.
-for attempt in {1..12}; do
+# Start/rebuild first, then run our own health loop. Using compose --wait here
+# caused an unhealthy container to abort the script before diagnostics could
+# be printed, which made production failures needlessly opaque.
+if ! docker compose --project-name "$project" up -d --build "$service"; then
+  echo "Compose failed while starting: $service" >&2
+  docker compose --project-name "$project" ps "$service" >&2 || true
+  docker compose --project-name "$project" logs --tail=120 "$service" >&2 || true
+  exit 1
+fi
+
+for attempt in {1..36}; do
+  state="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$service" 2>/dev/null || true)"
   if docker compose --project-name "$project" exec -T -e "HEALTH_URL=http://127.0.0.1:${port}${endpoint}" "$service" \
       node -e 'fetch(process.env.HEALTH_URL,{signal:AbortSignal.timeout(4000)}).then(r=>{if(!r.ok) process.exitCode=1}).catch(()=>{process.exitCode=1})' ; then
     printf '%s\n' "$sha" > .deployed_sha
@@ -46,8 +55,13 @@ for attempt in {1..12}; do
     echo "Deployed and checked: $service $sha"
     exit 0
   fi
+  if [[ "$state" == "exited" || "$state" == "dead" ]]; then
+    break
+  fi
   sleep 5
 done
 echo "Health endpoint failed after deployment: $service" >&2
-docker compose --project-name "$project" logs --tail=80 "$service" >&2
+docker compose --project-name "$project" ps "$service" >&2 || true
+docker inspect "$service" --format '{{json .State.Health}}' >&2 || true
+docker compose --project-name "$project" logs --tail=120 "$service" >&2 || true
 exit 1
