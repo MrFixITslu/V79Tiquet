@@ -206,13 +206,20 @@ async function runE2ETests() {
       assert(deleteJob.status === 200 && deleteJob.body && deleteJob.body.success, `Deleted job successfully (Got: ${deleteJob.status})`);
     }
 
-    // 4. Business Settings & Stripe Plans Flow
-    console.log('\n[4/4] Testing Settings & Stripe Integration API...');
+    // 4. Business Settings & Hub-managed Billing Flow
+    console.log('\n[4/4] Testing Settings & Hub-managed Billing API...');
     const getSettings = await request('GET', '/api/settings', null, authHeader);
     assert(getSettings.status === 200, `Retrieved business settings (Got: ${getSettings.status})`);
 
     const getPlans = await request('GET', '/api/stripe/plans');
-    assert(getPlans.status === 200 && getPlans.body && getPlans.body.pro, `Retrieved Stripe subscription plans`);
+    assert(
+      getPlans.status === 200 &&
+      getPlans.body &&
+      getPlans.body.billingManagedBy === 'v79-hub' &&
+      Array.isArray(getPlans.body.plans) &&
+      getPlans.body.plans.length === 0,
+      `Tiquet correctly delegates subscription billing to V79 Hub (Got: ${getPlans.status})`
+    );
 
   } catch (err) {
     console.error('E2E test runner error:', err);
