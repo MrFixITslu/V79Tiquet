@@ -458,14 +458,14 @@ export function ClientPortal({ token }: { token: string }) {
                       2. Initial Deposit ({formatMoney(depositAmount, currency)})
                     </p>
                     <p className="text-xs text-slate-400">
-                      Payments are recorded here only after the service team confirms receipt.
+                      The deposit becomes payable after the quote is approved and is recorded only after V79 Billing verifies WiPay.
                     </p>
                   </div>
                   {payments.paidAmount + 0.005 >= depositAmount && depositAmount > 0 ? (
                     <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-400 bg-emerald-950/80 border border-emerald-800 px-3 py-1.5 rounded-xl">
                       <CheckCircle2 className="w-3.5 h-3.5" /> Recorded
                     </span>
-                  ) : (
+                  ) : job.quoteApproved ? (
                     <button
                       type="button"
                       onClick={() => startWipayPayment("deposit")}
@@ -475,6 +475,10 @@ export function ClientPortal({ token }: { token: string }) {
                       {actionLoading === "pay-deposit" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <DollarSign className="w-3.5 h-3.5" />}
                       Pay deposit
                     </button>
+                  ) : (
+                    <span className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-400 bg-slate-900 border border-slate-700 px-3 py-1.5 rounded-xl">
+                      <Clock className="w-3.5 h-3.5" /> Approve quote first
+                    </span>
                   )}
                 </div>
 
@@ -492,7 +496,7 @@ export function ClientPortal({ token }: { token: string }) {
                     <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-400 bg-emerald-950/80 border border-emerald-800 px-3 py-1.5 rounded-xl">
                       <CheckCircle2 className="w-3.5 h-3.5" /> Settled
                     </span>
-                  ) : (
+                  ) : ["invoiced", "completed"].includes(job.status) ? (
                     <button
                       type="button"
                       onClick={() => startWipayPayment("final")}
@@ -502,6 +506,10 @@ export function ClientPortal({ token }: { token: string }) {
                       {actionLoading === "pay-final" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
                       Pay with WiPay
                     </button>
+                  ) : (
+                    <span className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-400 bg-slate-900 border border-slate-700 px-3 py-1.5 rounded-xl">
+                      <Clock className="w-3.5 h-3.5" /> Due when invoiced
+                    </span>
                   )}
                 </div>
               </div>
