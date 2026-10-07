@@ -246,7 +246,7 @@ export default function App() {
   }
 
   return (
-    <div className="v79-tiquet-app flex h-[100dvh] min-h-screen bg-[#07111f] text-slate-100 font-sans overflow-hidden">
+    <div className="v79-tiquet-app flex h-[100dvh] min-h-[100dvh] bg-[#07111f] text-slate-100 font-sans overflow-hidden">
       <Sidebar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
@@ -505,7 +505,7 @@ function NewClientModal({ industries, onClose, onCreate }: { industries: Industr
   const [error, setError] = useState<string | null>(null);
   return (
     <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-md overflow-hidden relative animate-in fade-in zoom-in-95 duration-150">
+      <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-md max-h-[90dvh] overflow-y-auto relative animate-in fade-in zoom-in-95 duration-150">
         <div className="p-6 border-b border-slate-100 flex items-center justify-between">
           <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wide">Add New Client</h3>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 transition-colors p-1 rounded-full hover:bg-slate-50 cursor-pointer">
@@ -599,7 +599,7 @@ function LogTimeModal({
 }) {
   return (
     <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-md overflow-hidden relative animate-in fade-in zoom-in-95 duration-150">
+      <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-md max-h-[90dvh] overflow-y-auto relative animate-in fade-in zoom-in-95 duration-150">
         <div className="p-6 border-b border-slate-100 flex items-center justify-between">
           <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wide">Log Hours / Time Card</h3>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 transition-colors p-1 rounded-full hover:bg-slate-50 cursor-pointer">
