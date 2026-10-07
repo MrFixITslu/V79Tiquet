@@ -3432,7 +3432,7 @@ app.get("/api/portal/:token", async (req, res) => {
     let billing = { available: false, provider: "wipay", environment: null, currency: null };
     if (tiquetBillingConfigured() && account?.hub_organization_id) {
       try {
-        const capabilities = await getTiquetBillingCapabilities(account.hub_organization_id);
+        const capabilities = await getTiquetBillingCapabilities(account.hub_organization_id, String(settings.currency || "XCD").toUpperCase());
         billing = {
           available: Boolean(capabilities?.checkoutAvailable),
           provider: "wipay",
