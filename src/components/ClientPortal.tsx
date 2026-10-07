@@ -52,6 +52,12 @@ interface PortalData {
     outstandingAmount: number;
     fullyPaid: boolean;
   };
+  billing?: {
+    available: boolean;
+    provider: string;
+    environment: string | null;
+    currency: string | null;
+  };
 }
 
 const STAGES = [
@@ -289,6 +295,8 @@ export function ClientPortal({ token }: { token: string }) {
   }
 
   const { job, settings, payments } = data;
+  const billingAvailable = Boolean(data.billing?.available);
+  const billingSandbox = data.billing?.environment === "sandbox";
   const currency = settings.currency || "USD";
   const currentStageIndex = STAGES.findIndex((s) => s.id === job.status);
   const totalAmount = job.amount || 0;
@@ -301,6 +309,13 @@ export function ClientPortal({ token }: { token: string }) {
         <div className={`max-w-6xl w-full mx-auto mt-5 px-6`}>
           <div className={`rounded-2xl border px-4 py-3 text-sm ${paymentError ? "border-rose-500/30 bg-rose-500/10 text-rose-200" : "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"}`}>
             {paymentError || successToast}
+          </div>
+        </div>
+      )}
+      {billingSandbox && (
+        <div className="max-w-6xl w-full mx-auto mt-5 px-6">
+          <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+            WiPay sandbox is active for payment-flow testing. Test payments are never posted as real Tiquet revenue.
           </div>
         </div>
       )}
@@ -477,7 +492,7 @@ export function ClientPortal({ token }: { token: string }) {
                     </button>
                   ) : (
                     <span className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-400 bg-slate-900 border border-slate-700 px-3 py-1.5 rounded-xl">
-                      <Clock className="w-3.5 h-3.5" /> Approve quote first
+                      <Clock className="w-3.5 h-3.5" /> {job.quoteApproved ? "Online payment unavailable" : "Approve quote first"}
                     </span>
                   )}
                 </div>
@@ -508,7 +523,7 @@ export function ClientPortal({ token }: { token: string }) {
                     </button>
                   ) : (
                     <span className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-400 bg-slate-900 border border-slate-700 px-3 py-1.5 rounded-xl">
-                      <Clock className="w-3.5 h-3.5" /> Due when invoiced
+                      <Clock className="w-3.5 h-3.5" /> {["invoiced", "completed"].includes(job.status) ? "Online payment unavailable" : "Due when invoiced"}
                     </span>
                   )}
                 </div>
