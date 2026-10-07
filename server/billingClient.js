@@ -47,8 +47,11 @@ async function hubRequest(pathname, payload, timeoutMs = 8000) {
   return data;
 }
 
-export async function getTiquetBillingCapabilities(hubOrganizationId) {
-  return hubRequest(CAPABILITIES_PATH, { organizationId: hubOrganizationId }, 2000);
+export async function getTiquetBillingCapabilities(hubOrganizationId, currency) {
+  return hubRequest(CAPABILITIES_PATH, {
+    organizationId: hubOrganizationId,
+    currency: String(currency || "").trim().toUpperCase(),
+  }, 2000);
 }
 
 export function tiquetBillingConfigured() {
