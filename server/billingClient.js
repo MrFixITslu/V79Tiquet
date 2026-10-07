@@ -51,6 +51,36 @@ export function tiquetBillingConfigured() {
   return /^https?:\/\//.test(baseUrl) && secret.length >= 32;
 }
 
+
+export function createTiquetBillingReturnToken(jobId, accountId, ttlMs = 24 * 60 * 60 * 1000) {
+  const { secret } = config();
+  if (secret.length < 32) throw new Error("Tiquet billing is not configured.");
+  const payload = Buffer.from(JSON.stringify({
+    jobId: String(jobId),
+    accountId: String(accountId),
+    exp: Date.now() + ttlMs,
+  }), "utf8").toString("base64url");
+  const signature = crypto.createHmac("sha256", secret).update(payload).digest("base64url");
+  return payload + "." + signature;
+}
+
+export function verifyTiquetBillingReturnToken(token) {
+  const { secret } = config();
+  const [payload, signature, extra] = String(token || "").split(".");
+  if (secret.length < 32 || !payload || !signature || extra) return null;
+  const expected = crypto.createHmac("sha256", secret).update(payload).digest();
+  let actual;
+  try { actual = Buffer.from(signature, "base64url"); } catch { return null; }
+  if (actual.length !== expected.length || !crypto.timingSafeEqual(actual, expected)) return null;
+  try {
+    const decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
+    if (!decoded?.jobId || !decoded?.accountId || !Number.isFinite(decoded?.exp) || decoded.exp < Date.now()) return null;
+    return { jobId: String(decoded.jobId), accountId: String(decoded.accountId) };
+  } catch {
+    return null;
+  }
+}
+
 export async function createTiquetInvoiceOrder({
   hubOrganizationId,
   jobId,
