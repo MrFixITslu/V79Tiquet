@@ -212,14 +212,24 @@ async function runE2ETests() {
     assert(getSettings.status === 200, `Retrieved business settings (Got: ${getSettings.status})`);
 
     const getPlans = await request('GET', '/api/stripe/plans');
-    assert(
-      getPlans.status === 200 &&
-      getPlans.body &&
-      getPlans.body.billingManagedBy === 'v79-hub' &&
-      Array.isArray(getPlans.body.plans) &&
-      getPlans.body.plans.length === 0,
-      `Tiquet correctly delegates subscription billing to V79 Hub (Got: ${getPlans.status})`
-    );
+    const hubManagedBilling = process.env.V79_HUB_MANAGED_BILLING !== '0';
+    if (hubManagedBilling) {
+      assert(
+        getPlans.status === 200 &&
+        getPlans.body &&
+        getPlans.body.billingManagedBy === 'v79-hub' &&
+        Array.isArray(getPlans.body.plans) &&
+        getPlans.body.plans.length === 0,
+        `Tiquet correctly delegates subscription billing to V79 Hub (Got: ${getPlans.status})`
+      );
+    } else {
+      assert(
+        getPlans.status === 200 &&
+        getPlans.body &&
+        getPlans.body.pro,
+        `Legacy simulated Stripe plans remain available when Hub-managed billing is disabled (Got: ${getPlans.status})`
+      );
+    }
 
   } catch (err) {
     console.error('E2E test runner error:', err);
