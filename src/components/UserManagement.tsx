@@ -59,7 +59,7 @@ export function UserManagement({
             </div>
           </div>
         </div>
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-x-auto">
           <div className="px-6 py-4 border-b border-slate-200">
             <h3 className="font-semibold text-slate-900">Current Tiquet users</h3>
             <p className="mt-1 text-xs text-slate-500">Shown for operational visibility. Changes are made in Hub.</p>
@@ -79,7 +79,7 @@ export function UserManagement({
 
   return (
     <div className="space-y-8">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h2 className="text-2xl font-bold text-slate-900">User Management</h2>
           <p className="text-slate-500 text-sm mt-1">
@@ -99,7 +99,7 @@ export function UserManagement({
       </div>
 
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        <table className="w-full text-left border-collapse">
+        <table className="w-full min-w-[720px] text-left border-collapse">
           <thead>
             <tr className="bg-slate-50 border-b border-slate-200">
               <th className="px-6 py-4 text-xs font-bold uppercase tracking-wider text-slate-500">User</th>
