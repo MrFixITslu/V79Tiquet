@@ -3470,6 +3470,12 @@ async function startPortalWipayCheckout(req, res, paymentKind) {
     ]);
     if (!account?.hub_organization_id) return res.status(409).json({ error: "This workspace is not linked to V79 Hub billing.", code: "HUB_BILLING_LINK_REQUIRED" });
     if (summary.fullyPaid || summary.outstandingAmount <= 0.005) return res.status(409).json({ error: "This invoice is already fully paid.", code: "ALREADY_PAID" });
+    if (paymentKind === "deposit" && !job.quoteApproved) {
+      return res.status(409).json({ error: "Approve the quote before paying the project deposit.", code: "QUOTE_APPROVAL_REQUIRED" });
+    }
+    if (paymentKind === "final" && !["invoiced", "completed"].includes(job.status)) {
+      return res.status(409).json({ error: "The final balance becomes payable after the job is invoiced.", code: "INVOICE_NOT_READY" });
+    }
 
     let amount = summary.outstandingAmount;
     if (paymentKind === "deposit") {
