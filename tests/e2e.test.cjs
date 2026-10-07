@@ -140,8 +140,8 @@ async function runE2ETests() {
 
       const payDeposit = await request('POST', `/api/portal/${job.secureToken}/pay-deposit`);
       assert(
-        payDeposit.status === 409 && payDeposit.body && payDeposit.body.code === 'PAYMENT_GATEWAY_REQUIRED',
-        `Portal cannot self-certify a deposit (Got: ${payDeposit.status})`
+        payDeposit.status === 503 && payDeposit.body && payDeposit.body.code === 'BILLING_NOT_CONFIGURED',
+        `Portal checkout fails closed when V79 Billing is not configured (Got: ${payDeposit.status})`
       );
 
       const clientMsg = await request('POST', `/api/portal/${job.secureToken}/messages`, {
