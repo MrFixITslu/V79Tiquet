@@ -72,6 +72,8 @@ export function ClientPortal({ token }: { token: string }) {
   const [sendingMessage, setSendingMessage] = useState(false);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [successToast, setSuccessToast] = useState<string | null>(null);
+  const [paymentError, setPaymentError] = useState<string | null>(null);
+  const paymentReturnHandled = useRef(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -145,6 +147,85 @@ export function ClientPortal({ token }: { token: string }) {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [data?.job?.messages]);
 
+  useEffect(() => {
+    if (paymentReturnHandled.current) return;
+    const params = new URLSearchParams(window.location.search);
+    const payment = params.get("payment");
+    const orderId = params.get("order");
+    if (!payment) return;
+    paymentReturnHandled.current = true;
+
+    const clearPaymentParams = () => {
+      params.delete("payment");
+      params.delete("order");
+      params.delete("payment_reason");
+      const query = params.toString();
+      window.history.replaceState({}, "", window.location.pathname + (query ? `?${query}` : ""));
+    };
+
+    if (payment !== "success" || !orderId) {
+      setPaymentError("Payment was not verified. No invoice payment was recorded.");
+      clearPaymentParams();
+      return;
+    }
+
+    setActionLoading("payment-confirm");
+    fetch(`/api/portal/${token}/payment-confirm`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ orderId }),
+    })
+      .then(async response => {
+        const result = await response.json();
+        if (!response.ok) {
+          if (result.code === "SANDBOX_PAYMENT_VERIFIED") {
+            setSuccessToast("WiPay sandbox test verified successfully. No real payment or revenue was posted.");
+            return;
+          }
+          throw new Error(result.error || "Could not verify the WiPay payment.");
+        }
+        setSuccessToast(result.alreadyRecorded ? "Payment was already verified and recorded." : "Payment verified and recorded successfully.");
+        await loadData();
+      })
+      .catch((err: any) => setPaymentError(err.message || "Could not verify the WiPay payment."))
+      .finally(() => {
+        setActionLoading(null);
+        clearPaymentParams();
+      });
+  }, [token]);
+
+  const submitHostedCheckout = (checkout: any) => {
+    const action = new URL(String(checkout?.action || ""));
+    if (action.protocol !== "https:") throw new Error("The payment provider URL is not secure.");
+    const form = document.createElement("form");
+    form.method = "POST";
+    form.action = action.toString();
+    form.style.display = "none";
+    for (const [name, value] of Object.entries(checkout?.fields || {})) {
+      const input = document.createElement("input");
+      input.type = "hidden";
+      input.name = name;
+      input.value = String(value);
+      form.appendChild(input);
+    }
+    document.body.appendChild(form);
+    form.submit();
+  };
+
+  const startWipayPayment = async (kind: "deposit" | "final") => {
+    setActionLoading(kind === "deposit" ? "pay-deposit" : "pay-final");
+    setPaymentError(null);
+    try {
+      const response = await fetch(`/api/portal/${token}/${kind === "deposit" ? "pay-deposit" : "pay-final"}`, { method: "POST" });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || "Online payment is not available for this invoice.");
+      submitHostedCheckout(result.checkout);
+    } catch (err: any) {
+      setPaymentError(err.message || "Could not start WiPay checkout.");
+      setActionLoading(null);
+    }
+  };
+
   const handleApproveQuote = async () => {
     setActionLoading("approve");
     try {
@@ -216,6 +297,14 @@ export function ClientPortal({ token }: { token: string }) {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col antialiased">
+      {(successToast || paymentError) && (
+        <div className={`max-w-6xl w-full mx-auto mt-5 px-6`}>
+          <div className={`rounded-2xl border px-4 py-3 text-sm ${paymentError ? "border-rose-500/30 bg-rose-500/10 text-rose-200" : "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"}`}>
+            {paymentError || successToast}
+          </div>
+        </div>
+      )}
+
       {/* Top Header */}
       <header className="border-b border-slate-800/80 bg-slate-900/60 backdrop-blur-md sticky top-0 z-30 px-6 py-4">
         <div className="max-w-6xl mx-auto flex items-center justify-between">
@@ -377,9 +466,15 @@ export function ClientPortal({ token }: { token: string }) {
                       <CheckCircle2 className="w-3.5 h-3.5" /> Recorded
                     </span>
                   ) : (
-                    <span className="inline-flex items-center gap-1.5 text-xs font-bold text-amber-300 bg-amber-950/50 border border-amber-800/70 px-3 py-1.5 rounded-xl">
-                      <Clock className="w-3.5 h-3.5" /> Awaiting confirmation
-                    </span>
+                    <button
+                      type="button"
+                      onClick={() => startWipayPayment("deposit")}
+                      disabled={Boolean(actionLoading)}
+                      className="inline-flex items-center gap-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 px-3 py-2 rounded-xl"
+                    >
+                      {actionLoading === "pay-deposit" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <DollarSign className="w-3.5 h-3.5" />}
+                      Pay deposit
+                    </button>
                   )}
                 </div>
 
@@ -390,7 +485,7 @@ export function ClientPortal({ token }: { token: string }) {
                       3. Outstanding Balance ({formatMoney(remainingAmount, currency)})
                     </p>
                     <p className="text-xs text-slate-400">
-                      Use the payment instructions on your invoice. Tiquet does not self-confirm online payments.
+                      Online checkout is processed by WiPay where enabled. Tiquet records the payment only after V79 Billing verifies it.
                     </p>
                   </div>
                   {payments.fullyPaid ? (
@@ -398,9 +493,15 @@ export function ClientPortal({ token }: { token: string }) {
                       <CheckCircle2 className="w-3.5 h-3.5" /> Settled
                     </span>
                   ) : (
-                    <span className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-300 bg-slate-900 border border-slate-700 px-3 py-1.5 rounded-xl">
-                      <ShieldCheck className="w-3.5 h-3.5" /> Verified manually
-                    </span>
+                    <button
+                      type="button"
+                      onClick={() => startWipayPayment("final")}
+                      disabled={Boolean(actionLoading)}
+                      className="inline-flex items-center gap-1.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 px-3 py-2 rounded-xl"
+                    >
+                      {actionLoading === "pay-final" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ShieldCheck className="w-3.5 h-3.5" />}
+                      Pay with WiPay
+                    </button>
                   )}
                 </div>
               </div>
