@@ -140,8 +140,8 @@ async function runE2ETests() {
 
       const payDeposit = await request('POST', `/api/portal/${job.secureToken}/pay-deposit`);
       assert(
-        payDeposit.status === 409 && payDeposit.body && payDeposit.body.code === 'PAYMENT_GATEWAY_REQUIRED',
-        `Portal cannot self-certify a deposit (Got: ${payDeposit.status})`
+        payDeposit.status === 503 && payDeposit.body && payDeposit.body.code === 'BILLING_NOT_CONFIGURED',
+        `Portal checkout fails closed when V79 Billing is not configured (Got: ${payDeposit.status})`
       );
 
       const clientMsg = await request('POST', `/api/portal/${job.secureToken}/messages`, {
@@ -206,13 +206,30 @@ async function runE2ETests() {
       assert(deleteJob.status === 200 && deleteJob.body && deleteJob.body.success, `Deleted job successfully (Got: ${deleteJob.status})`);
     }
 
-    // 4. Business Settings & Stripe Plans Flow
-    console.log('\n[4/4] Testing Settings & Stripe Integration API...');
+    // 4. Business Settings & Hub-managed Billing Flow
+    console.log('\n[4/4] Testing Settings & Hub-managed Billing API...');
     const getSettings = await request('GET', '/api/settings', null, authHeader);
     assert(getSettings.status === 200, `Retrieved business settings (Got: ${getSettings.status})`);
 
     const getPlans = await request('GET', '/api/stripe/plans');
-    assert(getPlans.status === 200 && getPlans.body && getPlans.body.pro, `Retrieved Stripe subscription plans`);
+    const hubManagedBilling = process.env.V79_HUB_MANAGED_BILLING !== '0';
+    if (hubManagedBilling) {
+      assert(
+        getPlans.status === 200 &&
+        getPlans.body &&
+        getPlans.body.billingManagedBy === 'v79-hub' &&
+        Array.isArray(getPlans.body.plans) &&
+        getPlans.body.plans.length === 0,
+        `Tiquet correctly delegates subscription billing to V79 Hub (Got: ${getPlans.status})`
+      );
+    } else {
+      assert(
+        getPlans.status === 200 &&
+        getPlans.body &&
+        getPlans.body.pro,
+        `Legacy simulated Stripe plans remain available when Hub-managed billing is disabled (Got: ${getPlans.status})`
+      );
+    }
 
   } catch (err) {
     console.error('E2E test runner error:', err);

@@ -25,6 +25,7 @@ import { registerHealthCheck } from "./healthcheck.js";
 import { sendPaidEvent, sendPaymentEvent, generateEventId } from "./gatewayClient.js";
 import { logger } from "./logger.js";
 import platformRoutes from "./platform.js";
+import { createTiquetBillingReturnToken, createTiquetInvoiceOrder, getTiquetBillingCapabilities, getTiquetOrderStatus, tiquetBillingConfigured, verifyTiquetBillingReturnToken } from "./billingClient.js";
 import { queuePlatformEvent, startPlatformEventPump } from "./platformEvents.js";
 import { consumeHubLaunchTicket, hubPublicUrl } from "./hubAccess.js";
 import { provisionHubIdentity } from "./hubProvisioning.js";
@@ -993,6 +994,107 @@ async function paymentSummary(job) {
     outstandingAmount: Math.max(0, totalAmount - paidAmount),
     fullyPaid: totalAmount > 0 && paidAmount + 0.005 >= totalAmount
   };
+}
+
+async function recordVerifiedWipayPayment(job, order) {
+  const transactionId = String(order?.providerTransactionId || "").trim().slice(0, 120);
+  const amount = Number(order?.amount);
+  if (!transactionId || !Number.isFinite(amount) || amount <= 0) {
+    const error = new Error("Verified WiPay order is missing payment details.");
+    error.code = "INVALID_VERIFIED_PAYMENT";
+    throw error;
+  }
+  if (order.providerEnvironment !== "live") {
+    const error = new Error("WiPay sandbox payment verified. Test payments are not posted to the Tiquet cash ledger.");
+    error.code = "SANDBOX_PAYMENT_VERIFIED";
+    error.status = 409;
+    throw error;
+  }
+
+  const existing = await db.prepare(
+    "SELECT * FROM payments WHERE account_id = ? AND jobId = ? AND reference = ? AND status = 'recorded' LIMIT 1"
+  ).get(job.account_id, job.id, transactionId);
+  if (existing) {
+    const refreshedJob = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(job.id, job.account_id);
+    return { payment: existing, job: refreshedJob, summary: await paymentSummary(refreshedJob), alreadyRecorded: true };
+  }
+
+  const jobValue = Math.max(0, Number(job.amount || 0));
+  if (jobValue <= 0) {
+    const error = new Error("Set the invoice amount before recording a gateway payment.");
+    error.code = "JOB_AMOUNT_REQUIRED";
+    error.status = 409;
+    throw error;
+  }
+
+  const alreadyPaid = await recordedPaymentTotal(job.id, job.account_id);
+  const id = uuidv4();
+  const recordedAt = new Date().toISOString();
+  const receivedAt = order.paidAt || recordedAt;
+  const ffproEventId = generateEventId();
+  await db.prepare(`
+    INSERT INTO payments
+      (id, jobId, amount, method, reference, note, receivedAt, recordedAt, recordedBy, status, ffproSyncStatus, ffproEventId, account_id)
+    VALUES (?, ?, ?, 'card_external', ?, ?, ?, ?, 'WiPay via V79 Billing', 'recorded', 'pending', ?, ?)
+  `).run(
+    id,
+    job.id,
+    amount,
+    transactionId,
+    `Verified V79 Billing order ${order.id}`,
+    receivedAt,
+    recordedAt,
+    ffproEventId,
+    job.account_id
+  );
+
+  const totalPaid = alreadyPaid + amount;
+  const depositThreshold = jobValue * 0.3;
+  if (totalPaid + 0.005 >= depositThreshold && !job.depositPaid) {
+    await db.prepare("UPDATE jobs SET depositPaid = 1 WHERE id = ? AND account_id = ?").run(job.id, job.account_id);
+  }
+
+  const overpayment = Math.max(0, totalPaid - jobValue);
+  await db.prepare(
+    "INSERT INTO activity_logs (id, job_id, action, timestamp, user, account_id) VALUES (?, ?, ?, ?, ?, ?)"
+  ).run(
+    uuidv4(),
+    job.id,
+    `WiPay payment verified: ${amount.toFixed(2)} (${transactionId})${overpayment > 0.005 ? ` — overpayment ${overpayment.toFixed(2)} requires review` : ""}`,
+    recordedAt,
+    "WiPay via V79 Billing",
+    job.account_id
+  );
+
+  await safeQueuePlatformEvent({
+    accountId: job.account_id,
+    type: "payment.recorded",
+    subjectId: id,
+    correlationId: ffproEventId,
+    occurredAt: receivedAt,
+    payload: {
+      jobId: job.id,
+      title: job.title,
+      amount,
+      currency: order.currency,
+      method: "card_external",
+      reference: transactionId,
+      provider: "wipay",
+      billingOrderId: order.id,
+    }
+  });
+
+  if (totalPaid + 0.005 >= jobValue && ["invoiced", "completed"].includes(job.status)) {
+    await updateJobStage(job.id, "paid", job.account_id, "WiPay via V79 Billing");
+  }
+
+  triggerFfproPaymentSync(id, job.account_id).catch(err => {
+    logger.error(`[FFPRO Gateway] Unexpected error syncing WiPay payment ${id}: ${err.message}`);
+  });
+
+  const payment = await db.prepare("SELECT * FROM payments WHERE id = ? AND account_id = ?").get(id, job.account_id);
+  const refreshedJob = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(job.id, job.account_id);
+  return { payment, job: refreshedJob, summary: await paymentSummary(refreshedJob), alreadyRecorded: false, overpayment };
 }
 
 async function safeQueuePlatformEvent(event) {
@@ -3326,8 +3428,23 @@ app.get("/api/portal/:token", async (req, res) => {
       timerStartedAt: job.timerStartedAt
     };
     const settings = await getSettingsForPortal(job.account_id);
+    const account = await db.prepare("SELECT hub_organization_id FROM accounts WHERE id = ?").get(job.account_id);
+    let billing = { available: false, provider: "wipay", environment: null, currency: null };
+    if (tiquetBillingConfigured() && account?.hub_organization_id) {
+      try {
+        const capabilities = await getTiquetBillingCapabilities(account.hub_organization_id, String(settings.currency || "XCD").toUpperCase());
+        billing = {
+          available: Boolean(capabilities?.checkoutAvailable),
+          provider: "wipay",
+          environment: capabilities?.provider?.environment || null,
+          currency: capabilities?.provider?.currency || null,
+        };
+      } catch {
+        // Client portal remains usable if Hub billing is temporarily unavailable.
+      }
+    }
     res.setHeader("Cache-Control", "no-store");
-    res.json({ job: populatedJob, settings, payments: summary });
+    res.json({ job: populatedJob, settings, payments: summary, billing });
   } catch (error) {
     res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
   }
@@ -3355,25 +3472,96 @@ app.post("/api/portal/:token/approve-quote", portalActionLimiter, async (req, re
   }
 });
 
-// Payments cannot be self-certified from a bearer portal link. These legacy
-// paths remain as explicit failures so bookmarked clients get a clear answer
-// rather than a 404 while the UI transitions to real payment instructions.
-app.post("/api/portal/:token/pay-deposit", portalActionLimiter, async (req, res) => {
-  const job = await getActivePortalJob(req.params.token);
-  if (!job) return res.status(404).json({ error: "Invalid or expired link" });
-  return res.status(409).json({
-    error: "Online payment is not enabled. Please use the payment instructions on your invoice.",
-    code: "PAYMENT_GATEWAY_REQUIRED"
-  });
+async function startPortalWipayCheckout(req, res, paymentKind) {
+  try {
+    const job = await getActivePortalJob(req.params.token);
+    if (!job) return res.status(404).json({ error: "Invalid or expired link" });
+    if (!tiquetBillingConfigured()) return res.status(503).json({ error: "Online payment is not configured.", code: "BILLING_NOT_CONFIGURED" });
+
+    const [summary, account, settings] = await Promise.all([
+      paymentSummary(job),
+      db.prepare("SELECT hub_organization_id FROM accounts WHERE id = ?").get(job.account_id),
+      getSettingsForPortal(job.account_id),
+    ]);
+    if (!account?.hub_organization_id) return res.status(409).json({ error: "This workspace is not linked to V79 Hub billing.", code: "HUB_BILLING_LINK_REQUIRED" });
+    if (summary.fullyPaid || summary.outstandingAmount <= 0.005) return res.status(409).json({ error: "This invoice is already fully paid.", code: "ALREADY_PAID" });
+    if (paymentKind === "deposit" && !job.quoteApproved) {
+      return res.status(409).json({ error: "Approve the quote before paying the project deposit.", code: "QUOTE_APPROVAL_REQUIRED" });
+    }
+    if (paymentKind === "final" && !["invoiced", "completed"].includes(job.status)) {
+      return res.status(409).json({ error: "The final balance becomes payable after the job is invoiced.", code: "INVOICE_NOT_READY" });
+    }
+
+    let amount = summary.outstandingAmount;
+    if (paymentKind === "deposit") {
+      const depositTarget = Math.round(Math.max(0, Number(job.amount || 0)) * 0.3 * 100) / 100;
+      amount = Math.max(0, Math.min(summary.outstandingAmount, depositTarget - summary.paidAmount));
+      if (amount <= 0.005) return res.status(409).json({ error: "The required deposit is already recorded.", code: "DEPOSIT_ALREADY_PAID" });
+    }
+
+    const returnToken = createTiquetBillingReturnToken(job.id, job.account_id);
+    const result = await createTiquetInvoiceOrder({
+      hubOrganizationId: account.hub_organization_id,
+      jobId: job.id,
+      title: `${paymentKind === "deposit" ? "Deposit" : "Invoice payment"} — ${job.title}`,
+      amount,
+      currency: String(settings.currency || "XCD").toUpperCase(),
+      returnPath: `/api/billing/return/${encodeURIComponent(returnToken)}`,
+    });
+    return res.status(201).json(result);
+  } catch (error) {
+    const status = Number(error?.status) || 503;
+    return res.status(status).json({ error: error?.message || "Could not start WiPay checkout.", code: error?.code || "BILLING_UNAVAILABLE" });
+  }
+}
+
+app.post("/api/portal/:token/pay-deposit", portalActionLimiter, (req, res) => startPortalWipayCheckout(req, res, "deposit"));
+app.post("/api/portal/:token/pay-final", portalActionLimiter, (req, res) => startPortalWipayCheckout(req, res, "final"));
+
+app.post("/api/portal/:token/payment-confirm", portalActionLimiter, async (req, res) => {
+  try {
+    const job = await getActivePortalJob(req.params.token);
+    if (!job) return res.status(404).json({ error: "Invalid or expired link" });
+    const orderId = String(req.body?.orderId || "").trim();
+    if (!/^v79_[A-Za-z0-9_]+$/.test(orderId) || orderId.length > 64) return res.status(400).json({ error: "Invalid billing order." });
+
+    const result = await getTiquetOrderStatus(orderId);
+    const order = result?.order;
+    if (!order || order.sourceApp !== "tiquet" || order.kind !== "invoice" ||
+        order.subjectReference !== job.id || order.externalReference !== job.id) {
+      return res.status(403).json({ error: "This payment order does not belong to this invoice." });
+    }
+    if (order.status !== "paid") return res.status(409).json({ error: "The payment has not been verified by V79 Billing.", code: "PAYMENT_NOT_VERIFIED" });
+
+    const settings = await getSettingsForPortal(job.account_id);
+    const sourceCurrency = String(settings.currency || "XCD").toUpperCase();
+    if (order.providerEnvironment === "live" && order.currency !== sourceCurrency) {
+      return res.status(409).json({ error: "Verified payment currency does not match the invoice currency.", code: "PAYMENT_CURRENCY_MISMATCH" });
+    }
+
+    const recorded = await recordVerifiedWipayPayment(job, order);
+    return res.json(recorded);
+  } catch (error) {
+    return res.status(Number(error?.status) || 503).json({ error: error?.message || "Could not verify WiPay payment.", code: error?.code || "BILLING_UNAVAILABLE" });
+  }
 });
 
-app.post("/api/portal/:token/pay-final", portalActionLimiter, async (req, res) => {
-  const job = await getActivePortalJob(req.params.token);
-  if (!job) return res.status(404).json({ error: "Invalid or expired link" });
-  return res.status(409).json({
-    error: "Online payment is not enabled. Please use the payment instructions on your invoice.",
-    code: "PAYMENT_GATEWAY_REQUIRED"
-  });
+app.get("/api/billing/return/:token", async (req, res) => {
+  const binding = verifyTiquetBillingReturnToken(req.params.token);
+  if (!binding) return res.status(400).send("Invalid or expired Tiquet billing return.");
+  const job = await db.prepare(
+    "SELECT id, secureToken, secureTokenExpires, secureTokenRevokedAt FROM jobs WHERE id = ? AND account_id = ?"
+  ).get(binding.jobId, binding.accountId);
+  if (!job || !job.secureToken || job.secureTokenRevokedAt || !job.secureTokenExpires || Date.parse(job.secureTokenExpires) <= Date.now()) {
+    return res.status(410).send("The client portal link is no longer active.");
+  }
+  const base = String(process.env.APP_BASE_URL || "https://tiquet.v79sl.com").replace(/\/$/, "");
+  const target = new URL(`/portal/${encodeURIComponent(job.secureToken)}`, base);
+  for (const name of ["payment", "order", "payment_reason"]) {
+    const value = String(req.query?.[name] || "").trim();
+    if (value) target.searchParams.set(name, value.slice(0, 180));
+  }
+  return res.redirect(302, target.toString());
 });
 
 app.post("/api/portal/:token/messages", portalActionLimiter, async (req, res) => {
