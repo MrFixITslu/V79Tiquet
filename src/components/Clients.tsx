@@ -106,7 +106,7 @@ export function Clients({ clients, setClients, jobs, industries, currency }: Cli
 
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
+          <table className="w-full min-w-[720px] text-left border-collapse">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-200">
                 <th className="px-6 py-4 text-xs font-semibold text-slate-500 uppercase tracking-wider">Client / Company</th>
@@ -123,7 +123,7 @@ export function Clients({ clients, setClients, jobs, industries, currency }: Cli
                   onClick={() => setSelectedClient(client)}
                 >
                   <td className="px-6 py-4">
-                    <div className="flex items-center gap-3">
+                    <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                       <div className="w-10 h-10 bg-indigo-100 text-indigo-600 rounded-xl flex items-center justify-center font-bold">
                         {client.name.charAt(0)}
                       </div>
@@ -264,7 +264,7 @@ function ClientModal({
           }}
           className="p-6 space-y-4"
         >
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className="space-y-1.5">
               <label className="text-sm font-semibold text-slate-700">Full Name</label>
               <input
@@ -371,14 +371,14 @@ function ClientDetailModal({
   const industryName = industries.find((i) => i.id === client.industryId)?.name;
   return (
     <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[90vh]">
-        <div className="px-6 py-6 border-b border-slate-100 bg-slate-50/50 flex items-start justify-between">
-          <div className="flex gap-4">
-            <div className="w-16 h-16 bg-indigo-600 text-white rounded-2xl flex items-center justify-center text-2xl font-bold shadow-lg shadow-indigo-200">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[90dvh]">
+        <div className="px-4 sm:px-6 py-4 sm:py-6 border-b border-slate-100 bg-slate-50/50 flex items-start justify-between gap-3">
+          <div className="flex min-w-0 gap-3 sm:gap-4">
+            <div className="w-12 h-12 sm:w-16 sm:h-16 shrink-0 bg-indigo-600 text-white rounded-2xl flex items-center justify-center text-xl sm:text-2xl font-bold shadow-lg shadow-indigo-200">
               {client.name.charAt(0)}
             </div>
             <div>
-              <h3 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
+              <h3 className="text-xl sm:text-2xl font-bold text-slate-900 flex flex-wrap items-center gap-2 break-words">
                 {client.name}
                 {client.leadSource === "website" && (
                   <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-bold uppercase tracking-wide bg-emerald-100 text-emerald-700">
@@ -400,8 +400,8 @@ function ClientDetailModal({
           </button>
         </div>
 
-        <div className="flex-1 overflow-auto p-6 space-y-8">
-          <div className="grid grid-cols-3 gap-6">
+        <div className="flex-1 overflow-auto p-4 sm:p-6 space-y-6 sm:space-y-8">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-6">
             <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
               <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2 flex items-center gap-2">
                 <Mail className="w-3 h-3" />
@@ -468,7 +468,7 @@ function ClientDetailModal({
                 jobs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).map((job) => {
                   const statusConfig = COLUMNS.find(c => c.id === job.status);
                   return (
-                    <div key={job.id} className="flex items-center justify-between p-4 bg-white border border-slate-200 rounded-xl hover:border-indigo-200 transition-colors group">
+                    <div key={job.id} className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 bg-white border border-slate-200 rounded-xl hover:border-indigo-200 transition-colors group">
                       <div className="flex items-center gap-4">
                         <div className={`w-2 h-10 rounded-full ${statusConfig?.color.split(' ')[0]}`} />
                         <div>
@@ -478,7 +478,7 @@ function ClientDetailModal({
                           </div>
                         </div>
                       </div>
-                      <div className="flex items-center gap-6">
+                      <div className="flex items-center gap-3 sm:gap-6 self-end sm:self-auto">
                         <div className="text-right">
                           <div className="text-sm font-bold text-slate-900">
                             {job.amount ? formatMoney(job.amount, currency) : '—'}
