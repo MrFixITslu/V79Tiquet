@@ -25,7 +25,7 @@ import { registerHealthCheck } from "./healthcheck.js";
 import { sendPaidEvent, sendPaymentEvent, generateEventId } from "./gatewayClient.js";
 import { logger } from "./logger.js";
 import platformRoutes from "./platform.js";
-import { createTiquetBillingReturnToken, createTiquetInvoiceOrder, getTiquetOrderStatus, tiquetBillingConfigured, verifyTiquetBillingReturnToken } from "./billingClient.js";
+import { createTiquetBillingReturnToken, createTiquetInvoiceOrder, getTiquetBillingCapabilities, getTiquetOrderStatus, tiquetBillingConfigured, verifyTiquetBillingReturnToken } from "./billingClient.js";
 import { queuePlatformEvent, startPlatformEventPump } from "./platformEvents.js";
 import { consumeHubLaunchTicket, hubPublicUrl } from "./hubAccess.js";
 import { provisionHubIdentity } from "./hubProvisioning.js";
@@ -3428,8 +3428,23 @@ app.get("/api/portal/:token", async (req, res) => {
       timerStartedAt: job.timerStartedAt
     };
     const settings = await getSettingsForPortal(job.account_id);
+    const account = await db.prepare("SELECT hub_organization_id FROM accounts WHERE id = ?").get(job.account_id);
+    let billing = { available: false, provider: "wipay", environment: null, currency: null };
+    if (tiquetBillingConfigured() && account?.hub_organization_id) {
+      try {
+        const capabilities = await getTiquetBillingCapabilities(account.hub_organization_id);
+        billing = {
+          available: Boolean(capabilities?.checkoutAvailable),
+          provider: "wipay",
+          environment: capabilities?.provider?.environment || null,
+          currency: capabilities?.provider?.currency || null,
+        };
+      } catch {
+        // Client portal remains usable if Hub billing is temporarily unavailable.
+      }
+    }
     res.setHeader("Cache-Control", "no-store");
-    res.json({ job: populatedJob, settings, payments: summary });
+    res.json({ job: populatedJob, settings, payments: summary, billing });
   } catch (error) {
     res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
   }
