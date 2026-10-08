@@ -40,6 +40,12 @@ export function createTiquetAuthentication({ jwt, jwtSecret, db, checkHubSubscri
             tokenOrganizationId: user.hub_organization_id,
             tokenHubManaged: user.hub_managed,
           });
+          // Enforcing subscriptions must not silently exempt an existing local
+          // login with no Hub linkage. Staff migrate through Hub at cutover.
+          if (!mapping.managed) return res.status(403).json({
+            error: "Sign in through V79 Hub to continue using Tiquet.",
+            code: "HUB_IDENTITY_REQUIRED",
+          });
           if (mapping.managed) {
             if (!mapping.valid) return res.status(403).json({
               error: "Hub account mapping is incomplete or inconsistent.",

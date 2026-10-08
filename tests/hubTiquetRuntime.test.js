@@ -82,6 +82,14 @@ test("Tiquet actual JWT route rechecks mapped customer and revokes existing sess
   accounts["account-a"].hub_organization_id=null;
   assert.equal((await request(aToken)).status,403,"missing account mapping denied");
   accounts["account-a"].hub_organization_id="org-a";
+  accounts["account-a"].hub_organization_id=null;
+  users["account-a"].hub_user_id=null;
+  const noHubToken=jwt.sign({id:"user-a",account_id:"account-a"},jwtSecret,{expiresIn:"8h"});
+  const localDenied=await request(noHubToken);
+  assert.equal(localDenied.status,403,"old local JWT cannot bypass Hub enforcement");
+  assert.equal((await localDenied.json()).code,"HUB_IDENTITY_REQUIRED");
+  users["account-a"].hub_user_id="scoped-user-a";
+  accounts["account-a"].hub_organization_id="org-a";
   accounts["account-a"].status="suspended";
   assert.equal((await request(aToken)).status,402,"suspension beats cached entitlement");
   accounts["account-a"].status="active";
