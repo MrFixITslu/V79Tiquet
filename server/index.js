@@ -1,4 +1,5 @@
-import { hubManagedMapping } from "./hubManagedLink.js";
+import { createTiquetAuthentication } from "./hubAwareAuthentication.js";
+import { authorizeTiquetStaffSocket, revalidateTiquetStaffSocket } from "./tiquetSocketAccess.js";
 import { createHubEntitlementChecker } from "./hubEntitlementRevalidation.js";
 import 'dotenv/config';
 import { createServer as createViteServer } from "vite";
@@ -214,78 +215,9 @@ const checkHubSubscription = process.env.V79_ENTITLEMENT_RECHECK_ENABLED === "1"
     })
   : null;
 
-const authenticateToken = (req, res, next) => {
-  const authHeader = req.headers['authorization'];
-  const bearerToken = authHeader && authHeader.split(' ')[1];
-  const cookieHeader = req.headers.cookie || "";
-  const sessionCookie = cookieHeader.split(";").map(v => v.trim()).find(v => v.startsWith("tiquet_session="));
-  const cookieToken = sessionCookie ? decodeURIComponent(sessionCookie.slice("tiquet_session=".length)) : null;
-  const token = bearerToken || cookieToken;
-  if (token == null) return res.status(401).json({
-    error: "Unauthorized"
-  });
-  jwt.verify(token, JWT_SECRET, async (err, user) => {
-    if (err) return res.status(403).json({
-      error: "Forbidden"
-    });
-    try {
-      const liveUser = await db.prepare(
-        "SELECT id, hub_user_id FROM users WHERE id = ? AND account_id = ?"
-      ).get(user.id, user.account_id);
-      if (!liveUser) return res.status(401).json({ error: "Unauthorized" });
-    } catch (e) {
-      return res.status(503).json({ error: "Authentication service unavailable" });
-    }
-
-    req.user = user;
-    req.accountId = user.account_id;
-
-    // ─── Suspension Check ─────────────────────────────────────────────
-    try {
-      const account = await db.prepare("SELECT status, hub_organization_id FROM accounts WHERE id = ?").get(user.account_id);
-      if (checkHubSubscription) {
-        const linkedUser = await db.prepare(
-          "SELECT hub_user_id FROM users WHERE id = ? AND account_id = ?"
-        ).get(user.id, user.account_id);
-        const mapping = hubManagedMapping({
-          accountOrganizationId: account?.hub_organization_id,
-          linkedUserId: linkedUser?.hub_user_id,
-          tokenOrganizationId: user.hub_organization_id,
-          tokenHubManaged: user.hub_managed,
-        });
-        if (mapping.managed) {
-          if (!mapping.valid) {
-            return res.status(403).json({
-              error: "Hub account mapping is incomplete or inconsistent.",
-              code: "HUB_ENTITLEMENT_MAPPING_INVALID",
-            });
-          }
-          const allowed = await checkHubSubscription({
-            organizationId: account.hub_organization_id,
-            scopedUserId: linkedUser.hub_user_id,
-          });
-          if (!allowed) return res.status(403).json({
-            error: "V79 Hub subscription is inactive or unavailable.",
-            code: "HUB_ENTITLEMENT_REVOKED",
-          });
-        }
-      }
-      if (account && account.status === 'suspended') {
-        return res.status(402).json({
-          error: "ACCOUNT_SUSPENDED",
-          message: "This account has been suspended. Please contact support."
-        });
-      }
-    } catch (e) {
-      if (checkHubSubscription) return res.status(503).json({
-        error: "Account and Hub entitlement verification unavailable.",
-        code: "HUB_ENTITLEMENT_UNAVAILABLE",
-      });
-      // Legacy behaviour remains unchanged until the feature is enabled.
-    }
-    next();
-  });
-};
+const authenticateToken = createTiquetAuthentication({
+  jwt, jwtSecret: JWT_SECRET, db, checkHubSubscription,
+});
 
 // --- Admin-only middleware ---
 // Several endpoints (team management, role/permission changes) must only be
@@ -3983,8 +3915,17 @@ wss.on("connection", async (ws, req) => {
         ws.close(4003, "Forbidden");
         return;
       }
+      const staffAccess = await authorizeTiquetStaffSocket({
+        decoded, db, checkHubSubscription,
+      });
+      if (!staffAccess.allowed) {
+        ws.close(4003, "Hub entitlement or staff session unavailable");
+        return;
+      }
       jobId = job.id;
       ws.role = "staff";
+      ws.hubIdentity = staffAccess.hubIdentity;
+      ws.jwtExpiresAt = staffAccess.jwtExpiresAt;
     } else {
       ws.close(4000, "Missing credentials");
       return;
@@ -4007,14 +3948,31 @@ wss.on("connection", async (ws, req) => {
 // Drop dead connections (e.g. laptop sleep, dropped wifi) every 30s
 const wsHeartbeat = setInterval(() => {
   wss.clients.forEach(ws => {
-    if (ws.isAlive === false) {
-      unsubscribeFromJob(ws.jobId, ws);
-      return ws.terminate();
-    }
-    ws.isAlive = false;
-    ws.ping();
+    if (ws.entitlementCheckInFlight) return;
+    ws.entitlementCheckInFlight = true;
+    void (async () => {
+      try {
+        if (ws.isAlive === false) {
+          unsubscribeFromJob(ws.jobId, ws);
+          return ws.terminate();
+        }
+        // The authenticated HTTP middleware does not run on WebSockets.
+        // Check live subscription and JWT expiry before permitting further chat.
+        if (!(await revalidateTiquetStaffSocket(ws, checkHubSubscription))) {
+          unsubscribeFromJob(ws.jobId, ws);
+          return ws.close(4003, "Hub entitlement or session expired");
+        }
+        ws.isAlive = false;
+        ws.ping();
+      } catch {
+        unsubscribeFromJob(ws.jobId, ws);
+        ws.terminate();
+      } finally {
+        ws.entitlementCheckInFlight = false;
+      }
+    })();
   });
-}, 30000);
+}, 15000);
 wss.on("close", () => clearInterval(wsHeartbeat));
 
 // Boot-time sanity check for the website intake gateway: if it's
