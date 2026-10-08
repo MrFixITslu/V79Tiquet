@@ -149,8 +149,8 @@ export function Payroll({
       </div>
 
       {activeSubTab === "employees" ? (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-          <table className="w-full text-left border-collapse">
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-x-auto">
+          <table className="w-full min-w-[780px] text-left border-collapse">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-200">
                 <th className="px-6 py-4 text-xs font-bold uppercase tracking-wider text-slate-500">
@@ -248,8 +248,8 @@ export function Payroll({
           </table>
         </div>
       ) : (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-          <table className="w-full text-left border-collapse">
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-x-auto">
+          <table className="w-full min-w-[780px] text-left border-collapse">
             <thead>
               <tr className="bg-slate-50 border-b border-slate-200">
                 <th className="px-6 py-4 text-xs font-bold uppercase tracking-wider text-slate-500">
@@ -353,7 +353,7 @@ function AddEmployeeModal({
 
   return (
     <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-xl w-full max-w-md max-h-[90dvh] overflow-y-auto">
         <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
           <h3 className="text-lg font-semibold text-slate-900">Add New Employee</h3>
           <button
@@ -379,8 +379,8 @@ function AddEmployeeModal({
           }}
           className="p-6 space-y-4"
         >
-          <div className="grid grid-cols-2 gap-4">
-            <div className="col-span-2">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="sm:col-span-2">
               <label className="block text-sm font-medium text-slate-700 mb-1">
                 Full Name
               </label>
@@ -392,7 +392,7 @@ function AddEmployeeModal({
                 className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
               />
             </div>
-            <div className="col-span-2">
+            <div className="sm:col-span-2">
               <label className="block text-sm font-medium text-slate-700 mb-1">
                 Role
               </label>
@@ -404,7 +404,7 @@ function AddEmployeeModal({
                 className="w-full px-3 py-2 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500/20"
               />
             </div>
-            <div className="col-span-2">
+            <div className="sm:col-span-2">
               <label className="block text-sm font-medium text-slate-700 mb-1">
                 Worker Type
               </label>
@@ -447,7 +447,7 @@ function AddEmployeeModal({
                 </div>
               </>
             ) : (
-              <div className="col-span-2">
+              <div className="sm:col-span-2">
                 <label className="block text-sm font-medium text-slate-700 mb-1">
                   {workerType === "salary" ? "Monthly Salary ($)" : "Bi-Weekly Amount ($)"}
                 </label>
@@ -461,7 +461,7 @@ function AddEmployeeModal({
               </div>
             )}
 
-            <div className="col-span-2">
+            <div className="sm:col-span-2">
               <label className="block text-sm font-medium text-slate-700 mb-1">
                 Payment Method
               </label>
