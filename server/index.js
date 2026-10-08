@@ -1,3 +1,4 @@
+import { hubManagedMapping } from "./hubManagedLink.js";
 import { createHubEntitlementChecker } from "./hubEntitlementRevalidation.js";
 import 'dotenv/config';
 import { createServer as createViteServer } from "vite";
@@ -242,18 +243,32 @@ const authenticateToken = (req, res, next) => {
     // ─── Suspension Check ─────────────────────────────────────────────
     try {
       const account = await db.prepare("SELECT status, hub_organization_id FROM accounts WHERE id = ?").get(user.account_id);
-      if (checkHubSubscription && account?.hub_organization_id) {
-        const liveUser = await db.prepare(
+      if (checkHubSubscription) {
+        const linkedUser = await db.prepare(
           "SELECT hub_user_id FROM users WHERE id = ? AND account_id = ?"
         ).get(user.id, user.account_id);
-        const allowed = liveUser?.hub_user_id && await checkHubSubscription({
-          organizationId: account.hub_organization_id,
-          scopedUserId: liveUser.hub_user_id,
+        const mapping = hubManagedMapping({
+          accountOrganizationId: account?.hub_organization_id,
+          linkedUserId: linkedUser?.hub_user_id,
+          tokenOrganizationId: user.hub_organization_id,
+          tokenHubManaged: user.hub_managed,
         });
-        if (!allowed) return res.status(403).json({
-          error: "V79 Hub subscription is inactive or unavailable.",
-          code: "HUB_ENTITLEMENT_REVOKED",
-        });
+        if (mapping.managed) {
+          if (!mapping.valid) {
+            return res.status(403).json({
+              error: "Hub account mapping is incomplete or inconsistent.",
+              code: "HUB_ENTITLEMENT_MAPPING_INVALID",
+            });
+          }
+          const allowed = await checkHubSubscription({
+            organizationId: account.hub_organization_id,
+            scopedUserId: linkedUser.hub_user_id,
+          });
+          if (!allowed) return res.status(403).json({
+            error: "V79 Hub subscription is inactive or unavailable.",
+            code: "HUB_ENTITLEMENT_REVOKED",
+          });
+        }
       }
       if (account && account.status === 'suspended') {
         return res.status(402).json({
