@@ -71,8 +71,8 @@ test("retry is idempotent, conflicts fail and tenants are independent", async ()
 test("accepts multiline reviewed briefs, but blocks other ASCII controls", () => {
   const content = "V79 reviewed brief\nDestination: Tiquet\nDraft only — no customer send.";
   assert.equal(validateAgentReplyDraft({ ...body, content })?.content, content);
-  assert.equal(validateAgentReplyDraft({ ...body, content: content.replaceAll("\\n", "\\r\\n") }), null);
-  for (const control of ["\\u0000","\\u0001","\\t","\\u001b","\\u007f"]) {
+  assert.equal(validateAgentReplyDraft({ ...body, content: content.replaceAll("\n", "\r\n") }), null);
+  for (const control of ["\u0000","\u0001","\t","\u001b","\u007f"]) {
     assert.equal(validateAgentReplyDraft({ ...body, content: content + control }), null);
   }
 });
