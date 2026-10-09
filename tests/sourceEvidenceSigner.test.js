@@ -36,8 +36,8 @@ test("Tiquet produces a deterministic numeric-only Ed25519 payload, compatible w
     expiresAt: "2026-10-09T12:02:00.000Z",
     metrics: [
       { key: "clients", value: 3 },
-      { key: "jobValueTotal", value: 187.25 },
       { key: "jobs", value: 8 },
+      { key: "jobValueTotal", value: 187.25 },
       { key: "teamMembers", value: 2 },
       { key: "unreadNotifications", value: 1 },
     ],
