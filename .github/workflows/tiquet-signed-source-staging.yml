@@ -1,0 +1,122 @@
+name: Tiquet signed-source staging (PR only)
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/tiquet-signed-source-staging.yml'
+      - 'server/platform.js'
+      - 'server/sourceMetricSigner.js'
+      - 'tests/signedMetricsStage.test.cjs'
+      - 'tests/sourceMetricSigner.test.js'
+
+permissions:
+  contents: read
+
+jobs:
+  signed-source-staging:
+    name: Isolated real Tiquet HTTP + PostgreSQL signing
+    runs-on: ubuntu-latest
+    timeout-minutes: 16
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: tiquet_signed_stage
+          POSTGRES_USER: tiquet_stage
+          POSTGRES_PASSWORD: synthetic_ci_only_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tiquet_stage -d tiquet_signed_stage"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://tiquet_stage:synthetic_ci_only_password@127.0.0.1:5432/tiquet_signed_stage
+      JWT_SECRET: synthetic_stage_jwt_0123456789abcdef0123456789abcdef
+      SUPER_ADMIN_JWT_SECRET: synthetic_stage_admin_0123456789abcdef0123456789abcdef
+      V79_PLATFORM_SHARED_SECRET: synthetic_stage_platform_0123456789abcdef0123456789abcdef
+      V79_ALLOW_LEGACY_AUTH: "0"
+      V79_HUB_MANAGED_BILLING: "1"
+      V79_TIQUET_SIGNED_METRICS_ENABLED: "1"
+      V79_TIQUET_SOURCE_ED25519_KEY_FILE: /run/secrets/ci-only-tiquet-source.pem
+      V79_TIQUET_CI_PUBLIC_KEY_FILE: /tmp/v79-ci-tiquet-source-public.pem
+      SEED_DEMO_DATA: "false"
+      SMTP_HOST: ""
+      FFPRO_GATEWAY_URL: ""
+    steps:
+      - uses: actions/checkout@v4
+      - name: Reject committed runtime data or signing credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(git ls-files -- data uploads logs)" || {
+            echo "Runtime data must not be committed" >&2
+            exit 1
+          }
+          if git grep -n 'BEGIN PRIVATE KEY' -- ':!tests' ':!docs' ':!.github'; then
+            echo "Private key must never be committed" >&2
+            exit 1
+          fi
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install app dependencies on disposable runner
+        run: npm ci --no-audit --no-fund
+      - name: Create test-only signing identity in private runner path
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo install -d -m 0700 -o "$(id -u)" -g "$(id -g)" /run/secrets
+          umask 077
+          node --input-type=module <<'NODE'
+          import { generateKeyPairSync } from "node:crypto";
+          import { writeFileSync } from "node:fs";
+          const pair = generateKeyPairSync("ed25519");
+          writeFileSync(process.env.V79_TIQUET_SOURCE_ED25519_KEY_FILE,
+            pair.privateKey.export({ format: "pem", type: "pkcs8" }),
+            { flag: "wx", mode: 0o600 });
+          writeFileSync(process.env.V79_TIQUET_CI_PUBLIC_KEY_FILE,
+            pair.publicKey.export({ format: "pem", type: "spki" }),
+            { flag: "wx", mode: 0o600 });
+          NODE
+      - name: Start isolated Tiquet API
+        shell: bash
+        run: |
+          set -euo pipefail
+          node server/index.js > "$RUNNER_TEMP/tiquet-signed-stage.log" 2>&1 &
+          echo $! > "$RUNNER_TEMP/tiquet-signed-stage.pid"
+          for i in {1..50}; do
+            if curl --fail --silent http://127.0.0.1:3000/health > /dev/null; then
+              echo "Disposable Tiquet application healthy"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Disposable Tiquet application startup failed" >&2
+          exit 1
+      - name: Exercise real signed endpoint, HMAC denial and tenant isolation
+        run: node tests/signedMetricsStage.test.cjs
+      - name: Show sanitized staging API errors on failure
+        if: failure()
+        shell: bash
+        run: |
+          echo "Signed-source staging failed; inspect test assertions and app errors."
+          if [ -r "$RUNNER_TEMP/tiquet-signed-stage.log" ]; then
+            grep -Ei 'error|failed|exception' "$RUNNER_TEMP/tiquet-signed-stage.log" | tail -12               | sed -E 's#(postgresql://)[^@ ]+@#\1[REDACTED]@#g' || true
+          fi
+      - name: Stop test API and destroy test key material
+        if: always()
+        shell: bash
+        run: |
+          if [ -f "$RUNNER_TEMP/tiquet-signed-stage.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/tiquet-signed-stage.pid")" 2>/dev/null || true
+          fi
+          if [ -n "$V79_TIQUET_SOURCE_ED25519_KEY_FILE" ]; then
+            rm -f -- "$V79_TIQUET_SOURCE_ED25519_KEY_FILE" || true
+          fi
+          rm -f -- "$V79_TIQUET_CI_PUBLIC_KEY_FILE" || true
+          sudo rmdir /run/secrets 2>/dev/null || true
