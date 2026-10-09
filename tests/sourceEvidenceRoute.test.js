@@ -35,8 +35,7 @@ async function setup(t) {
         async get(accountId) {
           calls.push({ sql, accountId });
           if (/FROM accounts\b/i.test(sql)) {
-            assert.equal(accountId, orgId);
-            if (absent) return null;
+            if (accountId !== orgId || absent) return null;
             return { id: "synthetic-tiquet-account", status: suspended ? "suspended" : "active",
               hub_organization_id: orgId };
           }
@@ -107,8 +106,9 @@ test("read-only source envelope signs synthetic account counts and no customer f
 test("wrong tenants, suspended workspace and malformed requests are refused without signing", async t => {
   const h = await setup(t);
   h.enable();
-  assert.equal((await h.post(JSON.stringify({ organizationId: "wrong-tenant-org", requestId }))).status, 503,
-    "this synthetic DB rejects even attempted cross-tenant access");
+  assert.equal((await h.post(JSON.stringify({ organizationId: "wrong-tenant-org", requestId }))).status, 404,
+    "another tenant must not resolve an account or its aggregates");
+  assert.equal(h.calls().length, 1, "cross-tenant requests cannot read aggregate tables");
   assert.equal((await h.post("{}")).status, 400);
   assert.equal((await h.post(JSON.stringify({ organizationId: orgId, requestId, execute: true }))).status, 400);
   h.absent();
