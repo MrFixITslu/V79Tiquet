@@ -84,8 +84,11 @@ router.post("/evidence/signed", async (req, res) => {
     return res.status(503).json({ error: "Tiquet source signing key is not configured." });
   }
   try {
-    const keyStat = fs.statSync(keyFile);
-    if (!keyStat.isFile() || (keyStat.mode & 0o007) !== 0) {
+    const keyStat = fs.lstatSync(keyFile);
+    // Refuse symlinks and group/world-readable signing keys. Keep the source
+    // application's private signing key outside the repository and data DB.
+    if (!keyStat.isFile() || (keyStat.mode & 0o077) !== 0 ||
+        (typeof process.getuid === "function" && keyStat.uid !== process.getuid())) {
       return res.status(503).json({ error: "Tiquet source signing key permissions are unsafe." });
     }
     const account = await db.prepare(
