@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import db from "./db.js";
 import { provisionHubIdentity } from "./hubProvisioning.js";
 import { hubTeamRoles } from "./hubTeamAccess.js";
-import { createHubTicketReplyDraft } from "./hubSupervisedReplyDraft.js";
+import { createHubTicketReplyDraft, listHubOwnerDraftTickets } from "./hubSupervisedReplyDraft.js";
 
 const router = express.Router();
 const MAX_SKEW_MS = 5 * 60 * 1000;
@@ -57,6 +57,23 @@ function verifyPlatformRequest(req, res, next) {
 }
 
 router.use(verifyPlatformRequest);
+
+// Signed, read-only Hub owner ticket picker (same /api/platform HMAC middleware).
+// Never exposes client identifiers, contact details or customer messages.
+router.post("/agent-draft-tickets", async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  if (process.env.V79_AGENT_SUPERVISED_DRAFTS_ENABLED !== "1") {
+    return res.status(503).json({ error: "Supervised ticket selection disabled." });
+  }
+  try {
+    const result = await listHubOwnerDraftTickets(db, req.body);
+    if (result.kind === "invalid") return res.status(400).json({ error: "Invalid ticket selection request." });
+    if (result.kind === "not_found") return res.status(404).json({ error: "Hub-linked ticket owner not found." });
+    return res.json({ tickets: result.tickets, executionEnabled: false, sent: false });
+  } catch {
+    return res.status(503).json({ error: "Ticket selection unavailable." });
+  }
+});
 
 // Stage 4 ticket handoff. Signed Hub API only, default OFF.
 // Never creates, updates, sends or exposes job messages to customers.
