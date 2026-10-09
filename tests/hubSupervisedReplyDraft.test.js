@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createHubTicketReplyDraft, validateHubTicketDraftRequest } from "../server/hubSupervisedReplyDraft.js";
+import { createHubTicketReplyDraft, validateHubTicketDraftRequest, listHubOwnerDraftTickets } from "../server/hubSupervisedReplyDraft.js";
 
 const request = {
   organizationId: "synthetic-org-a",
@@ -18,6 +18,12 @@ function dbFixture() {
     prepare(sql) {
       calls.push(sql);
       return {
+        async all(...args) {
+          assert.ok(sql.startsWith("SELECT id,title,status FROM jobs"));
+          return args[0] === "acct-a" ? [
+            { id: "job-a", title: "Printer setup", status: "Open", clientEmail: "private@example.invalid" },
+          ] : [];
+        },
         async get(...args) {
           if (sql.includes("FROM accounts")) return args[0] === "synthetic-org-a" ? { id: "acct-a" } : undefined;
           if (sql.includes("FROM users")) return args[0] === "acct-a" && args[1] === "synthetic-owner-a"
@@ -82,4 +88,23 @@ test("cross-organisation owner, unmatched ticket and unlinked staff fail", async
     ...request, jobId: "job-b",
   })).kind, "not_found");
   assert.equal(db.rows.length, 0);
+});
+
+test("signed ticket picker returns only same-tenant id/title/status, never customer data", async () => {
+  const db = dbFixture();
+  const listed = await listHubOwnerDraftTickets(db, {
+    organizationId: "synthetic-org-a", actorHubUserId: "synthetic-owner-a",
+  });
+  assert.equal(listed.kind, "available");
+  assert.deepEqual(listed.tickets, [{ id: "job-a", title: "Printer setup", status: "Open" }]);
+  assert.equal((await listHubOwnerDraftTickets(db, {
+    organizationId: "synthetic-org-b", actorHubUserId: "synthetic-owner-a",
+  })).kind, "not_found");
+  assert.equal((await listHubOwnerDraftTickets(db, {
+    organizationId: "synthetic-org-a", actorHubUserId: "synthetic-staff-a",
+  })).kind, "not_found");
+  assert.equal((await listHubOwnerDraftTickets(db, {
+    organizationId: "synthetic-org-a", actorHubUserId: "synthetic-owner-a", accountId: "acct-b",
+  })).kind, "invalid");
+  assert.equal(db.rows.length, 0, "ticket discovery must never create drafts");
 });
