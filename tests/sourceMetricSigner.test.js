@@ -38,6 +38,8 @@ test("Tiquet source signer rejects arbitrary and missing metrics, PII, bad ident
     { metrics: { ...input.metrics, jobs: "4" } },
     { metrics: { ...input.metrics, clients: NaN } },
     { metrics: { ...input.metrics, clients: 1e13 } },
+    { metrics: { ...input.metrics, clients: -1 } },
+    { metrics: { ...input.metrics, teamMembers: 0.75 } },
     { organizationId: "not a tenant" },
     { requestId: "attacker-nonce" },
     { privateKey: "" },
