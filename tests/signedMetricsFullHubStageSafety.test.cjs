@@ -4,6 +4,8 @@ const { assertSafeJointStagingEnvironment } = require("./signedMetricsFullHubSta
 
 const safe = Object.freeze({
   NODE_ENV: "test",
+  APP_URL: "http://127.0.0.1:3900",
+  TIQUET_INTERNAL_URL: "http://127.0.0.1:3000",
   GITHUB_ACTIONS: "true",
   GITHUB_EVENT_NAME: "pull_request",
   V79_HUB_STORE_BACKEND: "json",
@@ -43,6 +45,13 @@ test("refuses any production database, missing MFA, signing flags, unsafe secret
     ["SMTP_HOST","smtp.example.com"],
     ["FFPRO_GATEWAY_URL","https://ffpro.example.com"],
     ["NODE_ENV","production"],
+    ["NODE_ENV",undefined],
+    ["APP_URL","https://hub.v79sl.com"],
+    ["APP_URL","http://192.168.100.163:3900"],
+    ["APP_URL",undefined],
+    ["TIQUET_INTERNAL_URL","http://127.0.0.1:3050"],
+    ["TIQUET_INTERNAL_URL","https://tiquet.v79sl.com"],
+    ["TIQUET_INTERNAL_URL",undefined],
     ["GITHUB_EVENT_NAME","push"],
   ];
   for (const [key,value] of cases) {
