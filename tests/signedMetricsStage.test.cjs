@@ -17,10 +17,10 @@ function check(value, expected, description) {
   assert.deepEqual(value, expected, description);
   assertionCount++;
 }
-function signedHeaders(method, pathname, timestamp = String(Date.now())) {
+function signedHeaders(method, pathname, timestamp = String(Date.now()), serializedBody = "") {
   const canonical = [
     method, pathname, timestamp,
-    createHash("sha256").update("").digest("hex"),
+    createHash("sha256").update(serializedBody).digest("hex"),
   ].join("\n");
   return {
     "accept": "application/json",
@@ -30,11 +30,12 @@ function signedHeaders(method, pathname, timestamp = String(Date.now())) {
   };
 }
 async function request(pathname, { method = "GET", body, headers } = {}) {
+  const serializedBody = body !== undefined ? JSON.stringify(body) : "";
   const response = await fetch(base + pathname, {
     method, redirect: "manual",
-    headers: { ...signedHeaders(method, pathname), ...headers,
+    headers: { ...signedHeaders(method, pathname, String(Date.now()), serializedBody), ...headers,
       ...(body !== undefined ? { "content-type": "application/json" } : {}) },
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    body: body !== undefined ? serializedBody : undefined,
   });
   const payload = await response.json().catch(() => null);
   return { response, payload };
