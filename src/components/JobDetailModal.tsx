@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { Job, Employee, JobNote, Client, BusinessSettings } from "../types";
 import { formatMoney } from "../currency";
+import { AgentReplyDraftPanel } from "./AgentReplyDraftPanel";
 import {
   X,
   FileText,
@@ -295,6 +296,8 @@ export function JobDetailModal({
               </div>
             </div>
           </div>
+
+          <AgentReplyDraftPanel jobId={job.id} />
 
           <div className="border-t border-slate-100 pt-6">
             <h4 className="text-sm font-semibold text-slate-900 mb-4 flex items-center gap-2">
