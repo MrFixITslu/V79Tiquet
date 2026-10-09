@@ -29,8 +29,18 @@ function assertSafeJointStagingEnvironment(env = process.env) {
       throw new Error("Refusing non-isolated Hub+Tiquet staging configuration: " + key);
     }
   }
-  if (env.NODE_ENV && env.NODE_ENV !== "test") {
+  if (env.NODE_ENV !== "test") {
     throw new Error("Disposable staging requires test-only Node environment.");
+  }
+  // Even when the database URL and credentials are synthetic, refuse any
+  // environment that would route the test to a remote application.
+  for (const [key, expected] of [
+    ["APP_URL", LOCAL_ENDPOINTS.hub],
+    ["TIQUET_INTERNAL_URL", LOCAL_ENDPOINTS.tiquet],
+  ]) {
+    if (env[key] !== expected) {
+      throw new Error("Refusing non-local joint staging endpoint: " + key);
+    }
   }
   if (env.GITHUB_ACTIONS === "true" && env.GITHUB_EVENT_NAME !== "pull_request") {
     throw new Error("Disposable staging may not run in a push/deployment GitHub event.");
