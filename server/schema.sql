@@ -318,3 +318,18 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_hub_organization
 ALTER TABLE users ADD COLUMN IF NOT EXISTS hub_user_id TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_hub_user
   ON users(hub_user_id) WHERE hub_user_id IS NOT NULL;
+
+-- Private staff-only agent reply drafts; never part of job_messages or customer portal.
+CREATE TABLE IF NOT EXISTS agent_reply_drafts (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    created_by TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    content TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'DRAFT' CHECK (status = 'DRAFT'),
+    created_at TEXT NOT NULL,
+    UNIQUE (account_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_reply_drafts_account_job
+    ON agent_reply_drafts(account_id, job_id, created_at DESC);

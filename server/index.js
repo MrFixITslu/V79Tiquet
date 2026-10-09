@@ -1,4 +1,5 @@
 import { createTiquetAuthentication } from "./hubAwareAuthentication.js";
+import { createAgentReplyDraft, listAgentReplyDrafts } from "./agentReplyDrafts.js";
 import { authorizeTiquetStaffSocket, revalidateTiquetStaffSocket } from "./tiquetSocketAccess.js";
 import { createHubEntitlementChecker } from "./hubEntitlementRevalidation.js";
 import 'dotenv/config';
@@ -3154,6 +3155,37 @@ app.post("/api/newsletter/broadcast", authenticateToken, requireAdmin, async (re
     res.status(500).json({
       error: isProduction ? "Internal Server Error" : error.message
     });
+  }
+});
+
+// Private owner/staff review drafts; never send messages or notify customers.
+app.get("/api/jobs/:id/agent-drafts", authenticateToken, requireAnyPagePermission("jobs"), async (req, res) => {
+  try {
+    res.setHeader("Cache-Control", "no-store");
+    const drafts = await listAgentReplyDrafts(db,
+      { userId: req.user?.id, accountId: req.accountId }, req.params.id);
+    if (!drafts) return res.status(404).json({ error: "Job not found." });
+    return res.json({ drafts, executionEnabled: false });
+  } catch {
+    return res.status(503).json({ error: "Internal draft store unavailable." });
+  }
+});
+
+app.post("/api/jobs/:id/agent-drafts", authenticateToken, requireAnyPagePermission("jobs"), async (req, res) => {
+  try {
+    res.setHeader("Cache-Control", "no-store");
+    const result = await createAgentReplyDraft(db,
+      { userId: req.user?.id, accountId: req.accountId }, req.params.id, req.body);
+    if (result.kind === "invalid") return res.status(400).json({ error: "Invalid internal draft." });
+    if (result.kind === "not_found") return res.status(404).json({ error: "Job not found." });
+    if (result.kind === "conflict") return res.status(409).json({ error: "Draft key conflict." });
+    if (result.kind === "limit") return res.status(429).json({ error: "Draft limit reached." });
+    return res.status(result.kind === "created" ? 201 : 200).json({
+      draft: result.draft, duplicate: result.kind === "duplicate",
+      executionEnabled: false, sent: false,
+    });
+  } catch {
+    return res.status(503).json({ error: "Internal draft store unavailable." });
   }
 });
 
