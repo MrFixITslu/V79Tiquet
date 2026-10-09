@@ -2,7 +2,7 @@
 // a launched real Tiquet HTTP API, and a per-run ephemeral Ed25519 key.
 const assert = require("node:assert/strict");
 const { createHash, createHmac, generateKeyPairSync, randomUUID, verify: verifyEd25519 } = require("node:crypto");
-const { readFileSync } = require("node:fs");
+const { readFileSync, writeFileSync, renameSync } = require("node:fs");
 const { resolve } = require("node:path");
 const { pathToFileURL } = require("node:url");
 
@@ -185,6 +185,40 @@ async function main() {
   });
   check(unknownHubScope.status,"unavailable",
     "Unknown signed Hub scope never falls back to another account");
+
+  // Key-rotation safety rehearsal: atomic replacement of this job's
+  // ephemeral signing identity only. A stale Hub public key must fail closed.
+  const signingKeyPath = String(process.env.V79_TIQUET_SOURCE_ED25519_KEY_FILE || "");
+  assert.equal(signingKeyPath, "/run/secrets/ci-only-tiquet-source.pem",
+    "A key rotation test is only permitted against the CI-only source path");
+  const rotation = generateKeyPairSync("ed25519");
+  const rotatedPublic = rotation.publicKey.export({format:"pem",type:"spki"});
+  const nextPath = signingKeyPath + ".ci-next";
+  writeFileSync(nextPath,
+    rotation.privateKey.export({format:"pem",type:"pkcs8"}),
+    {flag:"wx",mode:0o600});
+  renameSync(nextPath, signingKeyPath);
+  const afterRotation = await request(pathA);
+  check(afterRotation.response.status,200,
+    "Disposable Tiquet signer continues read-only serving after key rotation");
+  const rotatedCanonical = canonicalSourceEnvelope(afterRotation.payload.payload);
+  const rotatedSignature = Buffer.from(afterRotation.payload.signature,"base64url");
+  check(verifyEd25519(null,Buffer.from(rotatedCanonical),rotatedPublic,rotatedSignature),
+    true,"New CI-only Ed25519 signer authenticates source data");
+  check(verifyEd25519(null,Buffer.from(rotatedCanonical),publicKey,rotatedSignature),
+    false,"Retired source verification key no longer authenticates new envelopes");
+  const oldHubConfig = await hubReader.readSignedTiquetMetrics(options);
+  check(oldHubConfig.status,"unavailable",
+    "Hub must fail closed after source rotation until trusted public key is updated");
+  check("metrics" in oldHubConfig,false,
+    "Hub must not invent replacement metrics while source key has rotated");
+  const newHubConfig = await hubReader.readSignedTiquetMetrics({
+    ...options,publicKey:rotatedPublic,
+  });
+  check(newHubConfig.status,"available",
+    "New trusted Hub public key verifies rotated source after controlled update");
+  check(newHubConfig.executionEnabled,false,
+    "Key rotation cannot enable action execution");
 
   const after = await request("/api/platform/summary/" + a);
   check(after.response.status, 200, "Read-only follow-up summary remains available");
