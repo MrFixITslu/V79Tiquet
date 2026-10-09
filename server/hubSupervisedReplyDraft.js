@@ -42,3 +42,34 @@ export async function createHubTicketReplyDraft(db, raw) {
     idempotencyKey: "hubproposal_" + input.proposalId.replaceAll("-", "").toLowerCase(),
   });
 }
+
+
+export async function listHubOwnerDraftTickets(db, raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw) ||
+      Object.keys(raw).length !== 2 || 
+      !Object.keys(raw).every(k => ["organizationId", "actorHubUserId"].includes(k)) ||
+      typeof raw.organizationId !== "string" || !HUB_ID_RE.test(raw.organizationId) ||
+      typeof raw.actorHubUserId !== "string" || !HUB_ID_RE.test(raw.actorHubUserId)) {
+    return { kind: "invalid" };
+  }
+  const account = await db.prepare(
+    "SELECT id FROM accounts WHERE hub_organization_id = ? AND status = 'active'"
+  ).get(raw.organizationId);
+  if (!account) return { kind: "not_found" };
+  const owner = await db.prepare(
+    "SELECT id FROM users WHERE account_id = ? AND hub_user_id = ? AND role = 'Admin'"
+  ).get(account.id, raw.actorHubUserId);
+  if (!owner) return { kind: "not_found" };
+  // Never return customer identifiers or message contents to the selection UI.
+  const rows = await db.prepare(
+    "SELECT id,title,status FROM jobs WHERE account_id = ? ORDER BY createdAt DESC, id DESC LIMIT 50"
+  ).all(account.id);
+  return {
+    kind: "available",
+    tickets: (rows || []).map(row => ({
+      id: String(row.id),
+      title: String(row.title || "").slice(0, 160),
+      status: String(row.status || "").slice(0, 48),
+    })),
+  };
+}
