@@ -181,6 +181,30 @@ async function memberRequest(pathname, token, { method = "GET", body } = {}) {
   assert.equal(summaryB.payload.account.name, "Tiquet Business B");
   assert.notEqual(summaryA.payload.subjectId, summaryB.payload.subjectId);
 
+  // Phase 2C signing is explicitly disabled unless separately released.
+  // Even the normal Hub HMAC may never enable it accidentally.
+  const evidenceRequest = JSON.stringify({
+    organizationId: "hub-org-a-1234", requestId: "01234567-89ab-4cde-8000-0123456789ab",
+  });
+  const signedDisabled = await platformRequest("/api/platform/evidence/signed", {
+    method: "POST", body: evidenceRequest,
+  });
+  assert.equal(signedDisabled.response.status, 404,
+    "source signing must remain disabled in default test environment");
+  const unsignedEvidence = await fetch(base + "/api/platform/evidence/signed", {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: evidenceRequest,
+  });
+  assert.equal(unsignedEvidence.status, 401,
+    "a caller without the Hub platform signature cannot obtain evidence");
+  const wrongPlatformSignature = await fetch(base + "/api/platform/evidence/signed", {
+    method: "POST", headers: {
+      "content-type": "application/json", "x-v79-service-id": "v79-hub",
+      "x-v79-timestamp": String(Date.now()), "x-v79-signature": "f".repeat(64),
+    }, body: evidenceRequest,
+  });
+  assert.equal(wrongPlatformSignature.status, 401);
+
   const unsigned = await fetch(base + "/api/platform/provision", {
     method: "POST",
     headers: { "content-type": "application/json" },
