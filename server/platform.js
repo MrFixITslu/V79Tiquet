@@ -1,5 +1,7 @@
 import express from "express";
 import crypto from "node:crypto";
+import { readFileSync } from "node:fs";
+import { signTiquetAggregateSnapshot } from "./sourceMetricSigner.js";
 import db from "./db.js";
 import { provisionHubIdentity } from "./hubProvisioning.js";
 import { hubTeamRoles } from "./hubTeamAccess.js";
@@ -212,6 +214,74 @@ router.post("/members/deprovision", async (req, res) => {
   } catch (error) {
     console.warn("[platform] Tiquet team deprovisioning denied:", error?.message || error);
     return res.status(409).json({ error: "Tiquet team member could not be deprovisioned." });
+  }
+});
+
+// Phase 2C signed evidence pilot. Off by default. The platform HMAC middleware
+// above authenticates the complete pathname (including Hub-minted request ID).
+// Never return a private key, SQL rows, account details or model-authored text.
+router.get("/agent/signed-metrics/:organizationId/:requestId", async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  if (process.env.V79_TIQUET_SIGNED_METRICS_ENABLED !== "1") {
+    return res.status(503).json({ error: "Tiquet signed evidence is disabled." });
+  }
+  const organizationId = String(req.params.organizationId || "");
+  const requestId = String(req.params.requestId || "");
+  if (!/^[A-Za-z0-9_-]{6,96}$/.test(organizationId) ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestId)) {
+    return res.status(400).json({ error: "Invalid signed metric request." });
+  }
+  // No key is generated in this endpoint and no platform shared secret is
+  // re-used. Private key must be mounted as an app-only file when enabled.
+  const privateKeyPath = String(process.env.V79_TIQUET_SOURCE_ED25519_KEY_FILE || "");
+  if (!privateKeyPath.startsWith("/run/secrets/") ||
+      privateKeyPath.includes("..") || privateKeyPath.includes("\\0")) {
+    return res.status(503).json({ error: "Tiquet source signer is not configured." });
+  }
+  let privateKey;
+  try {
+    privateKey = readFileSync(privateKeyPath, "utf8");
+  } catch {
+    return res.status(503).json({ error: "Tiquet source signer is unavailable." });
+  }
+  try {
+    // Exact Hub organisation ID lookup only; account IDs and foreign-tenant
+    // aliases are not accepted. A missing tenant is never mapped to default.
+    const account = await db.prepare(
+      "SELECT id, status FROM accounts WHERE hub_organization_id = ? LIMIT 1"
+    ).get(organizationId);
+    if (!account || account.status === "suspended") {
+      return res.status(404).json({ error: "Tiquet signed evidence unavailable." });
+    }
+    const accountId = account.id;
+    const [clients, jobs, team, unread, value] = await Promise.all([
+      db.prepare("SELECT COUNT(*) AS count FROM clients WHERE account_id = ?").get(accountId),
+      db.prepare("SELECT COUNT(*) AS count FROM jobs WHERE account_id = ?").get(accountId),
+      db.prepare("SELECT COUNT(*) AS count FROM users WHERE account_id = ?").get(accountId),
+      db.prepare("SELECT COUNT(*) AS count FROM notifications WHERE account_id = ? AND isRead = 0").get(accountId),
+      db.prepare("SELECT COALESCE(SUM(amount), 0) AS count FROM jobs WHERE account_id = ? AND amount IS NOT NULL").get(accountId),
+    ]);
+    const aggregate = (row) => {
+      const number = Number(row?.count);
+      if (!row || row.count === null || !Number.isFinite(number) || Math.abs(number) > 1e12) {
+        throw new Error("Missing or invalid aggregate value.");
+      }
+      return number;
+    };
+    const result = signTiquetAggregateSnapshot({
+      organizationId, requestId, privateKey,
+      metrics: {
+        clients: aggregate(clients),
+        jobs: aggregate(jobs),
+        teamMembers: aggregate(team),
+        unreadNotifications: aggregate(unread),
+        jobValueTotal: aggregate(value),
+      },
+    });
+    return res.json(result);
+  } catch (error) {
+    console.warn("[platform] Signed aggregate snapshot unavailable:", error?.name || "error");
+    return res.status(503).json({ error: "Tiquet signed evidence unavailable." });
   }
 });
 
