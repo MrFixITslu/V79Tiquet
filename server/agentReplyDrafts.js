@@ -9,7 +9,7 @@ export function validateAgentReplyDraft(raw) {
   const { content, idempotencyKey } = raw;
   if (typeof content !== "string" || content !== content.trim() ||
       content.length < 12 || content.length > 2000 ||
-      /[\u0000-\u001f\u007f]/.test(content) ||
+      /[\u0000-\u0009\u000b\u000c\u000e-\u001f\u007f]/.test(content) ||
       typeof idempotencyKey !== "string" || !/^[A-Za-z0-9_-]{16,96}$/.test(idempotencyKey)) return null;
   return { content, idempotencyKey };
 }
