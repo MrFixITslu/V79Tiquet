@@ -43,11 +43,20 @@ jobs:
       V79_TIQUET_SIGNED_METRICS_ENABLED: "1"
       V79_TIQUET_SOURCE_ED25519_KEY_FILE: /run/secrets/ci-only-tiquet-source.pem
       V79_TIQUET_CI_PUBLIC_KEY_FILE: /tmp/v79-ci-tiquet-source-public.pem
+      V79_TIQUET_CI_HUB_READER_PATH: hub-source-stage/server/tiquet-signed-source-reader.mjs
+      V79_TIQUET_CI_HUB_PLATFORM_CONTRACT_PATH: hub-source-stage/server/platform-contract.mjs
       SEED_DEMO_DATA: "false"
       SMTP_HOST: ""
       FFPRO_GATEWAY_URL: ""
     steps:
       - uses: actions/checkout@v4
+      - name: Checkout pinned public Hub reader for cross-app verification
+        uses: actions/checkout@v4
+        with:
+          repository: MrFixITslu/V79hub
+          ref: 411aaf5655a0860918d33373cc6f995a81339b92
+          path: hub-source-stage
+          persist-credentials: false
       - name: Reject committed runtime data or signing credentials
         shell: bash
         run: |
@@ -98,7 +107,7 @@ jobs:
           done
           echo "Disposable Tiquet application startup failed" >&2
           exit 1
-      - name: Exercise real signed endpoint, HMAC denial and tenant isolation
+      - name: Exercise real signed endpoint and pinned Hub verifier end-to-end
         run: node tests/signedMetricsStage.test.cjs
       - name: Show sanitized staging API errors on failure
         if: failure()
