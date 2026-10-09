@@ -3,6 +3,8 @@
 const assert = require("node:assert/strict");
 const { createHash, createHmac, generateKeyPairSync, randomUUID, verify: verifyEd25519 } = require("node:crypto");
 const { readFileSync } = require("node:fs");
+const { resolve } = require("node:path");
+const { pathToFileURL } = require("node:url");
 
 const base = "http://127.0.0.1:3000";
 const platformSecret = String(process.env.V79_PLATFORM_SHARED_SECRET || "");
@@ -148,6 +150,41 @@ async function main() {
   check(invalidNonce.response.status, 400, "Invalid request nonce fails");
   const rejectedPost = await request(pathA, { method: "POST", body: { execute: true } });
   check(rejectedPost.response.status !== 200, true, "No write-enabled route exists at the signed metric path");
+
+  // Cross-repository acceptance: use the actual Hub verifier from an exact
+  // pinned, previously passing commit against the running real Tiquet API.
+  const readerPath = String(process.env.V79_TIQUET_CI_HUB_READER_PATH || "");
+  const contractPath = String(process.env.V79_TIQUET_CI_HUB_PLATFORM_CONTRACT_PATH || "");
+  assert.ok(readerPath.startsWith("hub-source-stage/") && contractPath.startsWith("hub-source-stage/"));
+  const hubReader = await import(pathToFileURL(resolve(readerPath)).href);
+  const hubContract = await import(pathToFileURL(resolve(contractPath)).href);
+  const options = {
+    enabled:true, organizationId:a, publicKey, platformSecret, baseUrl:base,
+    signPlatformRequest:hubContract.signPlatformRequest,
+  };
+  const confirmed = await hubReader.readSignedTiquetMetrics(options);
+  check(confirmed.status, "available",
+    "Pinned Hub reader verifies original Tiquet HTTP Ed25519 response");
+  check(confirmed.provenance, "source_signed", "Only verified source gains signed provenance");
+  check(confirmed.executionEnabled, false, "Verified evidence never enables execution");
+  check(confirmed.metrics.length, 5, "Hub receives only signed five-counter aggregate");
+  check(confirmed.metrics.find(x => x.key === "teamMembers")?.value,
+    before.payload.metrics.teamMembers, "Hub output matches isolated source account");
+  for (const key of ["organizationId","requestId","signature","payload","privateKey"]) {
+    check(Object.hasOwn(confirmed,key), false, "Hub output does not expose protected " + key);
+  }
+  const rejectedForeignKey = await hubReader.readSignedTiquetMetrics({
+    ...options, publicKey: alternativePublicKey.export({format:"pem",type:"spki"}),
+  });
+  check(rejectedForeignKey.status,"unavailable",
+    "Hub rejects valid Tiquet HTTP response signed by a different trusted-key identity");
+  check("metrics" in rejectedForeignKey,false,
+    "Invalid source identity does not fabricate a zero-value metric");
+  const unknownHubScope = await hubReader.readSignedTiquetMetrics({
+    ...options, organizationId:"synthetic-nonexistent-tenant",
+  });
+  check(unknownHubScope.status,"unavailable",
+    "Unknown signed Hub scope never falls back to another account");
 
   const after = await request("/api/platform/summary/" + a);
   check(after.response.status, 200, "Read-only follow-up summary remains available");
