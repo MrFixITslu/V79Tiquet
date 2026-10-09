@@ -82,7 +82,7 @@ jobs:
           npm test
           npm run test:integration
       - name: Verify Docker image can build
-        run: docker build --tag v79-tiquet-ci .
+        run: docker build --build-arg NODE_BASE=public.ecr.aws/docker/library/node:20-alpine --tag v79-tiquet-ci .
       - name: Show API log on failure
         if: failure()
         run: cat /tmp/v79-tiquet-ci.log || true
@@ -120,7 +120,7 @@ jobs:
         run: |
           IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
           SHORT_SHA="${GITHUB_SHA::12}"
-          docker build -t "$IMAGE:latest" -t "$IMAGE:$SHORT_SHA" .
+          docker build --build-arg NODE_BASE=public.ecr.aws/docker/library/node:20-alpine -t "$IMAGE:latest" -t "$IMAGE:$SHORT_SHA" .
           docker push "$IMAGE:latest"
           docker push "$IMAGE:$SHORT_SHA"
 

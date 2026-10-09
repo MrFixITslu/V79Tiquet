@@ -1,7 +1,8 @@
+ARG NODE_BASE=node:20-alpine
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 1 — Build the React/Vite frontend
 # ─────────────────────────────────────────────────────────────────────────────
-FROM node:20-alpine AS builder
+FROM ${NODE_BASE} AS builder
 
 WORKDIR /app
 
@@ -29,7 +30,7 @@ RUN npm run build
 # the Proxy Host's "Forward Port" for this app MUST be 3050, not 8080.
 # Pointing NPM at 8080 (nothing listens there) causes a 502 Bad Gateway.
 # ─────────────────────────────────────────────────────────────────────────────
-FROM node:20-alpine AS production
+FROM ${NODE_BASE} AS production
 
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
