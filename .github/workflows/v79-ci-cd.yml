@@ -41,12 +41,9 @@ jobs:
       SUPER_ADMIN_JWT_SECRET: ci_admin_secret_0123456789abcdef0123456789abcdef
       V79_PLATFORM_SHARED_SECRET: ci_platform_secret_0123456789abcdef0123456789abcdef
       SEED_DEMO_DATA: "false"
-      # Existing security tests still exercise the compatibility auth path.
-      # Production remains Hub-only because V79_ALLOW_LEGACY_AUTH defaults to 0.
-      V79_ALLOW_LEGACY_AUTH: "1"
-      # E2E compatibility suite still verifies the historical Stripe stub.
-      # Production defaults to Hub-managed billing.
-      V79_HUB_MANAGED_BILLING: "0"
+      # Match production policy: all customer accounts are managed by Hub.
+      V79_ALLOW_LEGACY_AUTH: "0"
+      V79_HUB_MANAGED_BILLING: "1"
     steps:
       - uses: actions/checkout@v4
       - name: Reject tracked runtime data
@@ -80,8 +77,10 @@ jobs:
           done
           cat /tmp/v79-tiquet-ci.log
           exit 1
-      - name: API security and workflow tests
-        run: npm test
+      - name: Hub-managed API security and workflow tests
+        run: |
+          npm test
+          npm run test:integration
       - name: Verify Docker image can build
         run: docker build --tag v79-tiquet-ci .
       - name: Show API log on failure
