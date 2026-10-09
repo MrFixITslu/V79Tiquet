@@ -18,7 +18,7 @@ import { JobDetailModal } from "./components/JobDetailModal";
 import { Job, Employee, PayrollRecord, AppUser, Client, BusinessSettings, AuthenticatedUser, Business, Industry, PagePermission } from "./types";
 import { api, getToken, setToken } from "./api";
 import { useSyncedCollection } from "./useSyncedCollection";
-import { readTiquetTab, readTiquetJobId, tiquetNavigationPath } from "./src/navigationState.js";
+import { readTiquetTab, readTiquetJobId, tiquetNavigationPath } from "./navigationState.js";
 
 const DEFAULT_SETTINGS: BusinessSettings = {
   name: "",
