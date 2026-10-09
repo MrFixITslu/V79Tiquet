@@ -6,23 +6,12 @@ const { createHash, createHmac, randomUUID } = require("node:crypto");
 const { resolve } = require("node:path");
 const { pathToFileURL } = require("node:url");
 
-const tiquetBase = "http://127.0.0.1:3000";
-const hubBase = "http://127.0.0.1:3900";
-const platformSecret = String(process.env.V79_PLATFORM_SHARED_SECRET || "");
-const stagePassword = String(process.env.V79_HUB_ADMIN_PASSWORD || "");
-if (process.env.V79_HUB_STORE_BACKEND !== "json" ||
-    process.env.V79_REQUIRE_ADMIN_MFA !== "1" ||
-    process.env.V79_TIQUET_SIGNED_METRICS_ENABLED !== "1" ||
-    process.env.V79_TIQUET_STAGE_JOINT_TEST !== "1" ||
-    process.env.V79_TIQUET_SOURCE_ED25519_KEY_FILE !== "/run/secrets/ci-only-tiquet-source.pem" ||
-    stagePassword !== "ci-only-stage-owner-password-20261009" ||
-    platformSecret !== "synthetic_stage_platform_0123456789abcdef0123456789abcdef") {
-  throw Error("Refusing non-isolated or incompletely configured Hub+Tiquet staging run.");
-}
-const hubTotpModule = String(process.env.V79_TIQUET_CI_HUB_TOTP_PATH || "");
-if (!hubTotpModule.startsWith("hub-source-stage/")) {
-  throw Error("Hub MFA TOTP helper must be checked out from pinned development commit.");
-}
+const { assertSafeJointStagingEnvironment } = require("./signedMetricsFullHubStageSafety.cjs");
+// Deny unsafe hosts/production env *before* any HTTP, DB or filesystem access.
+const { tiquet: tiquetBase, hub: hubBase } = assertSafeJointStagingEnvironment(process.env);
+const platformSecret = String(process.env.V79_PLATFORM_SHARED_SECRET);
+const stagePassword = String(process.env.V79_HUB_ADMIN_PASSWORD);
+const hubTotpModule = String(process.env.V79_TIQUET_CI_HUB_TOTP_PATH);
 let count = 0;
 function equal(value, target, label) { assert.deepEqual(value, target, label); count++; }
 async function request(base, pathname, { method="GET", headers={}, body }={}) {
