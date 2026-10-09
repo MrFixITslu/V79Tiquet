@@ -18,6 +18,7 @@ import { JobDetailModal } from "./components/JobDetailModal";
 import { Job, Employee, PayrollRecord, AppUser, Client, BusinessSettings, AuthenticatedUser, Business, Industry, PagePermission } from "./types";
 import { api, getToken, setToken } from "./api";
 import { useSyncedCollection } from "./useSyncedCollection";
+import { readTiquetTab, readTiquetJobId, tiquetNavigationPath } from "./src/navigationState.js";
 
 const DEFAULT_SETTINGS: BusinessSettings = {
   name: "",
@@ -52,7 +53,7 @@ export default function App() {
   const [resetPasswordRoute, setResetPasswordRoute] = useState(() => matchResetPasswordPath(window.location.pathname));
   const [portalRoute] = useState(() => matchPortalPath(window.location.pathname));
 
-  const [activeTab, setActiveTab] = useState("dashboard");
+  const [activeTab, setActiveTab] = useState(() => readTiquetTab(window.location.search));
   const [isQuickActionsOpen, setIsQuickActionsOpen] = useState(false);
   const [isNewClientModalOpen, setIsNewClientModalOpen] = useState(false);
   const [isLogTimeModalOpen, setIsLogTimeModalOpen] = useState(false);
@@ -61,6 +62,16 @@ export default function App() {
   const [selectedJobForModal, setSelectedJobForModal] = useState<Job | null>(null);
 
   const authenticated = !!currentUser && !!activeBusiness;
+
+  // Keep authorized workspace navigation in the URL so refresh restores the page.
+  useEffect(() => {
+    if (!authenticated || portalRoute.matched || resetPasswordRoute.matched) return;
+    const selectedJobId = activeTab === "jobs" ? readTiquetJobId(window.location.search) : null;
+    const path = tiquetNavigationPath(window.location.href, activeTab, selectedJobId);
+    if (path !== window.location.pathname + window.location.search + window.location.hash) {
+      window.history.replaceState(window.history.state, "", path);
+    }
+  }, [activeTab, authenticated, portalRoute.matched, resetPasswordRoute.matched]);
   const canAccess = useCallback((permission: PagePermission) => {
     if (!currentUser) return false;
     return currentUser.role === "Admin" || Boolean(currentUser.permissions?.includes(permission));
