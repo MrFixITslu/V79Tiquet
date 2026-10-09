@@ -32,7 +32,8 @@ export function canonicalTiquetSourceMetricPayload(payload) {
         Object.keys(item).sort().join("|") !== "key|value" ||
         !ALLOWED_KEYS.includes(item.key) || seen.has(item.key) ||
         typeof item.value !== "number" || !Number.isFinite(item.value) ||
-        Math.abs(item.value) > 1e12) return null;
+        Math.abs(item.value) > 1e12 ||
+        (item.key !== "jobValueTotal" && (!Number.isSafeInteger(item.value) || item.value < 0))) return null;
     seen.add(item.key);
     metrics.push({ key: item.key, value: item.value });
   }
