@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import db from "./db.js";
 import { provisionHubIdentity } from "./hubProvisioning.js";
 import { hubTeamRoles } from "./hubTeamAccess.js";
+import { createHubTicketReplyDraft } from "./hubSupervisedReplyDraft.js";
 
 const router = express.Router();
 const MAX_SKEW_MS = 5 * 60 * 1000;
@@ -56,6 +57,29 @@ function verifyPlatformRequest(req, res, next) {
 }
 
 router.use(verifyPlatformRequest);
+
+// Stage 4 ticket handoff. Signed Hub API only, default OFF.
+// Never creates, updates, sends or exposes job messages to customers.
+router.post("/agent-reply-drafts", async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  if (process.env.V79_AGENT_SUPERVISED_DRAFTS_ENABLED !== "1") {
+    return res.status(503).json({ error: "Supervised Tiquet draft handoff disabled." });
+  }
+  try {
+    const outcome = await createHubTicketReplyDraft(db, req.body);
+    if (outcome.kind === "invalid") return res.status(400).json({ error: "Invalid internal ticket draft request." });
+    if (outcome.kind === "not_found") return res.status(404).json({ error: "Hub-linked owner or ticket not found." });
+    if (outcome.kind === "conflict") return res.status(409).json({ error: "Duplicate proposal key conflict." });
+    if (outcome.kind === "limit") return res.status(429).json({ error: "Draft capacity reached." });
+    return res.status(outcome.kind === "created" ? 201 : 200).json({
+      draftCreated: true, duplicate: outcome.kind === "duplicate",
+      draft: { id: outcome.draft.id, jobId: outcome.draft.jobId, status: "DRAFT" },
+      executionEnabled: false, sent: false, published: false, scheduled: false,
+    });
+  } catch {
+    return res.status(503).json({ error: "Tiquet draft store unavailable." });
+  }
+});
 
 router.post("/provision", async (req, res) => {
   const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
