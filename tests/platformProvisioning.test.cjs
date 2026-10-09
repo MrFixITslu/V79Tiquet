@@ -95,6 +95,16 @@ async function memberRequest(pathname, token, { method = "GET", body } = {}) {
   const a = await provision("hub-org-a-1234", "Tiquet Business A", "hub-user-a-1234", email);
   const b = await provision("hub-org-b-1234", "Tiquet Business B", "hub-user-b-1234", email);
 
+  // A signed-summary probe must stay disabled even for an authenticated Hub
+  // caller until a separate reviewed rollout configures a dedicated key.
+  const signedPath = "/api/platform/agent/signed-metrics/hub-org-a-1234/01234567-89ab-4cde-8000-0123456789ab";
+  const disabledProbe = await platformRequest(signedPath);
+  assert.equal(disabledProbe.response.status, 503,
+    "Tiquet signing is default-off before production rollout");
+  const unauthenticatedProbe = await fetch(base + signedPath);
+  assert.equal(unauthenticatedProbe.status, 401,
+    "Platform HMAC authentication is required before signed metric access");
+
   assert.notEqual(a.accountId, b.accountId, "separate Hub workspaces must get separate Tiquet accounts");
   assert.notEqual(a.userId, b.userId, "separate Hub workspaces must get separate Tiquet users");
   assert.ok(jwtSecret.length >= 32, "JWT_SECRET must be configured for platform permission tests");
