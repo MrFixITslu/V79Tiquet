@@ -2,6 +2,7 @@ import { createTiquetAuthentication } from "./hubAwareAuthentication.js";
 import { createSentinelIngestRouter, sentinelConfigFromEnv, SENTINEL_PATH } from "./sentinelIngress.js";
 import { createSentinelHubServiceChecker } from "./sentinelHubServiceChecker.js";
 import { createSentinelNocApproverChecker } from "./sentinelNocApproverChecker.js";
+import { readPrivateMachineSecret } from "./sentinelMachineSecretFile.js";
 import { createAgentReplyDraft, listAgentReplyDrafts } from "./agentReplyDrafts.js";
 import { authorizeTiquetStaffSocket, revalidateTiquetStaffSocket } from "./tiquetSocketAccess.js";
 import { createHubEntitlementChecker } from "./hubEntitlementRevalidation.js";
@@ -544,7 +545,10 @@ if(sentinelIngestConfig.enabled &&
   try{
     sentinelNocApproverChecker=createSentinelNocApproverChecker({
       nocUrl:process.env.V79_SENTINEL_NOC_URL || "",
-      secret:process.env.V79_SENTINEL_NOC_SHARED_SECRET || "",
+      secret:readPrivateMachineSecret({
+        file:process.env.V79_SENTINEL_NOC_SHARED_SECRET_FILE || "",
+        legacySecret:process.env.V79_SENTINEL_NOC_SHARED_SECRET || ""
+      }),
     });
   }catch{
     logger.warn("Sentinel NOC human-reviewer revalidation disabled: insecure or incomplete configuration");
