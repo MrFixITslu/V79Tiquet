@@ -1,4 +1,5 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
+import { readTiquetJobId, tiquetNavigationPath } from "../navigationState.js";
 import { Job, JobStatus, ActivityLogEntry, COLUMNS, Employee, Client, BusinessSettings } from "../types";
 import { Plus, Search, Filter, Clock, DollarSign, ArrowRight, ArrowLeft, User, ShieldAlert, Sparkles, Folder } from "lucide-react";
 import { JobModal } from "./JobModal";
@@ -19,7 +20,15 @@ export function JobBoard({
   settings: BusinessSettings;
 }) {
   const [isNewModalOpen, setIsNewModalOpen] = useState(false);
-  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
+  const [selectedJobId, setSelectedJobId] = useState<string | null>(() => readTiquetJobId(window.location.search));
+
+  // Restore an open ticket after refresh once its authorized job data arrives.
+  useEffect(() => {
+    const path = tiquetNavigationPath(window.location.href, "jobs", selectedJobId);
+    if (path !== window.location.pathname + window.location.search + window.location.hash) {
+      window.history.replaceState(window.history.state, "", path);
+    }
+  }, [selectedJobId]);
   const [searchQuery, setSearchQuery] = useState("");
   const [priorityFilter, setPriorityFilter] = useState<string>("all");
   const [assignedFilter, setAssignedFilter] = useState<string>("all");

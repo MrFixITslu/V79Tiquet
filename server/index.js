@@ -1,3 +1,7 @@
+import { createTiquetAuthentication } from "./hubAwareAuthentication.js";
+import { createAgentReplyDraft, listAgentReplyDrafts } from "./agentReplyDrafts.js";
+import { authorizeTiquetStaffSocket, revalidateTiquetStaffSocket } from "./tiquetSocketAccess.js";
+import { createHubEntitlementChecker } from "./hubEntitlementRevalidation.js";
 import 'dotenv/config';
 import { createServer as createViteServer } from "vite";
 import express from "express";
@@ -204,47 +208,17 @@ app.use(express.json({
 
 // ── Authentication Middleware (declared early — used before rate-limiter setup) ─
 
-const authenticateToken = (req, res, next) => {
-  const authHeader = req.headers['authorization'];
-  const bearerToken = authHeader && authHeader.split(' ')[1];
-  const cookieHeader = req.headers.cookie || "";
-  const sessionCookie = cookieHeader.split(";").map(v => v.trim()).find(v => v.startsWith("tiquet_session="));
-  const cookieToken = sessionCookie ? decodeURIComponent(sessionCookie.slice("tiquet_session=".length)) : null;
-  const token = bearerToken || cookieToken;
-  if (token == null) return res.status(401).json({
-    error: "Unauthorized"
-  });
-  jwt.verify(token, JWT_SECRET, async (err, user) => {
-    if (err) return res.status(403).json({
-      error: "Forbidden"
-    });
-    try {
-      const liveUser = await db.prepare(
-        "SELECT id FROM users WHERE id = ? AND account_id = ?"
-      ).get(user.id, user.account_id);
-      if (!liveUser) return res.status(401).json({ error: "Unauthorized" });
-    } catch (e) {
-      return res.status(503).json({ error: "Authentication service unavailable" });
-    }
+const checkHubSubscription = process.env.V79_ENTITLEMENT_RECHECK_ENABLED === "1"
+  ? createHubEntitlementChecker({
+      product: "tiquet",
+      hubUrl: process.env.V79_HUB_INTERNAL_URL,
+      secret: process.env.V79_TIQUET_LAUNCH_SECRET,
+    })
+  : null;
 
-    req.user = user;
-    req.accountId = user.account_id;
-
-    // ─── Suspension Check ─────────────────────────────────────────────
-    try {
-      const account = await db.prepare("SELECT status FROM accounts WHERE id = ?").get(user.account_id);
-      if (account && account.status === 'suspended') {
-        return res.status(402).json({
-          error: "ACCOUNT_SUSPENDED",
-          message: "This account has been suspended. Please contact support."
-        });
-      }
-    } catch (e) {
-      // Non-fatal: continue if accounts table check fails
-    }
-    next();
-  });
-};
+const authenticateToken = createTiquetAuthentication({
+  jwt, jwtSecret: JWT_SECRET, db, checkHubSubscription,
+});
 
 // --- Admin-only middleware ---
 // Several endpoints (team management, role/permission changes) must only be
@@ -3184,6 +3158,37 @@ app.post("/api/newsletter/broadcast", authenticateToken, requireAdmin, async (re
   }
 });
 
+// Private owner/staff review drafts; never send messages or notify customers.
+app.get("/api/jobs/:id/agent-drafts", authenticateToken, requireAnyPagePermission("jobs"), async (req, res) => {
+  try {
+    res.setHeader("Cache-Control", "no-store");
+    const drafts = await listAgentReplyDrafts(db,
+      { userId: req.user?.id, accountId: req.accountId }, req.params.id);
+    if (!drafts) return res.status(404).json({ error: "Job not found." });
+    return res.json({ drafts, executionEnabled: false });
+  } catch {
+    return res.status(503).json({ error: "Internal draft store unavailable." });
+  }
+});
+
+app.post("/api/jobs/:id/agent-drafts", authenticateToken, requireAnyPagePermission("jobs"), async (req, res) => {
+  try {
+    res.setHeader("Cache-Control", "no-store");
+    const result = await createAgentReplyDraft(db,
+      { userId: req.user?.id, accountId: req.accountId }, req.params.id, req.body);
+    if (result.kind === "invalid") return res.status(400).json({ error: "Invalid internal draft." });
+    if (result.kind === "not_found") return res.status(404).json({ error: "Job not found." });
+    if (result.kind === "conflict") return res.status(409).json({ error: "Draft key conflict." });
+    if (result.kind === "limit") return res.status(429).json({ error: "Draft limit reached." });
+    return res.status(result.kind === "created" ? 201 : 200).json({
+      draft: result.draft, duplicate: result.kind === "duplicate",
+      executionEnabled: false, sent: false,
+    });
+  } catch {
+    return res.status(503).json({ error: "Internal draft store unavailable." });
+  }
+});
+
 // Job Messages (Chat)
 app.get("/api/jobs/:id/messages", authenticateToken, requireAnyPagePermission("jobs"), async (req, res) => {
   try {
@@ -3942,8 +3947,17 @@ wss.on("connection", async (ws, req) => {
         ws.close(4003, "Forbidden");
         return;
       }
+      const staffAccess = await authorizeTiquetStaffSocket({
+        decoded, db, checkHubSubscription,
+      });
+      if (!staffAccess.allowed) {
+        ws.close(4003, "Hub entitlement or staff session unavailable");
+        return;
+      }
       jobId = job.id;
       ws.role = "staff";
+      ws.hubIdentity = staffAccess.hubIdentity;
+      ws.jwtExpiresAt = staffAccess.jwtExpiresAt;
     } else {
       ws.close(4000, "Missing credentials");
       return;
@@ -3966,14 +3980,31 @@ wss.on("connection", async (ws, req) => {
 // Drop dead connections (e.g. laptop sleep, dropped wifi) every 30s
 const wsHeartbeat = setInterval(() => {
   wss.clients.forEach(ws => {
-    if (ws.isAlive === false) {
-      unsubscribeFromJob(ws.jobId, ws);
-      return ws.terminate();
-    }
-    ws.isAlive = false;
-    ws.ping();
+    if (ws.entitlementCheckInFlight) return;
+    ws.entitlementCheckInFlight = true;
+    void (async () => {
+      try {
+        if (ws.isAlive === false) {
+          unsubscribeFromJob(ws.jobId, ws);
+          return ws.terminate();
+        }
+        // The authenticated HTTP middleware does not run on WebSockets.
+        // Check live subscription and JWT expiry before permitting further chat.
+        if (!(await revalidateTiquetStaffSocket(ws, checkHubSubscription))) {
+          unsubscribeFromJob(ws.jobId, ws);
+          return ws.close(4003, "Hub entitlement or session expired");
+        }
+        ws.isAlive = false;
+        ws.ping();
+      } catch {
+        unsubscribeFromJob(ws.jobId, ws);
+        ws.terminate();
+      } finally {
+        ws.entitlementCheckInFlight = false;
+      }
+    })();
   });
-}, 30000);
+}, 15000);
 wss.on("close", () => clearInterval(wsHeartbeat));
 
 // Boot-time sanity check for the website intake gateway: if it's
