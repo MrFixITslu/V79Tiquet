@@ -2,6 +2,7 @@
 // No interactive user JWT, portal credential, email, invoicing or payment side effects.
 import crypto from "node:crypto";
 import express from "express";
+import { parseApprovalPublicKeys, verifyHumanTicketApproval } from "./sentinelHumanApproval.js";
 
 export const SENTINEL_PATH="/api/integrations/sentinel/v1/events";
 const UUID=/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -30,7 +31,9 @@ export function parseSentinelLinks(input) {
 export function sentinelConfigFromEnv(env=process.env){
   if (env.V79_SENTINEL_INGEST_ENABLED!=="1") return {enabled:false,links:[]};
   if (!env.V79_SENTINEL_LINKS_JSON) throw new Error("Enabled Sentinel integration requires explicit tenant mappings");
-  return {enabled:true,links:parseSentinelLinks(JSON.parse(env.V79_SENTINEL_LINKS_JSON))};
+  return {enabled:true,links:parseSentinelLinks(JSON.parse(env.V79_SENTINEL_LINKS_JSON)),
+    approvalKeys:env.V79_SENTINEL_APPROVAL_PUBLIC_KEYS_JSON?
+      JSON.parse(env.V79_SENTINEL_APPROVAL_PUBLIC_KEYS_JSON):[]};
 }
 
 export function validateSentinelEvent(event,link){
@@ -84,7 +87,7 @@ function authenticate(req,links,nowSeconds){
   return link;
 }
 
-export async function persistSentinelEvent(db,event,link,bodyDigest,now=new Date().toISOString()){
+export async function persistSentinelEvent(db,event,link,bodyDigest,approval=null,now=new Date().toISOString()){
   return db.transaction(async tx=>{
     await tx.query("SELECT pg_advisory_xact_lock(hashtext(?))",["v79-sentinel:"+event.source_incident_id]);
     const account=(await tx.query("SELECT id,status,hub_organization_id FROM accounts WHERE id=?",[link.tiquetAccountId])).rows[0];
@@ -107,6 +110,7 @@ export async function persistSentinelEvent(db,event,link,bodyDigest,now=new Date
     let jobId=prior?.job_id;
     let state;
     if (event.action==="ticket.create"){
+      if (!approval) throw bad("Independent human approval missing",403);
       if (!prior){
         jobId=crypto.randomUUID();
         await tx.query("INSERT INTO jobs (id,title,client,description,status,createdAt,priority,clientId,account_id,secureToken,depositPaid,intakeEventId) VALUES (?,?,?,?,?,?,?,?,?,NULL,0,?)",[
@@ -119,6 +123,11 @@ export async function persistSentinelEvent(db,event,link,bodyDigest,now=new Date
           event.source_incident_id,link.tiquetAccountId,link.tiquetClientId,jobId,now]);
         state="created";
       } else state="existing";
+      // Audit proof is committed atomically with this incident and its job.
+      await tx.query("INSERT INTO sentinel_ticket_approvals (approval_id,event_id,source_incident_id,account_id,client_id,job_id,approver_user_id,approval_key_id,evidence_sha256,approved_at,recorded_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",[
+        approval.approvalId,event.event_id,event.source_incident_id,link.tiquetAccountId,
+        link.tiquetClientId,jobId,approval.approverUserId,approval.keyId,
+        approval.eventSha256,approval.approvedAt,now]);
     } else {
       if (!prior) throw bad("Recovery before ticket creation",409);
       await tx.query("UPDATE sentinel_incident_jobs SET recovery_at=? WHERE source_incident_id=? AND account_id=?",[
@@ -140,6 +149,10 @@ export function createSentinelIngestRouter({db,config,clock=()=>Math.floor(Date.
   const router=express.Router();
   const enabled=config?.enabled===true;
   const links=enabled?parseSentinelLinks(config.links):[];
+  // Trusted verification keys come only from server configuration, never from a request.
+  // Missing keys block ticket creation; runtime remains fail-closed by default.
+  const approvalKeys=enabled && config.approvalKeys!=null?
+    parseApprovalPublicKeys(config.approvalKeys):[];
   router.post("/",async(req,res)=>{
     if (!enabled) return res.status(404).json({error:"Not found"});
     try {
@@ -153,7 +166,8 @@ export function createSentinelIngestRouter({db,config,clock=()=>Math.floor(Date.
         organizationId:link.tiquetOrganizationId,accountId:link.tiquetAccountId,
         clientId:link.tiquetClientId,action:event.action});
       if (allowed!==true) throw bad("Service entitlement denied",403);
-      const result=await persistSentinelEvent(db,event,link,sha256(req.rawBody));
+      const approval=verifyHumanTicketApproval(event,approvalKeys,clock()*1000);
+      const result=await persistSentinelEvent(db,event,link,sha256(req.rawBody),approval);
       return res.status(result.state==="created"?201:200).json({
         accepted:true,state:result.state,jobId:result.jobId,correlationKey:event.correlation_key
       });

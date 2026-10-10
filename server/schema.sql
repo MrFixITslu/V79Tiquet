@@ -356,3 +356,19 @@ CREATE TABLE IF NOT EXISTS sentinel_ingest_events (
     processed_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_sentinel_events_incident ON sentinel_ingest_events(source_incident_id);
+
+-- Audit independent, one-event-only human approvals. Private signing keys are never stored here.
+CREATE TABLE IF NOT EXISTS sentinel_ticket_approvals (
+  approval_id TEXT PRIMARY KEY,
+  event_id TEXT NOT NULL UNIQUE REFERENCES sentinel_ingest_events(event_id) DEFERRABLE INITIALLY DEFERRED,
+  source_incident_id TEXT NOT NULL REFERENCES sentinel_incident_jobs(source_incident_id),
+  account_id TEXT NOT NULL REFERENCES accounts(id),
+  client_id TEXT NOT NULL REFERENCES clients(id),
+  job_id TEXT NOT NULL REFERENCES jobs(id),
+  approver_user_id TEXT NOT NULL,
+  approval_key_id TEXT NOT NULL,
+  evidence_sha256 TEXT NOT NULL,
+  approved_at TEXT NOT NULL,
+  recorded_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sentinel_approvals_incident ON sentinel_ticket_approvals(source_incident_id);

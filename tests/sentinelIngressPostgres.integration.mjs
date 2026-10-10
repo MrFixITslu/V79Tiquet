@@ -11,6 +11,7 @@ import { createServer } from "node:http";
 import express from "express";
 import pg from "pg";
 import { createSentinelIngestRouter, SENTINEL_PATH } from "../server/sentinelIngress.js";
+import { approvalCanonical, approvalEventDigest } from "../server/sentinelHumanApproval.js";
 const exec=promisify(execFile);
 const uuid=()=>crypto.randomUUID();
 const now=()=>new Date().toISOString();
@@ -65,12 +66,29 @@ test("actual isolated PostgreSQL Sentinel ingestion: delivery, retry, ownership,
   };}};
   const mapping={sentinelCustomerId:uuid(),tiquetOrganizationId:"hub-org-one",tiquetAccountId:"account-one",
     tiquetClientId:"client-one",secret:crypto.randomBytes(48).toString("hex"),enabled:true};
+  // Separate test-only signer. Private key never enters the Tiquet receiver/config.
+  const signer=crypto.generateKeyPairSync("ed25519");
+  const approvalKeys=[{keyId:"owner-pilot-key",
+    publicKeyPem:signer.publicKey.export({type:"spki",format:"pem"}),enabled:true}];
+  const approve=event=>{
+    const t=Date.now();
+    const proof={key_id:"owner-pilot-key",approval_id:uuid(),approver_user_id:"owner-reviewer",
+      mfa_verified_at:new Date(t-5000).toISOString(),approved_at:new Date(t-1000).toISOString(),
+      expires_at:new Date(t+600000).toISOString(),
+      event_id:event.event_id,incident_id:event.source_incident_id,
+      sentinel_customer_id:event.tenant.sentinel_customer_id,
+      tiquet_organization_id:event.tenant.tiquet_organization_id,
+      tiquet_client_id:event.tenant.tiquet_client_id,decision:"approve_ticket_create"};
+    proof.event_sha256=approvalEventDigest(event);
+    proof.signature=crypto.sign(null,approvalCanonical(proof),signer.privateKey).toString("base64url");
+    return {...event,approval:proof};
+  };
   const app=express();
   app.use(express.json({limit:"12kb",verify:(req,_res,body)=>{req.rawBody=Buffer.from(body);}}));
   // Disposable test stub; NOT a live Hub entitlement integration.
   const authorizeService=async scope=>scope.serviceId==="v79-sentinel" &&
     scope.organizationId==="hub-org-one" && scope.accountId==="account-one";
-  app.use(SENTINEL_PATH,createSentinelIngestRouter({db,config:{enabled:true,links:[mapping]},authorizeService}));
+  app.use(SENTINEL_PATH,createSentinelIngestRouter({db,config:{enabled:true,links:[mapping],approvalKeys},authorizeService}));
   server=createServer(app);await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
   const url="http://127.0.0.1:"+server.address().port+SENTINEL_PATH;
   const sign=event=>{
@@ -97,7 +115,7 @@ test("actual isolated PostgreSQL Sentinel ingestion: delivery, retry, ownership,
         observed_state:action==="ticket.create"?"open":"resolved"},action};
     if(action==="ticket.add_recovery_evidence")e.recovery={observed_at:now(),
       ticket_should_close:false,requires_technician_verification:true};
-    return e;
+    return action==="ticket.create"?approve(e):e;
   };
   const create=mk("ticket.create"),recovery=mk("ticket.add_recovery_evidence");
   assert.equal((await post(recovery)).status,409,"Recovery before creation fails");
@@ -105,7 +123,8 @@ test("actual isolated PostgreSQL Sentinel ingestion: delivery, retry, ownership,
   assert.equal((await post(create)).body.state,"duplicate");
   const simultaneous=await Promise.all(Array.from({length:8},()=>post(create)));
   assert(simultaneous.every(x=>x.status===200 && x.body.state==="duplicate"),"Concurrent retries must not create duplicate jobs");
-  assert.equal((await post({...create,incident:{...create.incident,title:"Modified"}})).status,409);
+  assert.equal((await post({...create,incident:{...create.incident,title:"Modified"}})).status,403);
+  assert.equal((await post(approve({...create,incident:{...create.incident,title:"Modified"}}))).status,409);
   assert.equal((await post({...create,tenant:{...create.tenant,tiquet_client_id:"foreign"}})).status,403);
   assert.equal((await post(recovery)).status,200);
   assert.equal((await post(recovery)).body.state,"duplicate");
@@ -116,6 +135,10 @@ test("actual isolated PostgreSQL Sentinel ingestion: delivery, retry, ownership,
   assert.equal(jobs[0].account_id,"account-one");
   const receipts=(await pool.query("SELECT event_id,action FROM sentinel_ingest_events")).rows;
   assert.equal(receipts.length,2);
+  const approvals=(await pool.query("SELECT event_id,approver_user_id,approval_key_id FROM sentinel_ticket_approvals")).rows;
+  assert.equal(approvals.length,1);
+  assert.equal(approvals[0].event_id,create.event_id);
+  assert.equal(approvals[0].approver_user_id,"owner-reviewer");
   const incidents=(await pool.query("SELECT recovery_at FROM sentinel_incident_jobs")).rows;
   assert(incidents[0].recovery_at);
   assert.equal((await pool.query("SELECT COUNT(*)::int AS n FROM activity_logs")).rows[0].n,1);

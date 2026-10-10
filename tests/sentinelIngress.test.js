@@ -3,6 +3,23 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import express from "express";
 import { createServer } from "node:http";
+import { approvalCanonical, approvalEventDigest, parseApprovalPublicKeys } from "../server/sentinelHumanApproval.js";
+const approvalPair=crypto.generateKeyPairSync("ed25519");
+const approvalKeys=[{keyId:"owner-pilot-key",publicKeyPem:approvalPair.publicKey.export({type:"spki",format:"pem"}),enabled:true}];
+function approve(event){
+  const at=Date.now();
+  const proof={key_id:"owner-pilot-key",approval_id:crypto.randomUUID(),
+    approver_user_id:"owner-reviewer",mfa_verified_at:new Date(at-5000).toISOString(),
+    approved_at:new Date(at-1000).toISOString(),expires_at:new Date(at+600000).toISOString(),
+    event_id:event.event_id,incident_id:event.source_incident_id,
+    sentinel_customer_id:event.tenant.sentinel_customer_id,
+    tiquet_organization_id:event.tenant.tiquet_organization_id,
+    tiquet_client_id:event.tenant.tiquet_client_id,decision:"approve_ticket_create"};
+  const authorized={...event};
+  proof.event_sha256=approvalEventDigest(authorized);
+  proof.signature=crypto.sign(null,approvalCanonical(proof),approvalPair.privateKey).toString("base64url");
+  return {...authorized,approval:proof};
+}
 import { createSentinelIngestRouter, parseSentinelLinks, sentinelConfigFromEnv, SENTINEL_PATH } from "../server/sentinelIngress.js";
 
 const uuid=()=>crypto.randomUUID();
@@ -11,7 +28,7 @@ const link=()=>({sentinelCustomerId:uuid(),tiquetOrganizationId:"hub-org-one",ti
 class StubDatabase {
   constructor(){
     this.state={account:{id:"account-one",status:"active",hub_organization_id:"hub-org-one"},
-      client:{id:"client-one",name:"Synthetic Client"},jobs:{},incidents:{},receipts:{},activities:[]};
+      client:{id:"client-one",name:"Synthetic Client"},jobs:{},incidents:{},receipts:{},approvals:{},activities:[]};
   }
   transaction(fn){
     return async ()=>{
@@ -35,6 +52,12 @@ class StubDatabase {
         }
         if(s.startsWith("insert into activity_logs")){
           copy.activities.push({job:params[1],description:params[2]});return {rows:[]};
+        }
+        if(s.startsWith("insert into sentinel_ticket_approvals")){
+          assert.equal(copy.approvals[params[0]],undefined,"Approval replay");
+          copy.approvals[params[0]]={eventId:params[1],incidentId:params[2],clientId:params[4],
+            approver:params[6],keyId:params[7]};
+          return {rows:[]};
         }
         if(s.startsWith("insert into sentinel_ingest_events")){
           copy.receipts[params[0]]={event_id:params[0],source_incident_id:params[1],account_id:params[2],
@@ -61,7 +84,7 @@ function eventFor(mapping,action="ticket.create",incident=uuid()){
     action};
   if(action!=="ticket.create")e.recovery={observed_at:new Date().toISOString(),ticket_should_close:false,
     requires_technician_verification:true};
-  return e;
+  return action==="ticket.create"?approve(e):e;
 }
 function signed(mapping,payload,overrides={}){
   const body=JSON.stringify(payload);
@@ -76,7 +99,7 @@ function signed(mapping,payload,overrides={}){
 async function harness(t,enabled=true,authorizeService=async()=>true){
   const mapping=link(),db=new StubDatabase(),app=express();
   app.use(express.json({limit:"12kb",verify:(req,_res,body)=>req.rawBody=Buffer.from(body)}));
-  app.use(SENTINEL_PATH,createSentinelIngestRouter({db,config:{enabled,links:enabled?[mapping]:[]},authorizeService}));
+  app.use(SENTINEL_PATH,createSentinelIngestRouter({db,config:{enabled,links:enabled?[mapping]:[],approvalKeys:enabled?approvalKeys:[]},authorizeService}));
   const server=createServer(app);
   await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
   t.after(()=>new Promise(resolve=>server.close(resolve)));
@@ -104,6 +127,7 @@ test("real signed opening creates one request ticket with NO portal credential",
   assert.equal(Object.values(h.db.state.jobs)[0].secureToken,null);
   assert.equal((await h.send(e)).body.state,"duplicate");
   assert.equal(Object.keys(h.db.state.receipts).length,1);
+  assert.equal(Object.keys(h.db.state.approvals).length,1);
 });
 test("rejects browser origin, invalid signature, unknown customer and simulated events",async t=>{
   const h=await harness(t),e=eventFor(h.mapping);
@@ -116,7 +140,8 @@ test("rejects browser origin, invalid signature, unknown customer and simulated 
 test("signed payload cannot change tenant, action or event identity on replay",async t=>{
   const h=await harness(t),e=eventFor(h.mapping);
   assert.equal((await h.send(e)).status,201);
-  assert.equal((await h.send({...e,incident:{...e.incident,title:"MUTATED"}})).status,409);
+  assert.equal((await h.send({...e,incident:{...e.incident,title:"MUTATED"}})).status,403);
+  assert.equal((await h.send(approve({...e,incident:{...e.incident,title:"MUTATED"}}))).status,409);
   assert.equal((await h.send({...e,tenant:{...e.tenant,tiquet_client_id:"client-two"}})).status,403);
   assert.equal(Object.keys(h.db.state.jobs).length,1);
 });
@@ -181,4 +206,61 @@ test("out-of-window signatures and non-service Authorization are rejected",async
   assert.equal((await h.send(e,{"x-v79-timestamp":"1700000000"})).status,401);
   assert.equal((await h.send(e,{authorization:"Bearer user-jwt-not-accepted"})).status,403);
   assert.equal(Object.keys(h.db.state.receipts).length,0);
+});
+
+test("no human proof, corrupted signature, or stale approval cannot create a job",async t=>{
+  const h=await harness(t);
+  const e=eventFor(h.mapping);
+  const unsigned={...e};delete unsigned.approval;
+  assert.equal((await h.send(unsigned)).status,403);
+  const corrupt={...e,approval:{...e.approval,signature:"A".repeat(86)}};
+  assert.equal((await h.send(corrupt)).status,403);
+  const stale=approve({...unsigned});
+  stale.approval.approved_at=new Date(Date.now()-40*60000).toISOString();
+  assert.equal((await h.send(stale)).status,403);
+  assert.equal(Object.keys(h.db.state.jobs).length,0);
+  assert.equal(Object.keys(h.db.state.approvals).length,0);
+});
+test("approval parser will not accept a private signer key as a public configuration",()=>{
+  const privatePem=approvalPair.privateKey.export({type:"pkcs8",format:"pem"});
+  assert.throws(()=>parseApprovalPublicKeys([{keyId:"owner-pilot-key",publicKeyPem:privatePem,enabled:true}]));
+  assert.equal(parseApprovalPublicKeys(approvalKeys).length,1);
+});
+test("independently signed stale or non-MFA human approvals fail before ticket writes",async t=>{
+  const h=await harness(t);
+  const event=eventFor(h.mapping);
+  const resign=claims=>{
+    const proof={...event.approval,...claims};
+    proof.signature=crypto.sign(null,approvalCanonical(proof),approvalPair.privateKey).toString("base64url");
+    return {...event,approval:proof};
+  };
+  const now=Date.now();
+  assert.equal((await h.send(resign({
+    approved_at:new Date(now-30*60000).toISOString(),
+    mfa_verified_at:new Date(now-30*60000-1000).toISOString(),
+    expires_at:new Date(now+5*60000).toISOString()
+  }))).status,403);
+  assert.equal((await h.send(resign({
+    approved_at:new Date(now-1000).toISOString(),
+    mfa_verified_at:new Date(now-20*60000).toISOString()
+  }))).status,403);
+  assert.equal((await h.send(resign({
+    approver_user_id:"altered-reviewer",
+    incident_id:crypto.randomUUID()
+  }))).status,403);
+  assert.equal(Object.keys(h.db.state.jobs).length,0);
+  assert.equal(Object.keys(h.db.state.approvals).length,0);
+});
+test("missing trusted approval key fails closed even if service authorized",async t=>{
+  const mapping=link(),db=new StubDatabase(),app=express();
+  app.use(express.json({limit:"12kb",verify:(req,_res,body)=>req.rawBody=Buffer.from(body)}));
+  app.use(SENTINEL_PATH,createSentinelIngestRouter({db,config:{enabled:true,links:[mapping]},
+    authorizeService:async()=>true}));
+  const server=createServer(app);await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
+  t.after(()=>new Promise(resolve=>server.close(resolve)));
+  const args=signed(mapping,eventFor(mapping));
+  const response=await fetch("http://127.0.0.1:"+server.address().port+SENTINEL_PATH,
+    {method:"POST",...args,signal:AbortSignal.timeout(5000)});
+  assert.equal(response.status,503);
+  assert.equal(Object.keys(db.state.jobs).length,0);
 });
