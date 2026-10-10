@@ -1,4 +1,5 @@
 import { createTiquetAuthentication } from "./hubAwareAuthentication.js";
+import { createSentinelIngestRouter, sentinelConfigFromEnv, SENTINEL_PATH } from "./sentinelIngress.js";
 import { createAgentReplyDraft, listAgentReplyDrafts } from "./agentReplyDrafts.js";
 import { authorizeTiquetStaffSocket, revalidateTiquetStaffSocket } from "./tiquetSocketAccess.js";
 import { createHubEntitlementChecker } from "./hubEntitlementRevalidation.js";
@@ -518,6 +519,8 @@ app.post("/api/auth/logout", (_req, res) => {
   res.json({ ok:true });
 });
 
+// Dedicated HMAC service endpoint: never reuse customer JWT routes. Default OFF.
+app.use(SENTINEL_PATH, createSentinelIngestRouter({db, config: sentinelConfigFromEnv()}));
 app.use("/api/platform", platformRoutes);
 
 // --- AUTHENTICATION ROUTES ---

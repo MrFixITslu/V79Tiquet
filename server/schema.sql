@@ -333,3 +333,26 @@ CREATE TABLE IF NOT EXISTS agent_reply_drafts (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_reply_drafts_account_job
     ON agent_reply_drafts(account_id, job_id, created_at DESC);
+
+-- Sentinel dedicated service-ingestion extension; no Portal token or billing action.
+-- A reversible, default-disabled application endpoint is responsible for inserts.
+CREATE TABLE IF NOT EXISTS sentinel_incident_jobs (
+    source_incident_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    client_id TEXT NOT NULL REFERENCES clients(id),
+    job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id),
+    opened_at TEXT NOT NULL,
+    recovery_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sentinel_incident_account ON sentinel_incident_jobs(account_id);
+CREATE TABLE IF NOT EXISTS sentinel_ingest_events (
+    event_id TEXT PRIMARY KEY,
+    source_incident_id TEXT NOT NULL REFERENCES sentinel_incident_jobs(source_incident_id),
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    client_id TEXT NOT NULL REFERENCES clients(id),
+    action TEXT NOT NULL CHECK (action IN ('ticket.create','ticket.add_recovery_evidence')),
+    body_sha256 TEXT NOT NULL,
+    job_id TEXT NOT NULL REFERENCES jobs(id),
+    processed_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sentinel_events_incident ON sentinel_ingest_events(source_incident_id);
