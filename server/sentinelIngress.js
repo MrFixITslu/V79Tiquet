@@ -135,7 +135,7 @@ export async function persistSentinelEvent(db,event,link,bodyDigest,now=new Date
   })();
 }
 
-export function createSentinelIngestRouter({db,config,clock=()=>Math.floor(Date.now()/1000)}){
+export function createSentinelIngestRouter({db,config,clock=()=>Math.floor(Date.now()/1000),authorizeService=null}){
   if (!db || typeof db.transaction!=="function") throw new TypeError("Transactional database required");
   const router=express.Router();
   const enabled=config?.enabled===true;
@@ -146,6 +146,13 @@ export function createSentinelIngestRouter({db,config,clock=()=>Math.floor(Date.
       if (process.env.NODE_ENV==="production" && !req.secure) throw bad("TLS required",403);
       const link=authenticate(req,links,clock());
       const event=validateSentinelEvent(req.body,link);
+      // Mapping ownership does not establish an active Hub service entitlement.
+      // No adapter is wired to the live Hub yet: fail closed even if the feature flag is set.
+      if (typeof authorizeService!=="function") throw bad("Service entitlement authority unavailable",503);
+      const allowed=await authorizeService({serviceId:"v79-sentinel",sentinelCustomerId:link.sentinelCustomerId,
+        organizationId:link.tiquetOrganizationId,accountId:link.tiquetAccountId,
+        clientId:link.tiquetClientId,action:event.action});
+      if (allowed!==true) throw bad("Service entitlement denied",403);
       const result=await persistSentinelEvent(db,event,link,sha256(req.rawBody));
       return res.status(result.state==="created"?201:200).json({
         accepted:true,state:result.state,jobId:result.jobId,correlationKey:event.correlation_key

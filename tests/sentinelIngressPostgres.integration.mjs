@@ -67,7 +67,10 @@ test("actual isolated PostgreSQL Sentinel ingestion: delivery, retry, ownership,
     tiquetClientId:"client-one",secret:crypto.randomBytes(48).toString("hex"),enabled:true};
   const app=express();
   app.use(express.json({limit:"12kb",verify:(req,_res,body)=>{req.rawBody=Buffer.from(body);}}));
-  app.use(SENTINEL_PATH,createSentinelIngestRouter({db,config:{enabled:true,links:[mapping]}}));
+  // Disposable test stub; NOT a live Hub entitlement integration.
+  const authorizeService=async scope=>scope.serviceId==="v79-sentinel" &&
+    scope.organizationId==="hub-org-one" && scope.accountId==="account-one";
+  app.use(SENTINEL_PATH,createSentinelIngestRouter({db,config:{enabled:true,links:[mapping]},authorizeService}));
   server=createServer(app);await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
   const url="http://127.0.0.1:"+server.address().port+SENTINEL_PATH;
   const sign=event=>{

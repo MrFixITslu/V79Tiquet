@@ -8,6 +8,7 @@ A dedicated `POST /api/integrations/sentinel/v1/events` service route is separat
 - `V79_SENTINEL_INGEST_ENABLED` must explicitly equal `1`; otherwise the endpoint responds 404.
 - `V79_SENTINEL_LINKS_JSON` must list approved customer UUID, exact Hub organization ID, Tiquet account ID and pre-existing client ID, a **unique randomly generated secret of at least 48 bytes**, and `enabled:true`. Do not store secrets in Git.
 - A transaction checks the active Tiquet account's `hub_organization_id` and verifies the client belongs to that account. No name/email/domain matching.
+- An additional `authorizeService` callback must explicitly confirm a **live Hub service entitlement** for the exact service, customer, organization, account, client, and action, on every request, including replays. Without that callback, the route returns HTTP 503 and cannot write tickets **even if an operator sets the feature flag to 1**. The live Hub service checker is not yet implemented/wired; test callbacks are synthetic only.
 
 ## Signature
 Headers: `x-v79-service-id: v79-sentinel`, `x-v79-sentinel-customer` UUID, `x-v79-timestamp` (Unix seconds, within 5 minutes), `x-v79-signature` (lowercase hex HMAC-SHA256). Signing input: POST, newline, exact endpoint path, newline, timestamp, newline, lowercase SHA256 of raw JSON bytes. Body limit 12 KiB. Browser origins, cookies and user tokens rejected. TLS mandatory when `NODE_ENV=production`.
@@ -27,9 +28,9 @@ PostgreSQL tables `sentinel_incident_jobs` and `sentinel_ingest_events` record s
 Only an isolated Acer worktree was changed; no live users, Tiquet tickets, production databases, payment systems, mail routes, or Hub sessions were touched.
 
 ## October 10 isolated Acer evidence
-- `npm test`: 34 passing, 0 failed, 0 skipped.
+- Final `npm test`: **36/36 passed**, 0 failed, 0 skipped (includes fail-closed absent entitlement authority, revoked entitlement and replay revocation).
 - `npm run lint`: passed after explicit TypeScript Node type scope in this branch.
 - `npm run build`: passed; existing Vite large-chunk advisory remains.
-- `node --test tests/sentinelIngressPostgres.integration.mjs` with a disposable private-socket PostgreSQL 17: passed, source/receipt ownership and eight concurrent retries verified; PG instance cleaned up.
+- `node --test tests/sentinelIngressPostgres.integration.mjs` rerun with verified local PostgreSQL **17.11** runtime: **1/1 passed** on disposable private-socket database; one job, two receipts, eight simultaneous retries, safe recovery and no auto-closure. The test stops and removes its temporary PG server and data.
 - Hub disposable JSON **and PostgreSQL 17** auth/MFA/QA lifecycle independently passed, 2 of 2, zero skips (separate isolated Hub checkout).
 - The old mock simulator and source remains separate, sending `SIMULATED_ONLY`. It cannot cause real Tiquet jobs.

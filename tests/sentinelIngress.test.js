@@ -73,10 +73,10 @@ function signed(mapping,payload,overrides={}){
     "x-v79-sentinel-customer":mapping.sentinelCustomerId,"x-v79-timestamp":ts,
     "x-v79-signature":mac,...overrides}};
 }
-async function harness(t,enabled=true){
+async function harness(t,enabled=true,authorizeService=async()=>true){
   const mapping=link(),db=new StubDatabase(),app=express();
   app.use(express.json({limit:"12kb",verify:(req,_res,body)=>req.rawBody=Buffer.from(body)}));
-  app.use(SENTINEL_PATH,createSentinelIngestRouter({db,config:{enabled,links:enabled?[mapping]:[]}}));
+  app.use(SENTINEL_PATH,createSentinelIngestRouter({db,config:{enabled,links:enabled?[mapping]:[]},authorizeService}));
   const server=createServer(app);
   await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
   t.after(()=>new Promise(resolve=>server.close(resolve)));
@@ -152,6 +152,29 @@ test("revoked tenant-specific service links fail closed",async t=>{
     {method:"POST",...args,signal:AbortSignal.timeout(5000)});
   assert.equal(response.status,401);
   assert.equal(Object.keys(db.state.jobs).length,0);
+});
+test("enabled endpoint fails closed when no Hub service entitlement authority is wired",async t=>{
+  const h=await harness(t,true,null);
+  assert.equal((await h.send(eventFor(h.mapping))).status,503);
+  assert.equal(Object.keys(h.db.state.jobs).length,0);
+  assert.equal(Object.keys(h.db.state.receipts).length,0);
+});
+test("revoked Hub service entitlement stops new events and replay",async t=>{
+  let entitlement=false;const checked=[];
+  const h=await harness(t,true,async scope=>{checked.push(scope);return entitlement;});
+  const event=eventFor(h.mapping);
+  assert.equal((await h.send(event)).status,403);
+  assert.equal(Object.keys(h.db.state.jobs).length,0);
+  entitlement=true;
+  assert.equal((await h.send(event)).status,201);
+  entitlement=false;
+  assert.equal((await h.send(event)).status,403);
+  assert.equal(Object.keys(h.db.state.jobs).length,1);
+  assert.equal(Object.keys(h.db.state.receipts).length,1);
+  assert.equal(checked.length,3);
+  assert.equal(checked[0].serviceId,"v79-sentinel");
+  assert.equal(checked[0].organizationId,h.mapping.tiquetOrganizationId);
+  assert.equal(checked[0].sentinelCustomerId,h.mapping.sentinelCustomerId);
 });
 test("out-of-window signatures and non-service Authorization are rejected",async t=>{
   const h=await harness(t),e=eventFor(h.mapping);
