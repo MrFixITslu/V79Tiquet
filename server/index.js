@@ -1,5 +1,6 @@
 import { createTiquetAuthentication } from "./hubAwareAuthentication.js";
 import { createSentinelIngestRouter, sentinelConfigFromEnv, SENTINEL_PATH } from "./sentinelIngress.js";
+import { createSentinelHubServiceChecker } from "./sentinelHubServiceChecker.js";
 import { createAgentReplyDraft, listAgentReplyDrafts } from "./agentReplyDrafts.js";
 import { authorizeTiquetStaffSocket, revalidateTiquetStaffSocket } from "./tiquetSocketAccess.js";
 import { createHubEntitlementChecker } from "./hubEntitlementRevalidation.js";
@@ -520,7 +521,24 @@ app.post("/api/auth/logout", (_req, res) => {
 });
 
 // Dedicated HMAC service endpoint: never reuse customer JWT routes. Default OFF.
-app.use(SENTINEL_PATH, createSentinelIngestRouter({db, config: sentinelConfigFromEnv()}));
+const sentinelIngestConfig=sentinelConfigFromEnv();
+let sentinelHubServiceChecker=null;
+if(sentinelIngestConfig.enabled && process.env.V79_TIQUET_SENTINEL_HUB_CHECK_ENABLED==="1"){
+  try{
+    sentinelHubServiceChecker=createSentinelHubServiceChecker({
+      hubUrl:process.env.V79_SENTINEL_HUB_URL || "",
+      secret:process.env.V79_SENTINEL_HUB_SHARED_SECRET || "",
+    });
+  }catch{
+    // Misconfigured service identity must never crash ordinary Tiquet functions.
+    // A missing checker keeps Sentinel ingestion denied with HTTP 503.
+    logger.warn("Sentinel Hub machine entitlement disabled: insecure or incomplete configuration");
+  }
+}
+// No trusted active-human-reviewer callback is wired: ticket creation stays BLOCKED.
+app.use(SENTINEL_PATH, createSentinelIngestRouter({
+  db,config:sentinelIngestConfig,authorizeService:sentinelHubServiceChecker
+}));
 app.use("/api/platform", platformRoutes);
 
 // --- AUTHENTICATION ROUTES ---

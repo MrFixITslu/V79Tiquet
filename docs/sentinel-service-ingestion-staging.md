@@ -74,3 +74,24 @@ feature/owner-supervised-ticket-issuer-20261010, with test-only signatures,
 actual cross-language verification and fresh-TOTP/owner-audit unit tests.
 No real publisher, approval UI, Hub entitlement, live approval status connector,
 or signing key has been installed or activated. Production remains OFF.
+
+## Dedicated Hub machine-entitlement client — wired in isolated Tiquet staging
+
+A separate v79-tiquet service HMAC request now checks the owner Hub endpoint
+at /api/platform/sentinel/service/check. The caller signs the exact JSON
+payload with a dedicated V79_SENTINEL_HUB_SHARED_SECRET, enforces HTTPS,
+rejects redirects, browser cookies, malformed replies and outages, and
+requires an explicit true decision with validForSeconds 1–5. No human
+session, email, password or JWT is used to authorize Sentinel.
+
+This client is instantiated only if BOTH V79_SENTINEL_INGEST_ENABLED=1
+and V79_TIQUET_SENTINEL_HUB_CHECK_ENABLED=1, and the Hub origin and machine
+secret are correctly configured. With either flag off or invalid settings,
+there is no machine entitlement authority and Sentinel ingestion fails closed.
+Tiquet's reviewer-status authorization callback is still deliberately
+UNWIRED. This is staging only, not release authorization or production setup.
+
+The Hub counterpart is staged on feature/sentinel-service-entitlement-20261010
+and also defaults OFF; it needs a manually approved persistent owner-only
+machine grant, which has not been provisioned. No real machine secret or
+customer identity has been generated or configured.
