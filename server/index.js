@@ -1,6 +1,7 @@
 import { createTiquetAuthentication } from "./hubAwareAuthentication.js";
 import { createSentinelIngestRouter, sentinelConfigFromEnv, SENTINEL_PATH } from "./sentinelIngress.js";
 import { createSentinelHubServiceChecker } from "./sentinelHubServiceChecker.js";
+import { createSentinelNocApproverChecker } from "./sentinelNocApproverChecker.js";
 import { createAgentReplyDraft, listAgentReplyDrafts } from "./agentReplyDrafts.js";
 import { authorizeTiquetStaffSocket, revalidateTiquetStaffSocket } from "./tiquetSocketAccess.js";
 import { createHubEntitlementChecker } from "./hubEntitlementRevalidation.js";
@@ -535,9 +536,23 @@ if(sentinelIngestConfig.enabled && process.env.V79_TIQUET_SENTINEL_HUB_CHECK_ENA
     logger.warn("Sentinel Hub machine entitlement disabled: insecure or incomplete configuration");
   }
 }
-// No trusted active-human-reviewer callback is wired: ticket creation stays BLOCKED.
+// Second independent active-human authority. Both checks must be configured,
+// current and explicitly enabled; missing either keeps creation fail-closed.
+let sentinelNocApproverChecker=null;
+if(sentinelIngestConfig.enabled &&
+   process.env.V79_TIQUET_SENTINEL_APPROVER_CHECK_ENABLED==="1"){
+  try{
+    sentinelNocApproverChecker=createSentinelNocApproverChecker({
+      nocUrl:process.env.V79_SENTINEL_NOC_URL || "",
+      secret:process.env.V79_SENTINEL_NOC_SHARED_SECRET || "",
+    });
+  }catch{
+    logger.warn("Sentinel NOC human-reviewer revalidation disabled: insecure or incomplete configuration");
+  }
+}
 app.use(SENTINEL_PATH, createSentinelIngestRouter({
-  db,config:sentinelIngestConfig,authorizeService:sentinelHubServiceChecker
+  db,config:sentinelIngestConfig,authorizeService:sentinelHubServiceChecker,
+  authorizeApprover:sentinelNocApproverChecker
 }));
 app.use("/api/platform", platformRoutes);
 
