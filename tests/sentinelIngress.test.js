@@ -96,10 +96,10 @@ function signed(mapping,payload,overrides={}){
     "x-v79-sentinel-customer":mapping.sentinelCustomerId,"x-v79-timestamp":ts,
     "x-v79-signature":mac,...overrides}};
 }
-async function harness(t,enabled=true,authorizeService=async()=>true){
+async function harness(t,enabled=true,authorizeService=async()=>true,authorizeApprover=async()=>true){
   const mapping=link(),db=new StubDatabase(),app=express();
   app.use(express.json({limit:"12kb",verify:(req,_res,body)=>req.rawBody=Buffer.from(body)}));
-  app.use(SENTINEL_PATH,createSentinelIngestRouter({db,config:{enabled,links:enabled?[mapping]:[],approvalKeys:enabled?approvalKeys:[]},authorizeService}));
+  app.use(SENTINEL_PATH,createSentinelIngestRouter({db,config:{enabled,links:enabled?[mapping]:[],approvalKeys:enabled?approvalKeys:[]},authorizeService,authorizeApprover}));
   const server=createServer(app);
   await new Promise(resolve=>server.listen(0,"127.0.0.1",resolve));
   t.after(()=>new Promise(resolve=>server.close(resolve)));
@@ -263,4 +263,13 @@ test("missing trusted approval key fails closed even if service authorized",asyn
     {method:"POST",...args,signal:AbortSignal.timeout(5000)});
   assert.equal(response.status,503);
   assert.equal(Object.keys(db.state.jobs).length,0);
+});
+
+test("revoked or missing live administrator authorization blocks signed ticket",async t=>{
+  const denied=await harness(t,true,async()=>true,async()=>false);
+  assert.equal((await denied.send(eventFor(denied.mapping))).status,403);
+  assert.equal(Object.keys(denied.db.state.jobs).length,0);
+  const missing=await harness(t,true,async()=>true,null);
+  assert.equal((await missing.send(eventFor(missing.mapping))).status,503);
+  assert.equal(Object.keys(missing.db.state.jobs).length,0);
 });

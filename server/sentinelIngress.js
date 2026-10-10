@@ -144,7 +144,7 @@ export async function persistSentinelEvent(db,event,link,bodyDigest,approval=nul
   })();
 }
 
-export function createSentinelIngestRouter({db,config,clock=()=>Math.floor(Date.now()/1000),authorizeService=null}){
+export function createSentinelIngestRouter({db,config,clock=()=>Math.floor(Date.now()/1000),authorizeService=null,authorizeApprover=null}){
   if (!db || typeof db.transaction!=="function") throw new TypeError("Transactional database required");
   const router=express.Router();
   const enabled=config?.enabled===true;
@@ -167,6 +167,18 @@ export function createSentinelIngestRouter({db,config,clock=()=>Math.floor(Date.
         clientId:link.tiquetClientId,action:event.action});
       if (allowed!==true) throw bad("Service entitlement denied",403);
       const approval=verifyHumanTicketApproval(event,approvalKeys,clock()*1000);
+      if(event.action==="ticket.create"){
+        // A valid historic signature is not proof that its human approver is still enabled.
+        // Require a separate live identity authorization for every delivery and replay.
+        if(!approval || typeof authorizeApprover!=="function")
+          throw bad("Active administrator status unavailable",503);
+        const active=await authorizeApprover({
+          approverUserId:approval.approverUserId,approvalId:approval.approvalId,
+          approvedAt:approval.approvedAt,organizationId:link.tiquetOrganizationId,
+          sentinelCustomerId:link.sentinelCustomerId,action:event.action
+        });
+        if(active!==true) throw bad("Human approver revoked or unauthorized",403);
+      }
       const result=await persistSentinelEvent(db,event,link,sha256(req.rawBody),approval);
       return res.status(result.state==="created"?201:200).json({
         accepted:true,state:result.state,jobId:result.jobId,correlationKey:event.correlation_key

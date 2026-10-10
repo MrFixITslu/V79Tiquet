@@ -51,7 +51,8 @@ export function verifyHumanTicketApproval(event,keys,nowMs=Date.now()){
   if(!Array.isArray(keys) || keys.length===0) throw deny("Approval verification unavailable",503);
   const proof=event.approval;
   if(!proof || typeof proof!=="object" || Array.isArray(proof) ||
-    !UUID.test(proof.approval_id || "") || !ID.test(proof.approver_user_id || "") ||
+    !UUID.test(proof.approval_id || "") ||
+    !(ID.test(proof.approver_user_id || "") || UUID.test(proof.approver_user_id || "")) ||
     !ID.test(proof.key_id || "") || proof.decision!=="approve_ticket_create" ||
     !/^[a-f0-9]{64}$/.test(proof.event_sha256 || "") ||
     !/^[A-Za-z0-9_-]{86}$/.test(proof.signature || ""))

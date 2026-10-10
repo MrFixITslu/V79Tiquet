@@ -58,3 +58,19 @@ keypairs and synthetic approvals solely for isolated validation. No private
 signing key should be copied into Tiquet. The live Hub entitlement callback,
 real verified incident publisher, approval issuer and production keys are
 missing. The endpoint remains OFF in production; do not bypass the gates.
+
+## Additional current-approver reauthorization
+
+An independently signed, time-bounded approval does not by itself prove that
+its named reviewer is *still* authorized at dispatch time. The staging receiver
+therefore requires an additional active-operator authorization callback for
+every ticket.create delivery, including retries. The exact approver UUID,
+incident customer, organization, approval ID and action are passed from the
+verified signature—not taken from unauthenticated request fields. A missing
+callback yields HTTP 503; a denied or revoked reviewer yields HTTP 403.
+
+The independent NOC signer is under development on branch
+feature/owner-supervised-ticket-issuer-20261010, with test-only signatures,
+actual cross-language verification and fresh-TOTP/owner-audit unit tests.
+No real publisher, approval UI, Hub entitlement, live approval status connector,
+or signing key has been installed or activated. Production remains OFF.
