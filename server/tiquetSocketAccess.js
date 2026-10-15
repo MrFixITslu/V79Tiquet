@@ -33,15 +33,41 @@ export async function authorizeTiquetStaffSocket({ decoded, db, checkHubSubscrip
     return {
       allowed: true,
       hubIdentity,
+      // Store immutable signed-session scope, not bearer token or raw credentials.
+      sessionIdentity: { userId: String(decoded.id), accountId: String(decoded.account_id) },
       jwtExpiresAt: Number(decoded.exp) * 1000,
     };
   } catch { return deny; }
 }
 
-export async function revalidateTiquetStaffSocket(socket, checkHubSubscription, now = Date.now()) {
+export async function revalidateTiquetStaffSocket(socket, checkHubSubscription, now = Date.now(), db = null) {
   if (socket.role !== "staff") return true;
   if (!Number.isFinite(socket.jwtExpiresAt) || now >= socket.jwtExpiresAt) return false;
-  if (!checkHubSubscription || !socket.hubIdentity) return true;
-  try { return await checkHubSubscription(socket.hubIdentity) === true; }
-  catch { return false; }
+
+  // Existing staff sockets bypass Express HTTP authentication. Recheck the
+  // authoritative local account and user on every heartbeat, including when
+  // the signed Hub entitlement is cached for up to 30 seconds.
+  const id = socket.sessionIdentity;
+  if (!id?.userId || !id?.accountId || !db) return false;
+  try {
+    const user = await db.prepare(
+      "SELECT id, hub_user_id FROM users WHERE id = ? AND account_id = ?"
+    ).get(id.userId, id.accountId);
+    if (!user) return false;
+    const account = await db.prepare(
+      "SELECT status, hub_organization_id FROM accounts WHERE id = ?"
+    ).get(id.accountId);
+    if (!account || account.status !== "active") return false;
+    if (socket.hubIdentity) {
+      if (String(account.hub_organization_id || "") !== String(socket.hubIdentity.organizationId)
+        || String(user.hub_user_id || "") !== String(socket.hubIdentity.scopedUserId)) return false;
+      if (!checkHubSubscription) return false;
+      return await checkHubSubscription(socket.hubIdentity) === true;
+    }
+    // A legacy (non-Hub-linked) staff session is governed by local state.
+    // Customer beta still requires Hub-managed login only.
+    return true;
+  } catch {
+    return false;
+  }
 }
