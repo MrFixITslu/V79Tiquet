@@ -1,4 +1,5 @@
 import { createTiquetAuthentication } from "./hubAwareAuthentication.js";
+import { revokeSignedRequestTokens, isSignedSessionRevoked, tokenFingerprint } from "./tokenRevocation.js";
 import { createAgentReplyDraft, listAgentReplyDrafts } from "./agentReplyDrafts.js";
 import { authorizeTiquetStaffSocket, revalidateTiquetStaffSocket } from "./tiquetSocketAccess.js";
 import { createHubEntitlementChecker } from "./hubEntitlementRevalidation.js";
@@ -513,9 +514,19 @@ app.get("/api/platform/launch", async (req, res) => {
   }
 });
 
-app.post("/api/auth/logout", (_req, res) => {
-  clearHubSessionCookie(res);
-  res.json({ ok:true });
+app.post("/api/auth/logout", async (req, res) => {
+  try {
+    // Durable across restarts/multiple Tiquet workers. A copied bearer token
+    // and browser cookie are both revoked when present and signed/valid.
+    await revokeSignedRequestTokens({ req, jwt, jwtSecret: JWT_SECRET, db });
+    clearHubSessionCookie(res);
+    return res.json({ ok:true });
+  } catch {
+    // Never claim a successful logout if the database cannot record
+    // revocation. Still clear the client cookie as defense in depth.
+    clearHubSessionCookie(res);
+    return res.status(503).json({ ok:false, code:"SESSION_REVOCATION_UNAVAILABLE" });
+  }
 });
 
 app.use("/api/platform", platformRoutes);
@@ -3942,6 +3953,17 @@ wss.on("connection", async (ws, req) => {
         ws.close(4001, "Unauthorized");
         return;
       }
+      // Signed JWT may have been copied before explicit logout. Refuse to
+      // attach a WebSocket with a persistently revoked token.
+      try {
+        if (await isSignedSessionRevoked(db, authParam)) {
+          ws.close(4001, "Session revoked");
+          return;
+        }
+      } catch {
+        ws.close(1011, "Session verification unavailable");
+        return;
+      }
       const job = await db.prepare("SELECT id FROM jobs WHERE id = ? AND account_id = ?").get(jobIdParam, decoded.account_id);
       if (!job) {
         ws.close(4003, "Forbidden");
@@ -3958,6 +3980,7 @@ wss.on("connection", async (ws, req) => {
       ws.role = "staff";
       ws.hubIdentity = staffAccess.hubIdentity;
       ws.sessionIdentity = staffAccess.sessionIdentity;
+      ws.tokenHash = tokenFingerprint(authParam);
       ws.jwtExpiresAt = staffAccess.jwtExpiresAt;
     } else {
       ws.close(4000, "Missing credentials");
