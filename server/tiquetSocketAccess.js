@@ -1,4 +1,5 @@
 import { hubManagedMapping } from "./hubManagedLink.js";
+import { isTokenFingerprintRevoked } from "./tokenRevocation.js";
 
 // Authenticate each staff WebSocket beyond its initial JWT/job check.
 // Customer portal links follow separate secureToken access rules.
@@ -48,8 +49,11 @@ export async function revalidateTiquetStaffSocket(socket, checkHubSubscription, 
   // authoritative local account and user on every heartbeat, including when
   // the signed Hub entitlement is cached for up to 30 seconds.
   const id = socket.sessionIdentity;
-  if (!id?.userId || !id?.accountId || !db) return false;
+  if (!id?.userId || !id?.accountId || !db || !socket.tokenHash) return false;
   try {
+    // Logout revocation takes effect on the next heartbeat even when a Hub
+    // entitlement result is still cached. Missing DB state fails closed.
+    if (await isTokenFingerprintRevoked(db, socket.tokenHash)) return false;
     const user = await db.prepare(
       "SELECT id, hub_user_id FROM users WHERE id = ? AND account_id = ?"
     ).get(id.userId, id.accountId);
