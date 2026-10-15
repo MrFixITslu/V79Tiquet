@@ -23,8 +23,11 @@ export async function authorizeTiquetStaffSocket({ decoded, db, checkHubSubscrip
       tokenHubManaged: decoded.hub_managed,
     });
     let hubIdentity = null;
-    if (checkHubSubscription && link.managed) {
-      if (!link.valid) return deny;
+    if (checkHubSubscription) {
+      // Match the protected HTTP authentication contract. When Hub
+      // subscription enforcement is configured, an unlinked legacy staff
+      // session must not bypass the Hub entitlement check over WebSocket.
+      if (!link.managed || !link.valid) return deny;
       hubIdentity = {
         organizationId: account.hub_organization_id,
         scopedUserId: user.hub_user_id,
@@ -50,6 +53,10 @@ export async function revalidateTiquetStaffSocket(socket, checkHubSubscription, 
   // the signed Hub entitlement is cached for up to 30 seconds.
   const id = socket.sessionIdentity;
   if (!id?.userId || !id?.accountId || !db || !socket.tokenHash) return false;
+  // Keep every subsequent heartbeat on the same enforced Hub SSO boundary.
+  // A previously accepted legacy socket cannot persist after enforcement
+  // is enabled, even if its local user/account rows remain active.
+  if (checkHubSubscription && !socket.hubIdentity) return false;
   try {
     // Logout revocation takes effect on the next heartbeat even when a Hub
     // entitlement result is still cached. Missing DB state fails closed.
