@@ -1,4 +1,5 @@
 import { hubManagedMapping } from "./hubManagedLink.js";
+import { isSignedSessionRevoked } from "./tokenRevocation.js";
 
 // The same production Tiquet authentication middleware, dependency-injected
 // for staging JWT and signed entitlement integration testing.
@@ -21,6 +22,11 @@ export function createTiquetAuthentication({ jwt, jwtSecret, db, checkHubSubscri
         return res.status(403).json({ error: "Forbidden" });
       }
       try {
+        // Server-side denylist applies equally to a cookie and a copied Bearer
+        // value, including tokens minted before the new schema was introduced.
+        if (await isSignedSessionRevoked(db, token)) {
+          return res.status(401).json({ error: "Signed session has been revoked.", code:"SESSION_REVOKED" });
+        }
         const liveUser = await db.prepare(
           "SELECT id, hub_user_id FROM users WHERE id = ? AND account_id = ?"
         ).get(user.id, user.account_id);
