@@ -18,10 +18,16 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
+      # Dependencies are used only for disposable localhost authentication integration.
+      # No real Hub URL, account, provider, Docker apply, or production workflow dispatch.
+      - name: Install test-only dependencies (no package scripts)
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: TypeScript regression
+        run: npm run lint
       - name: Evidence checker fail-closed adversarial tests
         run: node --test tests/launch-acceptance-evidence.test.cjs
       - name: Existing isolated Hub identity and session boundary regressions
-        run: node --test tests/hubManagedLink.test.js tests/hubEntitlementRevalidation.test.js tests/tiquetSocketAccess.test.js tests/navigationState.test.js
+        run: node --test tests/hubManagedLink.test.js tests/hubEntitlementRevalidation.test.js tests/tiquetSocketAccess.test.js tests/navigationState.test.js tests/legacyAccountLink.test.js tests/hubTiquetRuntime.test.js
       - name: Assert validation only, never a production release gate
         run: |
           set -euo pipefail
