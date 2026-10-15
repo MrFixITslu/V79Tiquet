@@ -36,7 +36,6 @@ const db = { prepare(query) {
   }};
 }};
 
-function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 async function liveSocket(jobId, tenantId, token) {
   const current = { role:"client", portalSession: {
     jobId, accountId:tenantId, tokenHash:tokenFingerprint(token),
@@ -62,7 +61,12 @@ async function tick(ws) {
 async function setJob(jobId, updates) {
   const fields = Object.keys(updates);
   await pool.query(
-    "UPDATE jobs SET " + fields.map((k,i) => '"' + k + '"=$' + (i+1)).join(",") +
+    "UPDATE jobs SET " + fields.map((k,i) => {
+      const columns = {secureToken:"securetoken",secureTokenExpires:"securetokenexpires",
+        secureTokenRevokedAt:"securetokenrevokedat"};
+      if (!columns[k]) throw Error("Unexpected column in disposable test");
+      return columns[k] + "=$" + (i+1);
+    }).join(",") +
     " WHERE id=$" + (fields.length+1),
     [...Object.values(updates), jobId]
   );
@@ -86,7 +90,7 @@ async function setJob(jobId, updates) {
       await pool.query("INSERT INTO accounts(id,name,createdAt,status) VALUES($1,$2,$3,'active')",
         [id,"Synthetic Portal DB Test",new Date().toISOString()]);
       await pool.query(
-        'INSERT INTO jobs(id,title,client,status,createdAt,priority,account_id,"secureToken","secureTokenExpires") VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
+        'INSERT INTO jobs(id,title,client,status,createdat,priority,account_id,securetoken,securetokenexpires) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',
         [links[i],"Synthetic Job","Synthetic","New",new Date().toISOString(),"Normal",id,tokens[i],expires]);
     }
     server=createServer();
