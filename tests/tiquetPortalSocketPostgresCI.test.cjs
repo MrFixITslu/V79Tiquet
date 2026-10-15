@@ -14,8 +14,7 @@ if (process.env.GITHUB_ACTIONS !== "true" || process.env.NODE_ENV !== "test" ||
     process.env.CI_PORTAL_REVOKE_TEST !== "1") {
   throw new Error("REFUSING_NON_DISPOSABLE_WS_POSTGRES");
 }
-const { tokenFingerprint } = await import("../server/tokenRevocation.js");
-const { revalidateTiquetPortalSocket } = await import("../server/tiquetPortalSocketAccess.js");
+let tokenFingerprint, revalidateTiquetPortalSocket;
 const pool = new pg.Pool({ connectionString: ONLY_TEST_DB, max: 5, connectionTimeoutMillis: 3000 });
 const ids = ["tenant-a-" + randomUUID(), "tenant-b-" + randomUUID()];
 const links = ["job-a-" + randomUUID(), "job-b-" + randomUUID()];
@@ -29,7 +28,11 @@ const db = { prepare(query) {
     let n = 0;
     const numbered = query.replace(/\?/g, () => "$" + ++n);
     const r = await pool.query(numbered, args);
-    return r.rows[0] || null;
+    const row = r.rows[0];
+    // Mirror server/db.js CAMEL_MAP from the actual Tiquet DB adapter.
+    if (!row) return null;
+    return {...row, secureToken:row.securetoken, secureTokenExpires:row.securetokenexpires,
+      secureTokenRevokedAt:row.securetokenrevokedat};
   }};
 }};
 
@@ -65,6 +68,8 @@ async function setJob(jobId, updates) {
   );
 }
 (async () => {
+  ({ tokenFingerprint } = await import("../server/tokenRevocation.js"));
+  ({ revalidateTiquetPortalSocket } = await import("../server/tiquetPortalSocketAccess.js"));
   const expires = new Date(Date.now() + 60000).toISOString();
   try {
     await pool.query("CREATE TEMP TABLE IF NOT EXISTS isolated_marker(x int)"); // Connection smoke only.
