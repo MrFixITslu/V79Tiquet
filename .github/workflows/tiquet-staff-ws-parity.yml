@@ -1,0 +1,29 @@
+name: Tiquet staff WebSocket Hub identity parity
+
+on:
+  pull_request:
+    branches: [security/tiquet-durable-session-revoke-20261015]
+    paths:
+      - "server/tiquetSocketAccess.js"
+      - "tests/tiquetStaffSocketParity.test.js"
+      - ".github/workflows/tiquet-staff-ws-parity.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  staff-hub-identity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install isolated test dependencies (no native build scripts)
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Fail-closed legacy, Hub-linked, heartbeat and copied-session contract
+        run: |
+          node --test tests/tiquetStaffSocketParity.test.js tests/tiquetSocketAccess.test.js tests/tokenRevocation.test.js
+          node --check server/tiquetSocketAccess.js
