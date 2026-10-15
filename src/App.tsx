@@ -213,11 +213,24 @@ export default function App() {
   };
 
   const handleLogout = () => {
+    // Capture the current bearer BEFORE clearing sessionStorage. Hub-managed
+    // sessions normally use an HttpOnly cookie; send both when present so the
+    // server can revoke each distinct signed token durably.
+    const bearer = getToken();
     setToken(null);
     setCurrentUser(null);
     setActiveBusiness(null);
-    void fetch("/api/auth/logout", { method:"POST", credentials:"same-origin" })
-      .finally(() => window.location.assign("/api/platform/start"));
+    void fetch("/api/auth/logout", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: bearer ? { Authorization: `Bearer ${bearer}` } : {},
+    }).then(response => {
+      if (!response.ok) throw new Error("Logout revocation could not be confirmed");
+      window.location.assign("/api/platform/start");
+    }).catch(() => {
+      // Never imply server-side revocation succeeded when the DB is unavailable.
+      window.alert("Your Tiquet session could not be fully signed out. Close this tab and contact support before using a shared device.");
+    });
   };
 
   if (portalRoute.matched && portalRoute.token) {
