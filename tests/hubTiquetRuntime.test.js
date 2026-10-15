@@ -54,6 +54,7 @@ test("Tiquet actual JWT route rechecks mapped customer and revokes existing sess
         return r?.id===values[0] ? r : undefined;
       }
       if(query.includes("FROM accounts")) return accounts[values[0]];
+      if(query.includes("FROM revoked_auth_tokens")) return undefined;
       throw new Error("Unexpected query");
     }};
   }};
