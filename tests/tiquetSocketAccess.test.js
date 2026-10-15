@@ -7,6 +7,7 @@ const validUser={id:"user-a",account_id:"account-a",hub_organization_id:"org-a",
 const db={
   users:{"account-a":{id:"user-a",hub_user_id:"scoped-a"}},
   accounts:{"account-a":{status:"active",hub_organization_id:"org-a"}},
+  revoked: new Set(),
   prepare(sql){
     return {async get(...args){
       if(sql.includes("FROM users")){
@@ -14,6 +15,7 @@ const db={
         return record?.id===args[0] ? record : undefined;
       }
       if(sql.includes("FROM accounts")) return db.accounts[args[0]];
+      if(sql.includes("FROM revoked_auth_tokens")) return db.revoked.has(args[0]) ? { token_hash: args[0] } : undefined;
       throw new Error("Unapproved query in staging fixture");
     }};
   },
@@ -48,7 +50,7 @@ test("expired or malformed staff JWT cannot attach a chat socket",async()=>{
   }
 });
 test("live heartbeat closes staff sockets after Hub cancellation or JWT expiry",async()=>{
-  const ws={role:"staff",hubIdentity:{organizationId:"org-a",scopedUserId:"scoped-a"},sessionIdentity:{userId:"user-a",accountId:"account-a"},jwtExpiresAt:Date.now()+60000};
+  const ws={role:"staff",hubIdentity:{organizationId:"org-a",scopedUserId:"scoped-a"},sessionIdentity:{userId:"user-a",accountId:"account-a"},jwtExpiresAt:Date.now()+60000,tokenHash:"a".repeat(64)};
   const verify=checker=>revalidateTiquetStaffSocket(ws,checker,Date.now(),db);
   assert.equal(await verify(async()=>true),true);
   assert.equal(await verify(async()=>false),false);
@@ -65,7 +67,7 @@ test("established staff websocket immediately denies suspended account and remov
   const socket={
     role:"staff",hubIdentity:{organizationId:"org-a",scopedUserId:"scoped-a"},
     sessionIdentity:{userId:"user-a",accountId:"account-a"},
-    jwtExpiresAt:Date.now()+60000,
+    jwtExpiresAt:Date.now()+60000,tokenHash:"a".repeat(64),
   };
   const check=()=>revalidateTiquetStaffSocket(socket,async()=>true,Date.now(),db);
   assert.equal(await check(),true);
@@ -88,13 +90,16 @@ test("established staff websocket immediately denies suspended account and remov
     db.users["account-a"].hub_user_id="scoped-a";
   }
   assert.equal(await check(),true,"restored own-tenant active state passes");
+  db.revoked.add(socket.tokenHash);
+  try { assert.equal(await check(),false,"revoked signed JWT blocks already-open socket"); }
+  finally { db.revoked.delete(socket.tokenHash); }
 });
 
 test("staff socket revalidation fails closed on unavailable DB; client portal remains separate",async()=>{
   const socket={
     role:"staff",hubIdentity:{organizationId:"org-a",scopedUserId:"scoped-a"},
     sessionIdentity:{userId:"user-a",accountId:"account-a"},
-    jwtExpiresAt:Date.now()+60000,
+    jwtExpiresAt:Date.now()+60000,tokenHash:"a".repeat(64),
   };
   const unavailableDb={prepare(){throw Error("synthetic PostgreSQL unavailable")}};
   assert.equal(await revalidateTiquetStaffSocket(socket,async()=>true,Date.now(),unavailableDb),false);
