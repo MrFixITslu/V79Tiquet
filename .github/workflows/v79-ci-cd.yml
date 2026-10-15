@@ -1,5 +1,9 @@
 name: V79 CI/CD
 
+# RELEASE HOLD (2026-10-15): keep PR/main validation but NEVER publish,
+# assemble delivery artifacts or deploy on a main push until a separate
+# immutable-image/manual exact-SHA release process is approved and installed.
+
 on:
   pull_request:
     branches: [main]
@@ -91,13 +95,13 @@ jobs:
         run: |
           if [ -f /tmp/v79-tiquet-ci.pid ]; then kill "$(cat /tmp/v79-tiquet-ci.pid)" || true; fi
       - name: Create delivery bundle
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        if: ${{ false }} # Release HOLD: no automatic artifact, image or deployment
         run: |
           tar --exclude=.git --exclude=node_modules --exclude=.env --exclude='.env.*' \
               --exclude=data --exclude=uploads --exclude=backups --exclude=dist --exclude='*.tar.gz' \
               -czf "${RUNNER_TEMP}/${GITHUB_REPOSITORY##*/}-${GITHUB_SHA::12}.tar.gz" .
       - name: Upload delivery bundle
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+        if: ${{ false }} # Release HOLD: no automatic artifact, image or deployment
         uses: actions/upload-artifact@v4
         with:
           name: release-${{ github.sha }}
@@ -109,7 +113,7 @@ jobs:
     name: Publish Docker image
     runs-on: ubuntu-latest
     needs: validate
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    if: ${{ false }} # Release HOLD: no automatic artifact, image or deployment
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -128,7 +132,7 @@ jobs:
     name: Deploy validated release to server
     runs-on: ubuntu-latest
     needs: [validate, deliver-container]
-    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    if: ${{ false }} # Release HOLD: no automatic artifact, image or deployment
     environment: production
     timeout-minutes: 90
     steps:
