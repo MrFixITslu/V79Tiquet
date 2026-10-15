@@ -27,7 +27,7 @@ jobs:
       - name: Evidence checker fail-closed adversarial tests
         run: node --test tests/launch-acceptance-evidence.test.cjs
       - name: Existing isolated Hub identity and session boundary regressions
-        run: node --test tests/hubManagedLink.test.js tests/hubEntitlementRevalidation.test.js tests/tiquetSocketAccess.test.js tests/navigationState.test.js tests/legacyAccountLink.test.js tests/hubTiquetRuntime.test.js
+        run: node --test tests/hubManagedLink.test.js tests/hubEntitlementRevalidation.test.js tests/tiquetSocketAccess.test.js tests/navigationState.test.js tests/legacyAccountLink.test.js tests/hubTiquetRuntime.test.js tests/hubLaunchConsumption.test.js
       - name: Assert validation only, never a production release gate
         run: |
           set -euo pipefail
