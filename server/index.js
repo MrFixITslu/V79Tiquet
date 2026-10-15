@@ -2,6 +2,7 @@ import { createTiquetAuthentication } from "./hubAwareAuthentication.js";
 import { revokeSignedRequestTokens, isSignedSessionRevoked, tokenFingerprint } from "./tokenRevocation.js";
 import { createAgentReplyDraft, listAgentReplyDrafts } from "./agentReplyDrafts.js";
 import { authorizeTiquetStaffSocket, revalidateTiquetStaffSocket } from "./tiquetSocketAccess.js";
+import { revalidateTiquetPortalSocket } from "./tiquetPortalSocketAccess.js";
 import { createHubEntitlementChecker } from "./hubEntitlementRevalidation.js";
 import 'dotenv/config';
 import { createServer as createViteServer } from "vite";
@@ -3945,6 +3946,8 @@ wss.on("connection", async (ws, req) => {
       }
       jobId = job.id;
       ws.role = "client";
+      // Bind to the current scoped portal token, not a raw secret on ws.
+      ws.portalSession = { jobId: String(job.id), accountId: String(job.account_id), tokenHash: tokenFingerprint(portalToken) };
     } else if (jobIdParam && authParam) {
       let decoded;
       try {
@@ -4014,7 +4017,12 @@ const wsHeartbeat = setInterval(() => {
         }
         // The authenticated HTTP middleware does not run on WebSockets.
         // Check live subscription and JWT expiry before permitting further chat.
-        if (!(await revalidateTiquetStaffSocket(ws, checkHubSubscription, Date.now(), db))) {
+        if (ws.role === "client") {
+          if (!(await revalidateTiquetPortalSocket(ws, db, Date.now()))) {
+            unsubscribeFromJob(ws.jobId, ws);
+            return ws.close(4003, "Portal link no longer authorized");
+          }
+        } else if (!(await revalidateTiquetStaffSocket(ws, checkHubSubscription, Date.now(), db))) {
           unsubscribeFromJob(ws.jobId, ws);
           return ws.close(4003, "Hub entitlement or session expired");
         }
