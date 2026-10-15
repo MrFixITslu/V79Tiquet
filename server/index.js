@@ -3948,6 +3948,12 @@ wss.on("connection", async (ws, req) => {
       ws.role = "client";
       // Bind to the current scoped portal token, not a raw secret on ws.
       ws.portalSession = { jobId: String(job.id), accountId: String(job.account_id), tokenHash: tokenFingerprint(portalToken) };
+      // Close the revoke/tenant-status race between initial token lookup
+      // and joining the room, not just on the next periodic heartbeat.
+      if (!(await revalidateTiquetPortalSocket(ws, db, Date.now()))) {
+        ws.close(4003, "Portal link no longer authorized");
+        return;
+      }
     } else if (jobIdParam && authParam) {
       let decoded;
       try {
