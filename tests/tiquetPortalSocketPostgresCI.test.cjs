@@ -72,7 +72,16 @@ async function setJob(jobId, updates) {
   ({ revalidateTiquetPortalSocket } = await import("../server/tiquetPortalSocketAccess.js"));
   const expires = new Date(Date.now() + 60000).toISOString();
   try {
-    await pool.query("CREATE TEMP TABLE IF NOT EXISTS isolated_marker(x int)"); // Connection smoke only.
+    // Disposable schema contains the exact Tiquet columns referenced by the
+    // production guard. It is NOT a full schema migration or deployment test.
+    await pool.query(`CREATE TABLE accounts (
+      id TEXT PRIMARY KEY, name TEXT NOT NULL, createdat TEXT NOT NULL, status TEXT NOT NULL
+    )`);
+    await pool.query(`CREATE TABLE jobs (
+      id TEXT PRIMARY KEY, title TEXT NOT NULL, client TEXT NOT NULL, status TEXT NOT NULL,
+      createdat TEXT NOT NULL, priority TEXT NOT NULL, account_id TEXT NOT NULL,
+      securetoken TEXT, securetokenexpires TEXT, securetokenrevokedat TEXT
+    )`);
     for(const [i,id] of ids.entries()){
       await pool.query("INSERT INTO accounts(id,name,createdAt,status) VALUES($1,$2,$3,'active')",
         [id,"Synthetic Portal DB Test",new Date().toISOString()]);
