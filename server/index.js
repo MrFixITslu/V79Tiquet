@@ -497,7 +497,7 @@ app.get("/api/platform/launch", async (req, res) => {
       account_id: local.accountId,
       hub_managed: true,
       hub_organization_id: hubSession.organization.id,
-    }, JWT_SECRET, { expiresIn: "30m" });
+    }, JWT_SECRET, { expiresIn: "30m", jwtid: uuidv4() });
     setHubSessionCookie(res, token);
     logger.audit("hub_login_success", {
       userId:local.userId,
