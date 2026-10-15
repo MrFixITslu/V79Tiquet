@@ -34,3 +34,89 @@ jobs:
           node scripts/launch-acceptance-evidence.cjs --template > "$RUNNER_TEMP/acceptance-example.json"
           node scripts/launch-acceptance-evidence.cjs --check "$RUNNER_TEMP/acceptance-example.json" > "$RUNNER_TEMP/acceptance-report.json"
           node -e 'const r=require(process.argv[1]);if(r.production_decision!=="NO-GO"||r.cases_outstanding.length!==15||r.must_not_automate_deploy!==true)process.exit(1)' "$RUNNER_TEMP/acceptance-report.json"
+
+
+  isolated-api:
+    name: Ephemeral Tiquet PostgreSQL and Hub-managed API negative tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 18
+    # This job cannot reach or mutate production. All identity/DB data are disposable CI fixtures.
+    services:
+      postgres:
+        image: public.ecr.aws/docker/library/postgres:16-alpine
+        env:
+          POSTGRES_DB: tiquet_test
+          POSTGRES_USER: tiquet_test
+          POSTGRES_PASSWORD: tiquet_test_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tiquet_test -d tiquet_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      NODE_ENV: test
+      PORT: "3000"
+      DATABASE_URL: postgresql://tiquet_test:tiquet_test_password@127.0.0.1:5432/tiquet_test
+      JWT_SECRET: ci_jwt_secret_0123456789abcdef0123456789abcdef
+      SUPER_ADMIN_JWT_SECRET: ci_admin_secret_0123456789abcdef0123456789abcdef
+      V79_PLATFORM_SHARED_SECRET: ci_platform_secret_0123456789abcdef0123456789abcdef
+      V79_TIQUET_LAUNCH_SECRET: ci_launch_secret_0123456789abcdef0123456789abcdef
+      V79_HUB_INTERNAL_URL: http://127.0.0.1:9
+      V79_HUB_PUBLIC_URL: https://hub.example.test
+      APP_BASE_URL: http://127.0.0.1:3000
+      SEED_DEMO_DATA: "false"
+      V79_ALLOW_LEGACY_AUTH: "0"
+      V79_HUB_MANAGED_BILLING: "1"
+      TIQUET_TEST_BASE_URL: http://127.0.0.1:3000
+      TEST_BASE_URL: http://127.0.0.1:3000
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: Refuse tracked customer runtime data and unexpected release context
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "$(git ls-files -- data uploads backups logs)" ]; then
+            echo 'Refusing tracked app runtime data' >&2
+            exit 1
+          fi
+          test "$V79_ALLOW_LEGACY_AUTH" = 0
+          test "$V79_HUB_INTERNAL_URL" = http://127.0.0.1:9
+          test "$TIQUET_TEST_BASE_URL" = http://127.0.0.1:3000
+          test "$NODE_ENV" = test
+      - name: Install dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Start only ephemeral local Tiquet API
+        shell: bash
+        run: |
+          set -euo pipefail
+          node server/index.js > "$RUNNER_TEMP/tiquet-api.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/tiquet-api.pid"
+          for i in {1..60}; do
+            if curl --fail --silent --max-time 2 http://127.0.0.1:3000/health/ready > "$RUNNER_TEMP/tiquet-ready.json"; then
+              node -e 'const fs=require("node:fs");const j=JSON.parse(fs.readFileSync(process.argv[1]));if(j.database!=="connected")process.exit(1)' "$RUNNER_TEMP/tiquet-ready.json"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "Ephemeral Tiquet did not become ready; no remote target was contacted" >&2
+          exit 1
+      - name: Real Hub-managed Tiquet HTTP negative authentication
+        shell: bash
+        run: node tests/hubManagedApi.test.cjs
+      - name: Disposable synthetic provisioning and tenant boundary contract
+        shell: bash
+        run: node tests/platformProvisioning.test.cjs
+      - name: Stop only this CI process
+        if: always()
+        shell: bash
+        run: |
+          if test -f "$RUNNER_TEMP/tiquet-api.pid"; then
+            kill "$(cat "$RUNNER_TEMP/tiquet-api.pid")" 2>/dev/null || true
+          fi
