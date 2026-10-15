@@ -113,6 +113,9 @@ jobs:
       - name: Disposable synthetic provisioning and tenant boundary contract
         shell: bash
         run: node tests/platformProvisioning.test.cjs
+      - name: Real disposable Tiquet HTTP direct-launch and open-redirect denial
+        shell: bash
+        run: node tests/realTiquetLaunchNegative.test.cjs
       - name: Stop only this CI process
         if: always()
         shell: bash
