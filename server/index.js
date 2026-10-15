@@ -3957,6 +3957,7 @@ wss.on("connection", async (ws, req) => {
       jobId = job.id;
       ws.role = "staff";
       ws.hubIdentity = staffAccess.hubIdentity;
+      ws.sessionIdentity = staffAccess.sessionIdentity;
       ws.jwtExpiresAt = staffAccess.jwtExpiresAt;
     } else {
       ws.close(4000, "Missing credentials");
@@ -3990,7 +3991,7 @@ const wsHeartbeat = setInterval(() => {
         }
         // The authenticated HTTP middleware does not run on WebSockets.
         // Check live subscription and JWT expiry before permitting further chat.
-        if (!(await revalidateTiquetStaffSocket(ws, checkHubSubscription))) {
+        if (!(await revalidateTiquetStaffSocket(ws, checkHubSubscription, Date.now(), db))) {
           unsubscribeFromJob(ws.jobId, ws);
           return ws.close(4003, "Hub entitlement or session expired");
         }
