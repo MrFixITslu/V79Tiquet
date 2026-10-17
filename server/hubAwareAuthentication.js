@@ -39,6 +39,14 @@ export function createTiquetAuthentication({ jwt, jwtSecret, db, checkHubSubscri
           error: "ACCOUNT_SUSPENDED",
           message: "This account has been suspended. Please contact support.",
         });
+        // Match staff and portal WebSocket account state: only an explicitly
+        // active account can use authenticated HTTP routes. A future state
+        // (pending, cancelled, deleted, unknown) must not silently become
+        // authorized merely because it is not spelled "suspended".
+        if (account.status !== "active") return res.status(403).json({
+          error: "ACCOUNT_INACTIVE",
+          code: "ACCOUNT_NOT_ACTIVE",
+        });
         if (checkHubSubscription) {
           const mapping = hubManagedMapping({
             accountOrganizationId: account.hub_organization_id,
