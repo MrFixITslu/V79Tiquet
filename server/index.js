@@ -3,6 +3,7 @@ import { revokeSignedRequestTokens, isSignedSessionRevoked, tokenFingerprint } f
 import { createAgentReplyDraft, listAgentReplyDrafts } from "./agentReplyDrafts.js";
 import { authorizeTiquetStaffSocket, revalidateTiquetStaffSocket } from "./tiquetSocketAccess.js";
 import { revalidateTiquetPortalSocket } from "./tiquetPortalSocketAccess.js";
+import { isStalledSocketRevalidation } from "./tiquetSocketHeartbeatGuard.js";
 import { createHubEntitlementChecker } from "./hubEntitlementRevalidation.js";
 import 'dotenv/config';
 import { createServer as createViteServer } from "vite";
@@ -4013,8 +4014,18 @@ wss.on("connection", async (ws, req) => {
 // Drop dead connections (e.g. laptop sleep, dropped wifi) every 30s
 const wsHeartbeat = setInterval(() => {
   wss.clients.forEach(ws => {
-    if (ws.entitlementCheckInFlight) return;
+    if (ws.entitlementCheckInFlight) {
+      // A stalled DB/Hub promise must not preserve a private room subscription
+      // indefinitely. Heartbeat is 15s; 30s is the maximum allowed stalled
+      // check window. This is an immediate fail-closed unsubscribe/terminate.
+      if (isStalledSocketRevalidation(ws)) {
+        unsubscribeFromJob(ws.jobId, ws);
+        ws.terminate();
+      }
+      return;
+    }
     ws.entitlementCheckInFlight = true;
+    ws.entitlementCheckStartedAt = Date.now();
     void (async () => {
       try {
         if (ws.isAlive === false) {
@@ -4039,6 +4050,7 @@ const wsHeartbeat = setInterval(() => {
         ws.terminate();
       } finally {
         ws.entitlementCheckInFlight = false;
+        ws.entitlementCheckStartedAt = null;
       }
     })();
   });
