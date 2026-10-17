@@ -32,9 +32,10 @@ jobs:
           node --check server/tokenRevocation.js
           node --check server/tiquetSocketAccess.js
           node --check server/tiquetPortalSocketAccess.js
+          node --check server/tiquetSocketHeartbeatGuard.js
       - name: Run isolated session, tenant, owner mapping and websocket guard tests
         run: |
-          node --test tests/tokenRevocation.test.js tests/tiquetSocketAccess.test.js tests/tiquetStaffSocketParity.test.js tests/tiquetPortalSocketRevocation.test.js tests/hubTiquetRuntime.test.js tests/p1ReleaseHoldContract.test.js
+          node --test tests/tokenRevocation.test.js tests/tiquetSocketAccess.test.js tests/tiquetStaffSocketParity.test.js tests/tiquetPortalSocketRevocation.test.js tests/hubTiquetRuntime.test.js tests/p1ReleaseHoldContract.test.js tests/tiquetSocketHeartbeatGuard.test.js
       - name: TypeScript check and production bundle verification only
         run: |
           npm run lint
