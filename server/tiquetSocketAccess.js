@@ -1,4 +1,5 @@
 import { hubManagedMapping } from "./hubManagedLink.js";
+import { isTokenFingerprintRevoked } from "./tokenRevocation.js";
 
 // Authenticate each staff WebSocket beyond its initial JWT/job check.
 // Customer portal links follow separate secureToken access rules.
@@ -22,8 +23,11 @@ export async function authorizeTiquetStaffSocket({ decoded, db, checkHubSubscrip
       tokenHubManaged: decoded.hub_managed,
     });
     let hubIdentity = null;
-    if (checkHubSubscription && link.managed) {
-      if (!link.valid) return deny;
+    if (checkHubSubscription) {
+      // Match the protected HTTP authentication contract. When Hub
+      // subscription enforcement is configured, an unlinked legacy staff
+      // session must not bypass the Hub entitlement check over WebSocket.
+      if (!link.managed || !link.valid) return deny;
       hubIdentity = {
         organizationId: account.hub_organization_id,
         scopedUserId: user.hub_user_id,
@@ -33,15 +37,48 @@ export async function authorizeTiquetStaffSocket({ decoded, db, checkHubSubscrip
     return {
       allowed: true,
       hubIdentity,
+      // Store immutable signed-session scope, not bearer token or raw credentials.
+      sessionIdentity: { userId: String(decoded.id), accountId: String(decoded.account_id) },
       jwtExpiresAt: Number(decoded.exp) * 1000,
     };
   } catch { return deny; }
 }
 
-export async function revalidateTiquetStaffSocket(socket, checkHubSubscription, now = Date.now()) {
+export async function revalidateTiquetStaffSocket(socket, checkHubSubscription, now = Date.now(), db = null) {
   if (socket.role !== "staff") return true;
   if (!Number.isFinite(socket.jwtExpiresAt) || now >= socket.jwtExpiresAt) return false;
-  if (!checkHubSubscription || !socket.hubIdentity) return true;
-  try { return await checkHubSubscription(socket.hubIdentity) === true; }
-  catch { return false; }
+
+  // Existing staff sockets bypass Express HTTP authentication. Recheck the
+  // authoritative local account and user on every heartbeat, including when
+  // the signed Hub entitlement is cached for up to 30 seconds.
+  const id = socket.sessionIdentity;
+  if (!id?.userId || !id?.accountId || !db || !socket.tokenHash) return false;
+  // Keep every subsequent heartbeat on the same enforced Hub SSO boundary.
+  // A previously accepted legacy socket cannot persist after enforcement
+  // is enabled, even if its local user/account rows remain active.
+  if (checkHubSubscription && !socket.hubIdentity) return false;
+  try {
+    // Logout revocation takes effect on the next heartbeat even when a Hub
+    // entitlement result is still cached. Missing DB state fails closed.
+    if (await isTokenFingerprintRevoked(db, socket.tokenHash)) return false;
+    const user = await db.prepare(
+      "SELECT id, hub_user_id FROM users WHERE id = ? AND account_id = ?"
+    ).get(id.userId, id.accountId);
+    if (!user) return false;
+    const account = await db.prepare(
+      "SELECT status, hub_organization_id FROM accounts WHERE id = ?"
+    ).get(id.accountId);
+    if (!account || account.status !== "active") return false;
+    if (socket.hubIdentity) {
+      if (String(account.hub_organization_id || "") !== String(socket.hubIdentity.organizationId)
+        || String(user.hub_user_id || "") !== String(socket.hubIdentity.scopedUserId)) return false;
+      if (!checkHubSubscription) return false;
+      return await checkHubSubscription(socket.hubIdentity) === true;
+    }
+    // A legacy (non-Hub-linked) staff session is governed by local state.
+    // Customer beta still requires Hub-managed login only.
+    return true;
+  } catch {
+    return false;
+  }
 }

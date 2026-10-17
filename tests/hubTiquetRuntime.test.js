@@ -54,6 +54,7 @@ test("Tiquet actual JWT route rechecks mapped customer and revokes existing sess
         return r?.id===values[0] ? r : undefined;
       }
       if(query.includes("FROM accounts")) return accounts[values[0]];
+      if(query.includes("FROM revoked_auth_tokens")) return undefined;
       throw new Error("Unexpected query");
     }};
   }};
@@ -92,7 +93,15 @@ test("Tiquet actual JWT route rechecks mapped customer and revokes existing sess
   accounts["account-a"].hub_organization_id="org-a";
   accounts["account-a"].status="suspended";
   assert.equal((await request(aToken)).status,402,"suspension beats cached entitlement");
+  for (const status of ["inactive","pending","deleted","",null,"trial"]) {
+    accounts["account-a"].status=status;
+    const blocked=await request(aToken);
+    assert.equal(blocked.status,403,"non-active account blocked even with cached Hub approval: "+String(status));
+    assert.equal((await blocked.json()).code,"ACCOUNT_NOT_ACTIVE");
+    assert.equal((await request(bToken)).status,200,"other tenant unaffected by A status "+String(status));
+  }
   accounts["account-a"].status="active";
+  assert.equal((await request(aToken)).status,200,"active mapped account resumes access");
   await new Promise(resolve=>setTimeout(resolve,1100));
   revokeA=true;
   assert.equal((await request(aToken)).status,403,"revocation applied to existing 8h JWT");

@@ -1,0 +1,48 @@
+name: Tiquet isolated PostgreSQL portal WebSocket revocation
+
+on:
+  pull_request:
+    branches: [feature/p1-staff-ws-hub-entitlement-parity-20261015]
+    paths:
+      - "tests/tiquetPortalSocketPostgresCI.test.cjs"
+      - "server/tiquetPortalSocketAccess.js"
+      - "server/index.js"
+      - ".github/workflows/tiquet-portal-ws-postgres.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-disposable-postgres-ws:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: tiquet_test
+          POSTGRES_PASSWORD: tiquet_test_password
+          POSTGRES_DB: tiquet_test
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tiquet_test -d tiquet_test"
+          --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      GITHUB_ACTIONS: "true"
+      NODE_ENV: test
+      CI_PORTAL_REVOKE_TEST: "1"
+      DATABASE_URL: postgresql://tiquet_test:tiquet_test_password@127.0.0.1:5432/tiquet_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install required local test packages only
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Run source syntax check and disposable Postgres-backed WS contract
+        run: |
+          node --check tests/tiquetPortalSocketPostgresCI.test.cjs
+          node --check server/tiquetPortalSocketAccess.js
+          node tests/tiquetPortalSocketPostgresCI.test.cjs

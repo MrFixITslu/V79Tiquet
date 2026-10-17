@@ -333,3 +333,13 @@ CREATE TABLE IF NOT EXISTS agent_reply_drafts (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_reply_drafts_account_job
     ON agent_reply_drafts(account_id, job_id, created_at DESC);
+
+-- 21. Durable signed-session logout / copied-token revocation.
+-- Store only SHA-256 fingerprints (never the raw bearer); expire by JWT epoch seconds.
+-- This DDL is additive/idempotent, shared across all app instances using PostgreSQL.
+CREATE TABLE IF NOT EXISTS revoked_auth_tokens (
+    token_hash TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    expires_at BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_revoked_auth_tokens_expiry ON revoked_auth_tokens(expires_at);

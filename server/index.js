@@ -1,6 +1,9 @@
 import { createTiquetAuthentication } from "./hubAwareAuthentication.js";
+import { revokeSignedRequestTokens, isSignedSessionRevoked, tokenFingerprint } from "./tokenRevocation.js";
 import { createAgentReplyDraft, listAgentReplyDrafts } from "./agentReplyDrafts.js";
 import { authorizeTiquetStaffSocket, revalidateTiquetStaffSocket } from "./tiquetSocketAccess.js";
+import { revalidateTiquetPortalSocket } from "./tiquetPortalSocketAccess.js";
+import { isStalledSocketRevalidation } from "./tiquetSocketHeartbeatGuard.js";
 import { createHubEntitlementChecker } from "./hubEntitlementRevalidation.js";
 import 'dotenv/config';
 import { createServer as createViteServer } from "vite";
@@ -496,7 +499,7 @@ app.get("/api/platform/launch", async (req, res) => {
       account_id: local.accountId,
       hub_managed: true,
       hub_organization_id: hubSession.organization.id,
-    }, JWT_SECRET, { expiresIn: "30m" });
+    }, JWT_SECRET, { expiresIn: "30m", jwtid: uuidv4() });
     setHubSessionCookie(res, token);
     logger.audit("hub_login_success", {
       userId:local.userId,
@@ -513,9 +516,19 @@ app.get("/api/platform/launch", async (req, res) => {
   }
 });
 
-app.post("/api/auth/logout", (_req, res) => {
-  clearHubSessionCookie(res);
-  res.json({ ok:true });
+app.post("/api/auth/logout", async (req, res) => {
+  try {
+    // Durable across restarts/multiple Tiquet workers. A copied bearer token
+    // and browser cookie are both revoked when present and signed/valid.
+    await revokeSignedRequestTokens({ req, jwt, jwtSecret: JWT_SECRET, db });
+    clearHubSessionCookie(res);
+    return res.json({ ok:true });
+  } catch {
+    // Never claim a successful logout if the database cannot record
+    // revocation. Still clear the client cookie as defense in depth.
+    clearHubSessionCookie(res);
+    return res.status(503).json({ ok:false, code:"SESSION_REVOCATION_UNAVAILABLE" });
+  }
 });
 
 app.use("/api/platform", platformRoutes);
@@ -3934,12 +3947,31 @@ wss.on("connection", async (ws, req) => {
       }
       jobId = job.id;
       ws.role = "client";
+      // Bind to the current scoped portal token, not a raw secret on ws.
+      ws.portalSession = { jobId: String(job.id), accountId: String(job.account_id), tokenHash: tokenFingerprint(portalToken) };
+      // Close the revoke/tenant-status race between initial token lookup
+      // and joining the room, not just on the next periodic heartbeat.
+      if (!(await revalidateTiquetPortalSocket(ws, db, Date.now()))) {
+        ws.close(4003, "Portal link no longer authorized");
+        return;
+      }
     } else if (jobIdParam && authParam) {
       let decoded;
       try {
         decoded = jwt.verify(authParam, JWT_SECRET);
       } catch (e) {
         ws.close(4001, "Unauthorized");
+        return;
+      }
+      // Signed JWT may have been copied before explicit logout. Refuse to
+      // attach a WebSocket with a persistently revoked token.
+      try {
+        if (await isSignedSessionRevoked(db, authParam)) {
+          ws.close(4001, "Session revoked");
+          return;
+        }
+      } catch {
+        ws.close(1011, "Session verification unavailable");
         return;
       }
       const job = await db.prepare("SELECT id FROM jobs WHERE id = ? AND account_id = ?").get(jobIdParam, decoded.account_id);
@@ -3957,6 +3989,8 @@ wss.on("connection", async (ws, req) => {
       jobId = job.id;
       ws.role = "staff";
       ws.hubIdentity = staffAccess.hubIdentity;
+      ws.sessionIdentity = staffAccess.sessionIdentity;
+      ws.tokenHash = tokenFingerprint(authParam);
       ws.jwtExpiresAt = staffAccess.jwtExpiresAt;
     } else {
       ws.close(4000, "Missing credentials");
@@ -3980,8 +4014,18 @@ wss.on("connection", async (ws, req) => {
 // Drop dead connections (e.g. laptop sleep, dropped wifi) every 30s
 const wsHeartbeat = setInterval(() => {
   wss.clients.forEach(ws => {
-    if (ws.entitlementCheckInFlight) return;
+    if (ws.entitlementCheckInFlight) {
+      // A stalled DB/Hub promise must not preserve a private room subscription
+      // indefinitely. Heartbeat is 15s; 30s is the maximum allowed stalled
+      // check window. This is an immediate fail-closed unsubscribe/terminate.
+      if (isStalledSocketRevalidation(ws)) {
+        unsubscribeFromJob(ws.jobId, ws);
+        ws.terminate();
+      }
+      return;
+    }
     ws.entitlementCheckInFlight = true;
+    ws.entitlementCheckStartedAt = Date.now();
     void (async () => {
       try {
         if (ws.isAlive === false) {
@@ -3990,7 +4034,12 @@ const wsHeartbeat = setInterval(() => {
         }
         // The authenticated HTTP middleware does not run on WebSockets.
         // Check live subscription and JWT expiry before permitting further chat.
-        if (!(await revalidateTiquetStaffSocket(ws, checkHubSubscription))) {
+        if (ws.role === "client") {
+          if (!(await revalidateTiquetPortalSocket(ws, db, Date.now()))) {
+            unsubscribeFromJob(ws.jobId, ws);
+            return ws.close(4003, "Portal link no longer authorized");
+          }
+        } else if (!(await revalidateTiquetStaffSocket(ws, checkHubSubscription, Date.now(), db))) {
           unsubscribeFromJob(ws.jobId, ws);
           return ws.close(4003, "Hub entitlement or session expired");
         }
@@ -4001,6 +4050,7 @@ const wsHeartbeat = setInterval(() => {
         ws.terminate();
       } finally {
         ws.entitlementCheckInFlight = false;
+        ws.entitlementCheckStartedAt = null;
       }
     })();
   });
