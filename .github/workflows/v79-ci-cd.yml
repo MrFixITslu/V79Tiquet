@@ -26,7 +26,9 @@ jobs:
     timeout-minutes: 25
     services:
       postgres:
-        image: public.ecr.aws/docker/library/postgres:16-alpine
+        # CI-only disposable PostgreSQL; public ECR returned Data limit exceeded.
+        # Keep production DB/image and deployment behavior untouched.
+        image: postgres:16
         env:
           POSTGRES_DB: tiquet_test
           POSTGRES_USER: tiquet_test
@@ -86,7 +88,7 @@ jobs:
           npm test
           npm run test:integration
       - name: Verify Docker image can build
-        run: docker build --build-arg NODE_BASE=public.ecr.aws/docker/library/node:20-alpine --tag v79-tiquet-ci .
+        run: docker build --build-arg NODE_BASE=node:20-alpine --tag v79-tiquet-ci .
       - name: Show API log on failure
         if: failure()
         run: cat /tmp/v79-tiquet-ci.log || true
