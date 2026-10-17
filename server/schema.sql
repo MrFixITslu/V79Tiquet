@@ -1,8 +1,6 @@
--- =====================================================================
--- Tiquet PostgreSQL Schema
+-- ==============================================================-- Tiquet PostgreSQL Schema
 -- Migration from SQLite to PostgreSQL 16
--- =====================================================================
-
+-- ==============================================================
 -- 1. Accounts (Tenants)
 CREATE TABLE IF NOT EXISTS accounts (
     id TEXT PRIMARY KEY,
@@ -343,3 +341,41 @@ CREATE TABLE IF NOT EXISTS revoked_auth_tokens (
     expires_at BIGINT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_revoked_auth_tokens_expiry ON revoked_auth_tokens(expires_at);
+-- Sentinel dedicated service-ingestion extension; no Portal token or billing action.
+-- A reversible, default-disabled application endpoint is responsible for inserts.
+CREATE TABLE IF NOT EXISTS sentinel_incident_jobs (
+    source_incident_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    client_id TEXT NOT NULL REFERENCES clients(id),
+    job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id),
+    opened_at TEXT NOT NULL,
+    recovery_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sentinel_incident_account ON sentinel_incident_jobs(account_id);
+CREATE TABLE IF NOT EXISTS sentinel_ingest_events (
+    event_id TEXT PRIMARY KEY,
+    source_incident_id TEXT NOT NULL REFERENCES sentinel_incident_jobs(source_incident_id),
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    client_id TEXT NOT NULL REFERENCES clients(id),
+    action TEXT NOT NULL CHECK (action IN ('ticket.create','ticket.add_recovery_evidence')),
+    body_sha256 TEXT NOT NULL,
+    job_id TEXT NOT NULL REFERENCES jobs(id),
+    processed_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sentinel_events_incident ON sentinel_ingest_events(source_incident_id);
+
+-- Audit independent, one-event-only human approvals. Private signing keys are never stored here.
+CREATE TABLE IF NOT EXISTS sentinel_ticket_approvals (
+  approval_id TEXT PRIMARY KEY,
+  event_id TEXT NOT NULL UNIQUE REFERENCES sentinel_ingest_events(event_id) DEFERRABLE INITIALLY DEFERRED,
+  source_incident_id TEXT NOT NULL REFERENCES sentinel_incident_jobs(source_incident_id),
+  account_id TEXT NOT NULL REFERENCES accounts(id),
+  client_id TEXT NOT NULL REFERENCES clients(id),
+  job_id TEXT NOT NULL REFERENCES jobs(id),
+  approver_user_id TEXT NOT NULL,
+  approval_key_id TEXT NOT NULL,
+  evidence_sha256 TEXT NOT NULL,
+  approved_at TEXT NOT NULL,
+  recorded_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sentinel_approvals_incident ON sentinel_ticket_approvals(source_incident_id);
