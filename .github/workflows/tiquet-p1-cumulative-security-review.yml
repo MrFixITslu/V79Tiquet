@@ -1,0 +1,79 @@
+name: P1 consolidated Tiquet security acceptance (isolated, no deploy)
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  token-and-socket-boundaries:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      NODE_ENV: test
+      V79_ALLOW_LEGACY_AUTH: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - name: Install app dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Verify cumulative revocation and WebSocket source parses
+        run: |
+          node --check server/index.js
+          node --check server/hubAwareAuthentication.js
+          node --check server/tokenRevocation.js
+          node --check server/tiquetSocketAccess.js
+          node --check server/tiquetPortalSocketAccess.js
+      - name: Run isolated session, tenant, owner mapping and websocket guard tests
+        run: |
+          node --test tests/tokenRevocation.test.js tests/tiquetSocketAccess.test.js tests/tiquetStaffSocketParity.test.js tests/tiquetPortalSocketRevocation.test.js tests/hubTiquetRuntime.test.js
+      - name: TypeScript check and production bundle verification only
+        run: |
+          npm run lint
+          npm run build
+
+  disposable-postgres-portal-revocation:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: tiquet_test
+          POSTGRES_PASSWORD: tiquet_test_password
+          POSTGRES_DB: tiquet_test
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tiquet_test -d tiquet_test"
+          --health-interval 5s --health-timeout 3s --health-retries 12
+    env:
+      NODE_ENV: test
+      CI_PORTAL_REVOKE_TEST: "1"
+      DATABASE_URL: postgresql://tiquet_test:tiquet_test_password@127.0.0.1:5432/tiquet_test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - name: Install sandbox dependencies only
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Run disposable database portal WebSocket revoke test
+        run: |
+          node --check tests/tiquetPortalSocketPostgresCI.test.cjs
+          node tests/tiquetPortalSocketPostgresCI.test.cjs
+
+# Uses synthetic identities and disposable localhost PostgreSQL/WS fixtures.
+# No image push, deployment, live DB migration, privilege change, payments or
+# real customer traffic. PASS != customer beta or commercial release GO.
