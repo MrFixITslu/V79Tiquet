@@ -1,0 +1,48 @@
+name: P1 full-handler session deltas (no deployment)
+on:
+  push:
+    paths:
+      - tests/p1-full-handler-session-delta.test.cjs
+      - .github/workflows/p1-full-handler-session-delta.yml
+  pull_request:
+    paths:
+      - tests/p1-full-handler-session-delta.test.cjs
+      - .github/workflows/p1-full-handler-session-delta.yml
+permissions:
+  contents: read
+jobs:
+  disposable-session-delta:
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: tiquet_test
+          POSTGRES_PASSWORD: tiquet_test_password
+          POSTGRES_DB: tiquet_test
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tiquet_test -d tiquet_test"
+          --health-interval 5s --health-timeout 3s --health-retries 12
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://tiquet_test:tiquet_test_password@127.0.0.1:5432/tiquet_test
+      JWT_SECRET: ci_jwt_secret_0123456789abcdef0123456789abcdef
+      SUPER_ADMIN_JWT_SECRET: ci_admin_secret_0123456789abcdef0123456789abcdef
+      V79_PLATFORM_SHARED_SECRET: ci_platform_secret_0123456789abcdef0123456789abcdef
+      V79_ALLOW_LEGACY_AUTH: '0'
+      V79_HUB_MANAGED_BILLING: '1'
+      CI_FULL_HANDLER_DELTA: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: node --check tests/p1-full-handler-session-delta.test.cjs
+      - run: node tests/p1-full-handler-session-delta.test.cjs
