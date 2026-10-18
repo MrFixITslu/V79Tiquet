@@ -225,6 +225,9 @@ const checkHubSubscription = process.env.V79_ENTITLEMENT_RECHECK_ENABLED === "1"
   : null;
 
 // OFF by default. Enable only on isolated paired Hub/Tiquet candidates.
+if (process.env.V79_TIQUET_SESSION_BINDING_ENABLED === "1" && !checkHubSubscription) {
+  throw new Error("Hub session binding requires active signed entitlement checks");
+}
 const checkHubSession = process.env.V79_TIQUET_SESSION_BINDING_ENABLED === "1"
   ? createHubSessionStatusChecker({
       hubUrl: process.env.V79_HUB_INTERNAL_URL,
