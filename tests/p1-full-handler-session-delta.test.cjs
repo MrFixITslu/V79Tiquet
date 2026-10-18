@@ -16,9 +16,10 @@ const pool=new pg.Pool({connectionString:DB,connectionTimeoutMillis:3000});
 const ids=[0,1].map(()=>({account:randomUUID(),user:randomUUID(),org:randomUUID(),job:randomUUID(),portal:randomUUID()}));
 const sockets=[];let child;let phase='BOOT';
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-async function api(path,token,method='GET',cookie=false){
+async function api(path,token,method='GET',cookie=false,body){
   return fetch('http://127.0.0.1:3000'+path,{method,redirect:'manual',signal:AbortSignal.timeout(5000),
-    headers:cookie?{cookie:'tiquet_session='+encodeURIComponent(token)}:{authorization:'Bearer '+token}});
+    ...(body?{body:JSON.stringify(body)}:{}),
+    headers:{...(cookie?{cookie:'tiquet_session='+encodeURIComponent(token)}:{authorization:'Bearer '+token}),...(body?{'content-type':'application/json'}:{})}});
 }
 async function boot(){
   child=spawn(process.execPath,['server/index.js'],{stdio:'ignore',env:{...process.env,
@@ -43,13 +44,24 @@ async function stop(){
 function issue(id){return jwt.sign({id:id.user,account_id:id.account,hub_managed:true,hub_organization_id:id.org},SECRET,{expiresIn:'30m',jwtid:randomUUID()});}
 async function connect(query){
   const socket=new WebSocket('ws://127.0.0.1:3000/ws?'+new URLSearchParams(query));
-  sockets.push(socket);socket.on('error',()=>{});
+  sockets.push(socket);socket.on('error',()=>{});socket.received=[];
+  socket.on('message',data=>{try{socket.received.push(JSON.parse(data))}catch{}});
   socket.closed=new Promise(resolve=>socket.once('close',code=>resolve(code)));
   await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error('WS_OPEN_TIMEOUT')),5000);
     socket.once('open',()=>{clearTimeout(timer);resolve()});socket.once('error',()=>{clearTimeout(timer);reject(Error('WS_OPEN_FAILED'))});});
   // Allow the actual async authorization handler to bind the subscription.
   await sleep(500);assert.equal(socket.readyState,WebSocket.OPEN,'authorized socket stays open');
   return socket;
+}
+async function broadcast(id,token,expected,excluded=[]){
+  const marker='synthetic-delta-'+randomUUID();
+  assert.equal((await api('/api/jobs/'+id.job+'/messages',token,'POST',false,{sender:'Synthetic',content:marker})).status,201);
+  const until=Date.now()+5000;
+  while(!expected.every(socket=>socket.received.some(x=>x.message?.content===marker))){
+    assert.ok(Date.now()<until,'authorized subscription receives own broadcast');await sleep(25);
+  }
+  await sleep(150);
+  for(const socket of excluded)assert.ok(!socket.received.some(x=>x.message?.content===marker),'other tenant/closed socket receives no message');
 }
 async function closed(socket,expected){
   let timer;
@@ -72,15 +84,22 @@ async function closed(socket,expected){
     const staffB=await connect({jobId:ids[1].job,auth:b});
     const portalA=await connect({token:ids[0].portal});
     const portalB=await connect({token:ids[1].portal});
+    phase='ESTABLISHED_SCOPED_SUBSCRIPTIONS';
+    await broadcast(ids[0],a,[staffA,portalA],[staffB,portalB]);
+    await broadcast(ids[1],b,[staffB,portalB],[staffA,portalA]);
     phase='STAFF_LOGOUT';assert.equal((await api('/api/auth/logout',a,'POST',true)).status,200);
     await closed(staffA,4003);
     assert.equal(staffB.readyState,WebSocket.OPEN,'independent staff B unaffected');
     for(const cookie of [false,true])assert.equal((await api('/api/auth/me',a,'GET',cookie)).status,401);
+    await broadcast(ids[1],b,[staffB,portalB],[staffA,portalA]);
+    await broadcast(ids[0],issue(ids[0]),[portalA],[staffA,staffB,portalB]);
     console.log('FULL_HANDLER_STAFF_LOGOUT_SOCKET_REVOCATION=PASS');
     phase='PORTAL_ROTATE';await pool.query('UPDATE jobs SET securetoken=$1 WHERE id=$2',[randomUUID(),ids[0].job]);
     await closed(portalA,4003);
     assert.equal(portalB.readyState,WebSocket.OPEN,'independent portal B unaffected');
     assert.equal(staffB.readyState,WebSocket.OPEN,'staff B persists across portal revoke');
+    await broadcast(ids[1],b,[staffB,portalB],[staffA,portalA]);
+    assert.equal((await api('/api/portal/'+ids[0].portal,b)).status,404);
     console.log('FULL_HANDLER_PORTAL_ROTATION_SOCKET_REVOCATION=PASS');
     phase='RESTART';await stop();await boot();phase='REPLAY_AFTER_RESTART';
     for(const cookie of [false,true]){
@@ -94,6 +113,7 @@ async function closed(socket,expected){
   }finally{
     for(const socket of sockets)socket.terminate();
     await stop();
+    await pool.query('DELETE FROM job_messages WHERE account_id=ANY($1::text[])',[ids.map(x=>x.account)]);
     await pool.query('DELETE FROM revoked_auth_tokens WHERE account_id=ANY($1::text[])',[ids.map(x=>x.account)]);
     await pool.query('DELETE FROM jobs WHERE id=ANY($1::text[])',[ids.map(x=>x.job)]);
     await pool.query('DELETE FROM users WHERE id=ANY($1::text[])',[ids.map(x=>x.user)]);
