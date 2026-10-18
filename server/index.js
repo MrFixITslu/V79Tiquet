@@ -328,7 +328,10 @@ if (!isProduction) {
  * SECURE FILE SERVING
  * All file access in production must go through this authenticated route.
  */
-app.get('/api/files/:accountId/*', authenticateToken, requireAnyPagePermission("files"), (req, res) => {
+app.get('/api/files/:accountId/*', authenticateToken, requireAnyPagePermission("files"), (req, res, next) => {
+  // Reserve the existing general-file endpoint for its DB-scoped handler.
+  // This wildcard would otherwise treat the file ID as an account ID.
+  if (req.params[0] === 'download') return next('route');
   const {
     accountId
   } = req.params;
