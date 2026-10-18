@@ -35,6 +35,7 @@ jobs:
       V79_ALLOW_LEGACY_AUTH: '0'
       V79_HUB_MANAGED_BILLING: '1'
       CI_FULL_HANDLER_DELTA: '1'
+      CI_FULL_HANDLER_ENTITLEMENT: '1'
     steps:
       - uses: actions/checkout@v4
         with:

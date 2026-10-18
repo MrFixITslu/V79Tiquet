@@ -2,7 +2,8 @@
 // CI-only full API/WS handler + durable revocation across API restart.
 const assert=require('node:assert/strict');
 const {spawn}=require('node:child_process');
-const {randomUUID}=require('node:crypto');
+const {randomUUID,createHash,createHmac,timingSafeEqual}=require('node:crypto');
+const {createServer}=require('node:http');
 const jwt=require('jsonwebtoken');
 const pg=require('pg');
 const WebSocket=require('ws');
@@ -15,6 +16,9 @@ if(process.env.GITHUB_ACTIONS!=='true'||process.env.NODE_ENV!=='test'||
 const pool=new pg.Pool({connectionString:DB,connectionTimeoutMillis:3000});
 const ids=[0,1].map(()=>({account:randomUUID(),user:randomUUID(),org:randomUUID(),job:randomUUID(),portal:randomUUID()}));
 const sockets=[];let child;let phase='BOOT';
+const entitlement=process.env.CI_FULL_HANDLER_ENTITLEMENT==='1';
+const HUB_SECRET='synthetic-entitlement-secret-at-least-32-characters';
+let hub;let hubUrl;let outage=false;const deniedOrgs=new Set();let signedChecks=0;
 const sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function api(path,token,method='GET',cookie=false,body){
   return fetch('http://127.0.0.1:3000'+path,{method,redirect:'manual',signal:AbortSignal.timeout(5000),
@@ -23,7 +27,8 @@ async function api(path,token,method='GET',cookie=false,body){
 }
 async function boot(){
   child=spawn(process.execPath,['server/index.js'],{stdio:'ignore',env:{...process.env,
-    SEED_DEMO_DATA:'false',V79_ENTITLEMENT_RECHECK_ENABLED:'0',PORT:'3050'}});
+    SEED_DEMO_DATA:'false',V79_ENTITLEMENT_RECHECK_ENABLED:entitlement?'1':'0',PORT:'3050',
+    ...(entitlement?{V79_HUB_INTERNAL_URL:hubUrl,V79_TIQUET_LAUNCH_SECRET:HUB_SECRET}:{})}});
   for(let i=0;i<80;i++){
     if(child.exitCode!==null)throw Error('API_EXITED');
     try{const res=await fetch('http://127.0.0.1:3000/health',{signal:AbortSignal.timeout(1000)});
@@ -63,14 +68,34 @@ async function broadcast(id,token,expected,excluded=[]){
   await sleep(150);
   for(const socket of excluded)assert.ok(!socket.received.some(x=>x.message?.content===marker),'other tenant/closed socket receives no message');
 }
-async function closed(socket,expected){
+async function closed(socket,expected,limit=22000){
   let timer;
-  try{const code=await Promise.race([socket.closed,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('WS_REVOKE_TIMEOUT')),22000)})]);
+  try{const code=await Promise.race([socket.closed,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('WS_REVOKE_TIMEOUT')),limit)})]);
     assert.equal(code,expected,'actual full-handler revocation code');}
   finally{clearTimeout(timer);}
 }
+async function hubFixture(){
+  hub=createServer(async(req,res)=>{
+    let raw='';for await(const chunk of req){raw+=chunk;if(raw.length>4096){res.writeHead(413).end();return;}}
+    const timestamp=req.headers['x-v79-timestamp'];
+    const canonical=['POST','/api/platform/entitlement/check',timestamp,createHash('sha256').update(raw).digest('hex')].join('\n');
+    const expected=createHmac('sha256',HUB_SECRET).update(canonical).digest('hex');
+    const supplied=req.headers['x-v79-signature']||'';
+    let body;try{body=JSON.parse(raw)}catch{res.writeHead(400).end();return;}
+    const identity=ids.find(x=>x.org===body.organizationId&&'scoped-'+x.org===body.scopedUserId);
+    if(req.method!=='POST'||req.url!=='/api/platform/entitlement/check'||req.headers['x-v79-service-id']!=='v79-tiquet'||
+       !identity||body.product!=='tiquet'||Math.abs(Date.now()-Number(timestamp))>5000||
+       !/^[a-f0-9]{64}$/.test(supplied)||!timingSafeEqual(Buffer.from(expected),Buffer.from(supplied))){res.writeHead(403).end();return;}
+    signedChecks++;
+    if(outage){res.writeHead(503).end();return;}
+    res.setHeader('content-type','application/json');res.end(JSON.stringify({allowed:!deniedOrgs.has(body.organizationId),validForSeconds:30}));
+  });
+  await new Promise(resolve=>hub.listen(0,'127.0.0.1',resolve));
+  hubUrl='http://127.0.0.1:'+hub.address().port;
+}
 (async()=>{
   try{
+    if(entitlement)await hubFixture();
     await boot();phase='SEED';const now=new Date().toISOString();
     for(const id of ids){
       await pool.query("INSERT INTO accounts(id,name,createdat,status,hub_organization_id) VALUES($1,'Synthetic delta',$2,'active',$3)",[id.account,now,id.org]);
@@ -109,15 +134,41 @@ async function closed(socket,expected){
     assert.equal((await api('/api/auth/me',b)).status,200);
     assert.equal((await api('/api/auth/me',issue(ids[0]))).status,200);
     console.log('COPIED_JWT_DENIED_AFTER_API_RESTART_OTHER_TENANT_VALID=PASS');
-    console.log('SCOPE=DISPOSABLE_CURRENT_SOURCE_NOT_INSTALLED_IMAGE_OR_HUB_ENTITLEMENT');
+    if(entitlement){
+      phase='HUB_ENTITLEMENT_REVOKE';const freshA=issue(ids[0]);
+      const liveA=await connect({jobId:ids[0].job,auth:freshA});
+      const liveB=await connect({jobId:ids[1].job,auth:b});
+      await broadcast(ids[0],freshA,[liveA],[liveB]);
+      await broadcast(ids[1],b,[liveB],[liveA]);
+      deniedOrgs.add(ids[0].org);
+      await closed(liveA,4003,52000);
+      const revoked=await api('/api/auth/me',freshA);assert.equal(revoked.status,403);
+      assert.equal((await revoked.json()).code,'HUB_ENTITLEMENT_REVOKED');
+      assert.equal((await api('/api/auth/me',b)).status,200);
+      await broadcast(ids[1],b,[liveB],[liveA]);
+      console.log('SIGNED_HUB_DENIAL_HTTP_AND_ESTABLISHED_SOCKET_AFTER_CACHE=PASS');
+      phase='HUB_OUTAGE';outage=true;
+      await closed(liveB,4003,52000);
+      const unavailable=await api('/api/auth/me',b);assert.equal(unavailable.status,403);
+      assert.equal((await unavailable.json()).code,'HUB_ENTITLEMENT_REVOKED');
+      assert.ok(signedChecks>=4);outage=false;
+      assert.equal((await api('/api/auth/me',b)).status,200);
+      assert.equal(liveB.readyState,WebSocket.CLOSED,'closed socket is not resurrected');
+      console.log('SIGNED_HUB_OUTAGE_FAIL_CLOSED_AND_CLOSED_SOCKET_STAYS_CLOSED=PASS');
+      console.log('SCOPE=REAL_TIQUET_HANDLER_SIGNED_SYNTHETIC_HUB_NOT_REAL_HUB_OR_INSTALLED_IMAGE');
+    }else console.log('SCOPE=DISPOSABLE_CURRENT_SOURCE_NOT_INSTALLED_IMAGE_OR_HUB_ENTITLEMENT');
   }finally{
     for(const socket of sockets)socket.terminate();
-    await stop();
-    await pool.query('DELETE FROM job_messages WHERE account_id=ANY($1::text[])',[ids.map(x=>x.account)]);
-    await pool.query('DELETE FROM revoked_auth_tokens WHERE account_id=ANY($1::text[])',[ids.map(x=>x.account)]);
-    await pool.query('DELETE FROM jobs WHERE id=ANY($1::text[])',[ids.map(x=>x.job)]);
-    await pool.query('DELETE FROM users WHERE id=ANY($1::text[])',[ids.map(x=>x.user)]);
-    await pool.query('DELETE FROM accounts WHERE id=ANY($1::text[])',[ids.map(x=>x.account)]);
-    await pool.end();
+    const cleanupErrors=[];
+    const cleanup=[()=>stop(),
+      ()=>pool.query('DELETE FROM job_messages WHERE account_id=ANY($1::text[])',[ids.map(x=>x.account)]),
+      ()=>pool.query('DELETE FROM revoked_auth_tokens WHERE account_id=ANY($1::text[])',[ids.map(x=>x.account)]),
+      ()=>pool.query('DELETE FROM jobs WHERE id=ANY($1::text[])',[ids.map(x=>x.job)]),
+      ()=>pool.query('DELETE FROM users WHERE id=ANY($1::text[])',[ids.map(x=>x.user)]),
+      ()=>pool.query('DELETE FROM accounts WHERE id=ANY($1::text[])',[ids.map(x=>x.account)]),
+      ()=>pool.end(),()=>hub?new Promise(resolve=>hub.close(resolve)):Promise.resolve()];
+    for(const action of cleanup){try{await action()}catch{cleanupErrors.push(true)}}
+    assert.equal(cleanupErrors.length,0,'disposable teardown complete');
+
   }
 })().catch(()=>{console.error('FULL_HANDLER_SESSION_DELTA=FAIL_REDACTED');console.error('FAIL_STAGE='+phase);process.exitCode=1});
