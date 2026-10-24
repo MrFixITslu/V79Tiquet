@@ -32,6 +32,16 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Checkout pinned Hub source for purely local cross-app contract tests
+        uses: actions/checkout@v4
+        with:
+          repository: MrFixITslu/V79hub
+          ref: ee79ec9353ee4248eb8276fee2e6c3476b3af491
+          path: phase7-hub-source
+          persist-credentials: false
+      - name: Validate pinned Hub source identity
+        run: |
+          test "$(git -C phase7-hub-source rev-parse HEAD)" = "ee79ec9353ee4248eb8276fee2e6c3476b3af491"
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -141,6 +151,12 @@ jobs:
         run: |
           node --check tests/supportPhase6.migration.mjs
           node tests/supportPhase6.migration.mjs
+      - name: Phase 7 pinned genuine Hub entitlement and Tiquet loopback rehearsal
+        env:
+          CI_SUPPORT_PAIRED_PINNED: "1"
+        run: |
+          node --check tests/supportPhase7.pairedHub.integration.mjs
+          node --test tests/supportPhase7.pairedHub.integration.mjs
       - name: Existing TypeScript and unit regression checks
         run: |
           npm run lint
