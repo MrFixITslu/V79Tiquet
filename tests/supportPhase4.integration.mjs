@@ -5,6 +5,7 @@ import path from "node:path";
 import pg from "pg";
 import {fileURLToPath} from "node:url";
 import {createPhase4Service} from "../server/support/phase4Service.js";
+import {businessMinutesBetween} from "../server/support/businessHours.js";
 const uri=new URL(process.env.DATABASE_URL||"postgres://invalid/invalid");
 if(process.env.NODE_ENV!=="test"||process.env.CI_SUPPORT_SYNTHETIC!=="1"||
  process.env.V79_SUPPORT_DESK_ENABLED!=="0"||uri.hostname!=="127.0.0.1"||
@@ -104,7 +105,8 @@ test("business-hours pause and resume happen transactionally with ticket status"
  })();
  const resumed=await phase4.readSla(input(t));
  assert.equal(resumed.resolution,"running");
- assert.equal((new Date(resumed.resolutionDue)-new Date(before.resolutionDue))/60000,120);
+ assert.equal(businessMinutesBetween(before.resolutionDue,resumed.resolutionDue,
+  {timezone:"America/St_Lucia"}),120);
 });
 test("only accepted human staff messages qualify as first response",async()=>{
  const t="p4assigned";
