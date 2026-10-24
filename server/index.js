@@ -1,4 +1,6 @@
 import { createTiquetAuthentication } from "./hubAwareAuthentication.js";
+import { createSupportRouter } from "./support/router.js";
+import { supportSandboxEnabled } from "./support/featureFlag.js";
 import { revokeSignedRequestTokens, isSignedSessionRevoked, tokenFingerprint } from "./tokenRevocation.js";
 import { createSentinelIngestRouter, sentinelConfigFromEnv, SENTINEL_PATH } from "./sentinelIngress.js";
 import { createSentinelHubServiceChecker } from "./sentinelHubServiceChecker.js";
@@ -226,6 +228,12 @@ const checkHubSubscription = process.env.V79_ENTITLEMENT_RECHECK_ENABLED === "1"
 const authenticateToken = createTiquetAuthentication({
   jwt, jwtSecret: JWT_SECRET, db, checkHubSubscription,
 });
+
+// Phase 1: isolated synthetic localhost DB only. False by default and always false in production.
+if (supportSandboxEnabled(process.env)) {
+  app.use("/api/support/staff", createSupportRouter({ db, authenticateToken }));
+}
+
 
 // --- Admin-only middleware ---
 // Several endpoints (team management, role/permission changes) must only be
