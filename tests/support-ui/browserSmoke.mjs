@@ -16,25 +16,30 @@ if(!browser){
 const dir=fs.mkdtempSync(path.join(os.tmpdir(),"tiquet-synthetic-chrome-"));
 const chrome=spawn(browser,["--headless=new","--no-sandbox","--disable-gpu",
  "--disable-dev-shm-usage","--no-first-run","--no-default-browser-check",
- "--remote-debugging-port=9335","--remote-allow-origins=*",
+ "--remote-debugging-port=0","--remote-allow-origins=*",
  "--user-data-dir="+dir,"about:blank"],{stdio:"ignore"});
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+let cdpPort=0;
 async function getTarget(){
- for(let attempt=0;attempt<80;attempt++){
+ for(let attempt=0;attempt<160;attempt++){
   if(chrome.exitCode!==null)throw new Error("SYNTHETIC_CHROME_EXITED");
   try{
-   const response=await fetch("http://127.0.0.1:9335/json");
+   const portPath=path.join(dir,"DevToolsActivePort");
+   if(!fs.existsSync(portPath)){await pause(200);continue;}
+   cdpPort=Number(fs.readFileSync(portPath,"utf8").split("\n")[0]);
+   if(!Number.isInteger(cdpPort)||cdpPort<1)throw Error("INVALID_CHROME_CDP_PORT");
+   const response=await fetch("http://127.0.0.1:"+cdpPort+"/json");
    const items=await response.json();
    const tab=items.find(item=>item.type==="page"&&item.webSocketDebuggerUrl);
    if(tab)return tab.webSocketDebuggerUrl;
   }catch{}
-  await pause(150);
+  await pause(200);
  }
  throw new Error("CHROME_CDP_UNAVAILABLE");
 }
 let socket;
 try{
- socket=new WebSocket(await getTarget(),{origin:"http://127.0.0.1:9335"});
+ socket=new WebSocket(await getTarget(),{origin:"http://127.0.0.1:"+cdpPort});
  await new Promise((resolve,reject)=>{socket.once("open",resolve);socket.once("error",reject);});
  let id=0;
  const pending=new Map(),errors=[];
