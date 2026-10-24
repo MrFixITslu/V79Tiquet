@@ -26,7 +26,7 @@ assert.ok(messages.data.items.some(m=>m.deliveryState==="accepted"));
 assert.ok(messages.data.items.some(m=>m.direction==="inbound"));
 const links=await call("/api/support/staff/tickets/"+mailTicket.id+"/links");
 assert.equal(links.status,200);
-assert.ok(links.data.items.some(x=>x.jobId==="jobA"));
+assert.ok(links.data.items.some(x=>x.jobId==="demoJobA"));
 const created=await call("/api/support/staff/tickets","POST",
  {subject:"New synthetic UI ticket",priority:"normal"},
  {"Idempotency-Key":"synthetic_ui_new_0001"});
@@ -43,7 +43,7 @@ const forbidden=await call("/api/support/staff/tickets/"+created.data.id+"/messa
  {"Idempotency-Key":"synthetic_ui_reply_0001"});
 assert.equal(forbidden.status,409);assert.equal(forbidden.data.code,"OUTBOUND_NOT_ENABLED");
 const jobLink=await call("/api/support/staff/tickets/"+created.data.id+"/links","POST",
- {kind:"service_job",targetId:"jobA"});
+ {kind:"service_job",targetId:"demoJobA"});
 assert.equal(jobLink.status,201);
 const stale=await call("/api/support/staff/tickets/"+created.data.id,"PATCH",
  {status:"open"},{"If-Match":created.etag});
