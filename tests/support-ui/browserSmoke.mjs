@@ -78,6 +78,10 @@ try{
  await command("Page.navigate",{url:"http://127.0.0.1:4308/"});
  await until("document.querySelectorAll('.sd-ticket').length>=3","synthetic tickets load");
  assert.equal(await evaluate("document.body.innerText.includes('ENGINEERING SANDBOX')"),true);
+ await until("Array.from(document.querySelectorAll('.sd-ticket')).some(x=>x.textContent.includes('<img src=x'))","XSS fixture visible as text");
+ assert.equal(await evaluate("document.querySelector('.sd-ticket-list img')===null"),true);
+ assert.equal(await evaluate("window.__support_p5_xss===undefined"),true);
+
  assert.equal(await evaluate("document.querySelector('.sd-sandbox-alert').textContent.includes('Nothing sent')"),true);
  await until("document.querySelector('.sd-conversation h2')?.textContent.length>3","ticket detail");
  await until("document.querySelector('.sd-customer-column')?.textContent.includes('Business-hours SLA')",
