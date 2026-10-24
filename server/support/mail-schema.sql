@@ -26,6 +26,9 @@ CREATE TABLE IF NOT EXISTS support_mail_references (
 );
 CREATE INDEX IF NOT EXISTS support_mail_references_ticket_idx
  ON support_mail_references(account_id,ticket_id);
+-- Existing Phase 1 messages need a scoped composite key for tenant-safe references.
+CREATE UNIQUE INDEX IF NOT EXISTS support_messages_triplet_unique
+ ON support_messages(account_id,ticket_id,id);
 CREATE TABLE IF NOT EXISTS support_mail_ingest (
  account_id TEXT NOT NULL,
  mailbox_id TEXT NOT NULL,
@@ -41,9 +44,6 @@ CREATE TABLE IF NOT EXISTS support_mail_ingest (
  FOREIGN KEY(account_id,ticket_id) REFERENCES support_tickets(account_id,id),
  FOREIGN KEY(account_id,ticket_id,message_id) REFERENCES support_messages(account_id,ticket_id,id)
 );
--- Required for composite FK to support_messages.
-CREATE UNIQUE INDEX IF NOT EXISTS support_messages_triplet_unique
- ON support_messages(account_id,ticket_id,id);
 CREATE TABLE IF NOT EXISTS support_outbox (
  id TEXT PRIMARY KEY,
  account_id TEXT NOT NULL,
