@@ -133,3 +133,22 @@ test("cursor pagination is tenant scoped and bounded",async()=>{
  const noTenantRows=await send("/api/support/staff/tickets","teamB","ownerB");
  assert.deepEqual(noTenantRows.body.items,[]);
 });
+
+test("10,000 synthetic tickets remain bounded behind server pagination",async()=>{
+ await pool.query("INSERT INTO support_tickets(id,account_id,subject,status,priority) "+
+  "SELECT 'bulk_'||lpad(n::text,6,'0'),'teamA','Synthetic bulk issue '||n,"+
+  "'new','normal' FROM generate_series(1,10000) AS n");
+ const first=await send("/api/support/staff/tickets?limit=25","teamA","ownerA");
+ assert.equal(first.status,200);
+ assert.equal(first.body.items.length,25);
+ assert.ok(first.body.nextCursor);
+ const next=await send("/api/support/staff/tickets?limit=25&cursor="+
+  encodeURIComponent(first.body.nextCursor),"teamA","ownerA");
+ assert.equal(next.status,200);
+ assert.equal(next.body.items.length,25);
+ assert.equal(new Set([...first.body.items,...next.body.items].map(i=>i.id)).size,50);
+ const oversize=await send("/api/support/staff/tickets?limit=101","teamA","ownerA");
+ assert.equal(oversize.status,400);
+ const other=await send("/api/support/staff/tickets?limit=25","teamB","ownerB");
+ assert.deepEqual(other.body.items,[]);
+});
