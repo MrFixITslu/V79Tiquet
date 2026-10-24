@@ -30,10 +30,10 @@ const input=(ticketId="p4critical",accountId="p4a",actorId="p4owner",caps=admin)
 const query=async(s,p)=>(await pool.query(s,p)).rows;
 test.before(async()=>{
  const dir=path.dirname(fileURLToPath(import.meta.url));
- await pool.query("CREATE TABLE accounts(id TEXT PRIMARY KEY)");
- await pool.query("CREATE TABLE users(id TEXT PRIMARY KEY,account_id TEXT,role TEXT,permissions TEXT)");
- await pool.query("CREATE TABLE clients(id TEXT PRIMARY KEY,account_id TEXT)");
- await pool.query("CREATE TABLE jobs(id TEXT PRIMARY KEY,account_id TEXT,status TEXT,amount INTEGER)");
+ await pool.query("CREATE TABLE IF NOT EXISTS accounts(id TEXT PRIMARY KEY)");
+ await pool.query("CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY,account_id TEXT,role TEXT,permissions TEXT)");
+ await pool.query("CREATE TABLE IF NOT EXISTS clients(id TEXT PRIMARY KEY,account_id TEXT)");
+ await pool.query("CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY,account_id TEXT,status TEXT,amount INTEGER)");
  await pool.query(await fs.readFile(path.join(dir,"../server/support/schema.sql"),"utf8"));
  const ddl=await fs.readFile(path.join(dir,"../server/support/phase4-schema.sql"),"utf8");
  await pool.query(ddl);await pool.query(ddl);
