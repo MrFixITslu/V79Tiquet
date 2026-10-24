@@ -72,6 +72,12 @@ const extra=[
 ].join("\n");
 exact('  // Verify the exact issued JWT before explicit Tiquet logout.',
  extra+'\n  // Verify the exact issued JWT before explicit Tiquet logout.');
+exact('  assert.equal(await closedByRevocation,4003,\n    "existing authenticated Tiquet staff WebSocket must close on Hub logout");',
+ '  const wsCloseCode=await closedByRevocation;\n'+
+ '  console.log("PHASE8_WS_REVOKE_CLOSE="+wsCloseCode+" "+tiquetProcess.readLogs());\n'+
+ '  assert.equal(wsCloseCode,4003,\n'+
+ '    "existing authenticated Tiquet staff WebSocket must close on Hub logout");');
+
 assert.ok(s.includes("https://tiquet.v79sl.com"));
 assert.ok(s.includes('redirect:"manual"'));
 assert.ok(s.includes("TIQUET_INTERNAL_URL:tiquet"));
