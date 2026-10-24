@@ -46,6 +46,7 @@ export function SupportDeskSandbox({api:provided}:{api?:SandboxApi}){
  const [note,setNote]=useState("");
  const [jobId,setJobId]=useState("");
  const [createOpen,setCreateOpen]=useState(false);
+ const modalRef=useRef<HTMLFormElement>(null);
  const [newSubject,setNewSubject]=useState("");
  const [newPriority,setNewPriority]=useState<TicketPriority>("normal");
  const [busy,setBusy]=useState(false);
@@ -56,6 +57,22 @@ export function SupportDeskSandbox({api:provided}:{api?:SandboxApi}){
  const [mobileDetail,setMobileDetail]=useState(false);
  const [sidebarOpen,setSidebarOpen]=useState(false);
  useEffect(()=>{noteRef.current=note;},[note]);
+ useEffect(()=>{
+  if(!createOpen)return;
+  const previous=document.activeElement instanceof HTMLElement?document.activeElement:null;
+  modalRef.current?.querySelector<HTMLInputElement>('input')?.focus();
+  return ()=>{previous?.focus();};
+ },[createOpen]);
+ const modalKeydown=(event:React.KeyboardEvent<HTMLFormElement>)=>{
+  if(event.key==="Escape"){event.preventDefault();setCreateOpen(false);return;}
+  if(event.key!=="Tab"||!modalRef.current)return;
+  const controls=[...modalRef.current.querySelectorAll<HTMLElement>(
+   'button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled])')];
+  if(!controls.length)return;
+  const first=controls[0],last=controls[controls.length-1];
+  if(event.shiftKey&&document.activeElement===first){event.preventDefault();last.focus();}
+  else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}
+ };
  const listGate=useRef(createRequestGate());
  const detailGate=useRef(createRequestGate());
  const selectedIdRef=useRef<string|null>(null);
@@ -189,6 +206,7 @@ export function SupportDeskSandbox({api:provided}:{api?:SandboxApi}){
   ["mailbox","⚙","Mailbox & Settings"]
  ];
  return <div className="sd-app">
+  <a className="sd-skip-link" href="#support-main">Skip to support content</a>
   <aside className={"sd-sidebar "+(sidebarOpen?"sd-sidebar-open":"")}>
    <header className="sd-brand"><span className="sd-brandmark">T</span><div><strong>TIQUET</strong><small>BY VISION79</small></div></header>
    <div className="sd-side-label">WORKSPACE</div>
@@ -201,7 +219,7 @@ export function SupportDeskSandbox({api:provided}:{api?:SandboxApi}){
     <span>Isolated engineering sandbox</span><span className="sd-lamp">● Offline · mock provider</span></div>
     <p>No real users, inboxes or production data.</p></div>
   </aside>
-  <main className="sd-main">
+  <main id="support-main" className="sd-main" tabIndex={-1}>
    <header className="sd-topbar">
     <div className="sd-topstart">
      <button type="button" className="sd-mobile-menu" onClick={()=>setSidebarOpen(!sidebarOpen)} aria-label="Toggle navigation">☰</button>
@@ -338,7 +356,7 @@ export function SupportDeskSandbox({api:provided}:{api?:SandboxApi}){
    </div>
   </main>
   {createOpen&&<div className="sd-modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setCreateOpen(false);}}>
-   <form className="sd-modal" role="dialog" aria-modal="true" aria-labelledby="newTicketTitle" onSubmit={e=>void create(e)}>
+   <form ref={modalRef} onKeyDown={modalKeydown} className="sd-modal" role="dialog" aria-modal="true" aria-labelledby="newTicketTitle" onSubmit={e=>void create(e)}>
     <div className="sd-modal-title"><h2 id="newTicketTitle">New synthetic ticket</h2><button type="button" aria-label="Close new ticket" onClick={()=>setCreateOpen(false)}>×</button></div>
     <label>Subject<input required minLength={3} maxLength={200} autoFocus value={newSubject} onChange={e=>setNewSubject(e.target.value)} placeholder="Describe the customer issue"/></label>
     <label>Priority<select value={newPriority} onChange={e=>setNewPriority(e.target.value as TicketPriority)}>{PRIORITIES.map(p=><option key={p} value={p}>{pretty(p)}</option>)}</select></label>
