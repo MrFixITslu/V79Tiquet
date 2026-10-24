@@ -1,6 +1,4 @@
 import { createTiquetAuthentication } from "./hubAwareAuthentication.js";
-import { createSupportRouter } from "./support/router.js";
-import { supportSandboxEnabled } from "./support/featureFlag.js";
 import { revokeSignedRequestTokens, isSignedSessionRevoked, tokenFingerprint } from "./tokenRevocation.js";
 import { createSentinelIngestRouter, sentinelConfigFromEnv, SENTINEL_PATH } from "./sentinelIngress.js";
 import { createSentinelHubServiceChecker } from "./sentinelHubServiceChecker.js";
@@ -229,9 +227,15 @@ const authenticateToken = createTiquetAuthentication({
   jwt, jwtSecret: JWT_SECRET, db, checkHubSubscription,
 });
 
-// Phase 1: isolated synthetic localhost DB only. False by default and always false in production.
-if (supportSandboxEnabled(process.env)) {
-  app.use("/api/support/staff", createSupportRouter({ db, authenticateToken }));
+// Phase 1: load no support modules in normal runs (including production).
+// Additional sandbox validation lives inside featureFlag.js before mounting.
+if (process.env.NODE_ENV === "test" && process.env.CI_SUPPORT_SYNTHETIC === "1" &&
+    process.env.V79_SUPPORT_DESK_ENABLED === "1") {
+  const { supportSandboxEnabled } = await import("./support/featureFlag.js");
+  if (supportSandboxEnabled(process.env)) {
+    const { createSupportRouter } = await import("./support/router.js");
+    app.use("/api/support/staff", createSupportRouter({ db, authenticateToken }));
+  }
 }
 
 
