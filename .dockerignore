@@ -21,3 +21,15 @@ backups
 .incoming.*
 .deployed_sha
 *.tar.gz
+
+# Phase 9 release hygiene: do not package synthetic test identities,
+# destructive disposable rollback helpers or nested CI checkouts.
+tests
+phase7-hub-source
+phase8-hub-source
+phase9-hub-source
+.support-ui-build
+server/support/phase6AuthHarness.js
+server/support/phase6HubPolicy.js
+server/support/phase6-hub-schema.sql
+server/support/phase6-synthetic-rollback.sql
