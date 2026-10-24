@@ -16,6 +16,9 @@ export type SupportMessage={
 export type TicketPage={items:SupportTicket[];nextCursor:string|null};
 export type MessagePage={items:SupportMessage[];nextCursor:string|null};
 export type LinkedJob={jobId:string};
+export type SyntheticSla={firstResponse:"running"|"breached"|"met";resolution:"running"|"paused"|"breached"|"met";paused:boolean;firstResponseDue:string;resolutionDue:string;timezone:string;source:"synthetic";asOf:string};
+export type SyntheticPresence={agents:{actorId:string;mode:"viewing"|"drafting";ticketVersion:number;expiresAt:string}[];currentTicketVersion:number;asOf:string};
+export type SyntheticAlert={id:string;ruleId:string;body:string;createdAt:string};
 export class SupportApiError extends Error{
  status:number;code:string;
  constructor(status:number,code:string,message:string){super(message);this.status=status;this.code=code;}
@@ -75,7 +78,16 @@ export function createSandboxApi(base="",actor="agentA",account="demoA",fetcher:
     "/tickets/"+encodeURIComponent(id)+"/links",{
     method:"POST",body:JSON.stringify({kind:"service_job",targetId:jobId})
    })).data;
-  }
+  },
+  sla:async(id:string)=>(await request<SyntheticSla>("/phase4/tickets/"+encodeURIComponent(id)+"/sla")).data,
+  presence:async(id:string)=>(await request<SyntheticPresence>("/phase4/tickets/"+encodeURIComponent(id)+"/presence")).data,
+  heartbeat:async(id:string,version:number,mode:"viewing"|"drafting")=>
+   (await request<{mode:string;version:number;expiresAt:string}>("/phase4/tickets/"+encodeURIComponent(id)+"/presence",{
+    method:"PUT",headers:{"If-Match":'"'+version+'"'},body:JSON.stringify({mode})
+   })).data,
+  alerts:async(id:string)=>(await request<{items:SyntheticAlert[]}>("/phase4/tickets/"+encodeURIComponent(id)+"/alerts")).data,
+  evaluateRules:async(id:string)=>(await request<{newRules:string[];source:string;notificationsSent:number}>(
+   "/phase4/tickets/"+encodeURIComponent(id)+"/automations/evaluate",{method:"POST",body:JSON.stringify({})})).data
  };
 }
 export type SandboxApi=ReturnType<typeof createSandboxApi>;
