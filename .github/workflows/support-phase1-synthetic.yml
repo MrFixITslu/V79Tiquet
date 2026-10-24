@@ -68,6 +68,15 @@ jobs:
           node --test tests/supportPhase2.test.js
       - name: Phase 2 disposable PostgreSQL and mock provider scenarios
         run: node --test tests/supportPhase2.integration.mjs
+      - name: Phase 4 business hours and SLA unit contracts
+        run: |
+          node --check server/support/businessHours.js
+          node --check server/support/phase4Service.js
+          node --check server/support/phase4Router.js
+          node --check tests/supportPhase4.integration.mjs
+          node --test tests/supportPhase4.test.js
+      - name: Phase 4 disposable PostgreSQL, agent leases and rule idempotency
+        run: node --test tests/supportPhase4.integration.mjs
       - name: Phase 3 standalone agent UI build
         run: |
           node --check src/navigationState.js
