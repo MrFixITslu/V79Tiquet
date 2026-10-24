@@ -112,6 +112,15 @@ test("same production Hub-aware auth validates JWT, signed HMAC and exact entitl
  const startCalls=auth.hubCalls();
  const unauthorized=await req("/tickets");
  assert.equal(unauthorized.status,401);
+ const expired=jwt.sign({id:"hub6owner",account_id:"hub6A",
+  hub_organization_id:"org6A",hub_managed:true,exp:Math.floor(Date.now()/1000)-20},
+  secret,{algorithm:"HS256",issuer:"tiquet-phase6-synthetic",
+   audience:"tiquet-support-sandbox"});
+ assert.equal((await req("/tickets",expired)).status,403);
+ const noOrg=jwt.sign({id:"hub6owner",account_id:"hub6A",hub_managed:true},
+  secret,{algorithm:"HS256",issuer:"tiquet-phase6-synthetic",
+   audience:"tiquet-support-sandbox",expiresIn:"15m"});
+ assert.equal((await req("/tickets",noOrg)).status,403);
  const issuerWrong=jwt.sign({id:"hub6owner",account_id:"hub6A",
   hub_organization_id:"org6A",hub_managed:true},
   secret,{algorithm:"HS256",issuer:"another-application",audience:"tiquet-support-sandbox"});
