@@ -1,6 +1,6 @@
 import {SupportError} from "./contracts.js";
 // Hub entitlement/session verification happens before this module.
-const allowed=["support.view","support.create","support.update","support.note","support.link"];
+const allowed=["support.view","support.view.all","support.create","support.update","support.note","support.link"];
 export function supportCapabilities(user){
  if(user?.role==="Admin") return new Set(allowed);
  let perms=user?.permissions??[];
