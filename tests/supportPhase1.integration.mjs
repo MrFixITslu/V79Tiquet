@@ -54,8 +54,8 @@ test.before(async()=>{
  await pool.query("INSERT INTO accounts(id) VALUES('teamA'),('teamB')");
  await pool.query("INSERT INTO users VALUES('ownerA','teamA','Admin','[]'),"+
   "('staffA','teamA','Member','[\"support.view\",\"support.create\",\"support.note\",\"support.update\",\"support.link\"]'),"+
-  "('viewerA','teamA','Member','[\"support.view\"]'),
-  "('managerA','teamA','Member','[\"support.view\",\"support.view.all\"]'),"+"+
+  "('viewerA','teamA','Member','[\"support.view\"]'),"+
+  "('managerA','teamA','Member','[\"support.view\",\"support.view.all\"]'),"+
   "('legacyA','teamA','Member','[\"jobs\"]'),"+
   "('ownerB','teamB','Admin','[]')");
  await pool.query("INSERT INTO clients VALUES('clientA','teamA'),('clientB','teamB')");
