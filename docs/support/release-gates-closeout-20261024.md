@@ -43,6 +43,13 @@ The owner manually executed a read-only `find` metadata inventory on the Acer ho
 This corrects the earlier observation that three corresponding names were missing from the **server home directory**: off-server evidence exists on the Acer, but backup contents, completeness, ciphertext integrity, decryptability and multi-store restorable state have NOT been verified.
 Acer copy is off-server, not necessarily off-site. No backup contents, customer records, passwords or encryption keys were read during this check. Production restore / RTO / RPO remain NO-GO.
 
+## Encrypted archive coverage and size (owner's Acer, manual scan)
+- Recovery Checkpoints: 23 encrypted .gpg/.age files, 1.09 GiB combined, 0 zero-byte files, 0 Hub-name path matches, 0 Tiquet-name path matches. Generic names do not establish missing coverage.
+- Portfolio Checkpoints: 73 encrypted files, 3.84 GiB combined, 0 zero-byte files, 36 Hub-name path matches and 15 Tiquet-name path matches. Matches are path/name signals only; they may overlap or repeat and cannot verify file content.
+- Total: 96 encrypted files, 4.93 GiB rounded, zero empty archives.
+- REDTEAM decision: avoid repetitive discovery or decrypting customer-bearing snapshots without separate authorization. Next permitted evidence step is manifest/checksum discovery and ciphertext hash verification only, with no live access and no decryption.
+- Release decision remains **NO-GO** until coverage, integrity, decryption and isolated complete recoverability are independently verified; no RTO/RPO claim.
+
 ## Important evidence limitations
 - Synthetic recovery is not a sanitized actual production image/DB/backup, does not establish real recovery time objective, recovery point objective, cross-store atomic capture, production-secret parity, or off-host encrypted restore integrity.
 - The Hub default-OFF Compose amendment exists on an isolated feature branch only; Hub main remains unchanged. Tiquet Phase 7–9 pinned tests still reference Hub main (which has not been amended), not this candidate.
