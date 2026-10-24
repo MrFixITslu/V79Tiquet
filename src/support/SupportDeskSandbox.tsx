@@ -27,7 +27,7 @@ function Empty({title,detail}:{title:string;detail:string}){
  return <div className="sd-empty"><h3>{title}</h3><p>{detail}</p></div>;
 }
 export function SupportDeskSandbox({api:provided}:{api?:SandboxApi}){
- const api=useMemo(()=>provided??createSandboxApi(),"");
+ const api=useMemo(()=>provided??createSandboxApi(),[provided]);
  const [screen,setScreen]=useState<Screen>("inbox");
  const [filter,setFilter]=useState<Filter>("all");
  const [search,setSearch]=useState("");
