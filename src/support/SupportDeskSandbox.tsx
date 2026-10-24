@@ -239,7 +239,7 @@ export function SupportDeskSandbox({api:provided}:{api?:SandboxApi}){
         <h3>Related service jobs</h3>
         {links.length?links.map(l=><div className="sd-related" key={l.jobId}>▣ {l.jobId}</div>):<p>No related jobs linked.</p>}
         <form onSubmit={e=>void link(e)}><label htmlFor="linkJobId">Link existing synthetic job ID</label>
-         <input id="linkJobId" placeholder="e.g. jobA" value={jobId} onChange={e=>setJobId(e.target.value)} maxLength={128}/>
+         <input id="linkJobId" placeholder="e.g. demoJobA" value={jobId} onChange={e=>setJobId(e.target.value)} maxLength={128}/>
          <button disabled={busy||!jobId.trim()} type="submit" className="sd-button sd-button-secondary">Link job</button></form>
         <hr/><h3>Service level</h3><p>SLA countdown not enabled. No deadline is being calculated.</p>
        </div>:<p className="sd-muted">Select a ticket to see its context.</p>}
