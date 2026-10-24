@@ -34,6 +34,15 @@ Observed live container metadata (not production application acceptance):
 - Live secret parity, cross-store atomic recovery and production restore all explicitly NOT TESTED. No customer records, secret values or raw backup files were read.
 - Desktop Commander remains quota-blocked; the owner manually executed the trusted script over SSH. No remote-agent quota bypass or service restart occurred.
 
+## Off-server backup metadata follow-up — Acer laptop, 2026-10-24
+The owner manually executed a read-only `find` metadata inventory on the Acer host `firelion-Aspire-A315-51`:
+- `~/V79-Recovery-Checkpoints`: PRESENT, 23 *.gpg/*.age files within 5 levels, newest 2026-10-23 20:10 UTC.
+- `~/V79-Portfolio-Checkpoints`: PRESENT, 73 *.gpg/*.age files within 5 levels, newest 2026-10-22 18:27 UTC.
+- `~/V79-P1-R1-Offhost-Capture`: NOT FOUND at this exact name/path.
+- Total discovered encrypted files: **96** (may contain duplicates, older versions or incomplete snapshots).
+This corrects the earlier observation that three corresponding names were missing from the **server home directory**: off-server evidence exists on the Acer, but backup contents, completeness, ciphertext integrity, decryptability and multi-store restorable state have NOT been verified.
+Acer copy is off-server, not necessarily off-site. No backup contents, customer records, passwords or encryption keys were read during this check. Production restore / RTO / RPO remain NO-GO.
+
 ## Important evidence limitations
 - Synthetic recovery is not a sanitized actual production image/DB/backup, does not establish real recovery time objective, recovery point objective, cross-store atomic capture, production-secret parity, or off-host encrypted restore integrity.
 - The Hub default-OFF Compose amendment exists on an isolated feature branch only; Hub main remains unchanged. Tiquet Phase 7–9 pinned tests still reference Hub main (which has not been amended), not this candidate.
