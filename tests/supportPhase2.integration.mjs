@@ -231,3 +231,38 @@ test("uncertain outcomes and expired leases never resend automatically",async()=
  assert.equal((await row("SELECT delivery_state FROM support_messages WHERE id=$1",
   [two.messageId]))[0].delivery_state,"uncertain");
 });
+
+test("two concurrent synthetic workers lease distinct queued messages",async()=>{
+ const fixture=await mail.ingest("mailA",input("parallel-outbox-source"));
+ const left=await enqueue(fixture.ticketId,"parallel_outbox_00001",{body:"Parallel reply one"});
+ const right=await enqueue(fixture.ticketId,"parallel_outbox_00002",{body:"Parallel reply two"});
+ await pool.query("UPDATE support_outbox SET next_attempt_at=now()+interval '1 day' "+
+  "WHERE state='queued' AND id<>ALL($1::text[])",[[left.outboxId,right.outboxId]]);
+ const seenBefore=delivered.length;
+ const results=await Promise.all([mail.dispatchOne(),mail.dispatchOne()]);
+ assert.deepEqual(results.map(r=>r.state).sort(),["accepted","accepted"]);
+ assert.deepEqual(results.map(r=>r.outboxId).sort(),[left.outboxId,right.outboxId].sort());
+ assert.equal(delivered.length-seenBefore,2);
+ assert.equal((await row("SELECT count(*)::int AS n FROM support_outbox "+
+  "WHERE id=ANY($1::text[]) AND state='accepted'",[[left.outboxId,right.outboxId]]))[0].n,2);
+});
+test("retryable synthetic failures stop after three attempts",async()=>{
+ const fixture=await mail.ingest("mailA",input("retry-cap-source"));
+ const queued=await enqueue(fixture.ticketId,"retry_limit_0001",{body:"Three failed attempts"});
+ await pool.query("UPDATE support_outbox SET next_attempt_at=now()+interval '1 day' "+
+  "WHERE state='queued' AND id<>$1",[queued.outboxId]);
+ for(let attempt=1;attempt<=3;attempt++){
+  signals.push({state:"retryable_failure"});
+  const result=await mail.dispatchOne();
+  assert.equal(result.outboxId,queued.outboxId);
+  assert.equal(result.attempts,attempt);
+  assert.equal(result.state,attempt===3?"failed":"queued");
+  if(attempt<3)await pool.query(
+   "UPDATE support_outbox SET next_attempt_at=now()-interval '1 second' WHERE id=$1",
+   [queued.outboxId]);
+ }
+ const n=delivered.filter(x=>x.outboxId===queued.outboxId).length;
+ assert.equal(n,3);
+ assert.equal((await row("SELECT delivery_state FROM support_messages WHERE id=$1",
+  [queued.messageId]))[0].delivery_state,"failed");
+});
