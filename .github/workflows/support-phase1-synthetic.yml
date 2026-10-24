@@ -172,6 +172,13 @@ jobs:
         run: |
           node --check tests/supportPhase9.recovery.mjs
           node tests/supportPhase9.recovery.mjs
+      - name: Release gates - self-test metadata-only audit without exposing secrets
+        run: |
+          python3 -B scripts/hub-tiquet-readonly-evidence.py --self-test
+      - name: Release gates - disconnected sanitized full-store restore and negative tests
+        run: |
+          node --check tests/supportReleaseGates.offlineRecovery.mjs
+          node tests/supportReleaseGates.offlineRecovery.mjs
       - name: Remove pinned Hub checkout from Tiquet TypeScript project
         shell: bash
         run: |
