@@ -15,6 +15,7 @@ import {createPhase4Service} from "../server/support/phase4Service.js";
 import {verifyPlatformRequest,signPlatformRequest} from "../phase7-hub-source/server/platform-contract.mjs";
 import {validateProductEntitlement} from "../phase7-hub-source/server/entitlement-validation.mjs";
 import {beginTrial} from "../phase7-hub-source/server/subscription-access.mjs";
+import {tiquetTenantLaunchReady,activateTiquetTenantMapping} from "../phase7-hub-source/server/tiquet-provisioning.mjs";
 const u=new URL(process.env.DATABASE_URL||"postgresql://invalid/invalid");
 if(process.env.NODE_ENV!=="test"||process.env.CI_SUPPORT_SYNTHETIC!=="1"||
  process.env.V79_SUPPORT_DESK_ENABLED!=="0"||u.hostname!=="127.0.0.1"||
@@ -189,6 +190,19 @@ test("Hub plan, membership, mapping and entitlement changes revoke access after 
  assert.equal((await fetchTiquet("/tickets",a)).status,403);
  mapping.status="active";clock+=31000;
  assert.equal((await fetchTiquet("/tickets",a)).status,200);
+});
+test("pinned Hub provisioning mappings agree with synthetic Tiquet account and reject misbinding",()=>{
+ assert.equal(tiquetTenantLaunchReady(hubStore,"p7orgA",ownerOrgId),true);
+ assert.equal(tiquetTenantLaunchReady(hubStore,"p7orgB",ownerOrgId),true);
+ const next=activateTiquetTenantMapping({...hubStore,auditEvents:[]},
+  "p7orgA","p7orgA","p7A","p7ownerA","p7ownerA");
+ const match=next.appTenantMappings.find(x=>x.organizationId==="p7orgA");
+ assert.equal(match.externalTenantId,"p7A");
+ assert.equal(match.externalOwnerId,"p7ownerA");
+ assert.throws(()=>activateTiquetTenantMapping({...hubStore,auditEvents:[]},
+  "p7orgA","p7orgB","p7A","p7ownerA","p7ownerA"),/organization identity mismatch/);
+ assert.throws(()=>activateTiquetTenantMapping({...hubStore,auditEvents:[]},
+  "p7orgA","p7orgA","p7B","p7ownerA","p7ownerA"),/conflicts/);
 });
 test("role demotion, wrong organization, revocation and unrelated tenant survive",async()=>{
  const a=token("p7ownerA","p7A","p7orgA");
