@@ -1,4 +1,5 @@
-import React,{useCallback,useEffect,useMemo,useState} from "react";
+import React,{useCallback,useEffect,useMemo,useRef,useState} from "react";
+import {createRequestGate} from "./requestGate";
 import type {SupportTicket,SupportMessage,TicketStatus,TicketPriority,SandboxApi,LinkedJob} from "./sandboxApi";
 import {createSandboxApi,assertLocalSyntheticUrl,SupportApiError} from "./sandboxApi";
 import "./supportDesk.css";
@@ -50,7 +51,11 @@ export function SupportDeskSandbox({api:provided}:{api?:SandboxApi}){
  const [notice,setNotice]=useState("");
  const [mobileDetail,setMobileDetail]=useState(false);
  const [sidebarOpen,setSidebarOpen]=useState(false);
+ const listGate=useRef(createRequestGate());
+ const detailGate=useRef(createRequestGate());
+ const selectedIdRef=useRef<string|null>(null);
  const load=useCallback(async(append=false,at:string|null=null)=>{
+  const request=listGate.current.begin();
   setLoading(true);setError("");
   try{
    const page=await api.list({
@@ -58,36 +63,52 @@ export function SupportDeskSandbox({api:provided}:{api?:SandboxApi}){
     search:search||undefined,assigneeId:filter==="mine"?"agentA":undefined,
     cursor:append?at||undefined:undefined
    });
+   if(!listGate.current.isCurrent(request))return;
    setTickets(prev=>append?[...prev,...page.items]:page.items);
    setCursor(page.nextCursor);
-   if(!append)setSelectedId(prev=>page.items.some(t=>t.id===prev)?prev:page.items[0]?.id??null);
-  }catch(e){setError(asText(e));if(!append){setTickets([]);setCursor(null);setSelectedId(null);}}
-  finally{setLoading(false);}
+   if(!append)setSelectedId(prev=>{
+    const next=page.items.some(t=>t.id===prev)?prev:page.items[0]?.id??null;
+    selectedIdRef.current=next;return next;
+   });
+  }catch(e){
+   if(!listGate.current.isCurrent(request))return;
+   setError(asText(e));
+   if(!append){setTickets([]);setCursor(null);selectedIdRef.current=null;setSelectedId(null);}
+  }finally{
+   if(listGate.current.isCurrent(request))setLoading(false);
+  }
  },[api,filter,search]);
  useEffect(()=>{void load();},[load]);
  const loadDetails=useCallback(async(id:string)=>{
+  const request=detailGate.current.begin();
   setDetailsLoading(true);setError("");
   try{
    const [record,comments,relations]=await Promise.all([api.get(id),api.messages(id),api.links(id)]);
-   setSelected(record.data);
-   setMessages(comments.items);
-   setLinks(relations.items);
-  }catch(e){setSelected(null);setMessages([]);setLinks([]);setError(asText(e));}
-  finally{setDetailsLoading(false);}
+   if(!detailGate.current.isCurrent(request)||selectedIdRef.current!==id)return;
+   setSelected(record.data);setMessages(comments.items);setLinks(relations.items);
+  }catch(e){
+   if(!detailGate.current.isCurrent(request)||selectedIdRef.current!==id)return;
+   setSelected(null);setMessages([]);setLinks([]);setError(asText(e));
+  }finally{
+   if(detailGate.current.isCurrent(request))setDetailsLoading(false);
+  }
  },[api]);
  useEffect(()=>{
+  selectedIdRef.current=selectedId;
+  detailGate.current.invalidate();
   setSelected(null);setMessages([]);setLinks([]);
   if(selectedId)void loadDetails(selectedId);
  },[selectedId,loadDetails]);
- const refresh=async()=>{await load();if(selectedId)await loadDetails(selectedId);};
+ const refresh=async()=>{await load();if(selectedIdRef.current)await loadDetails(selectedIdRef.current);};
  const mutate=async(fields:Partial<Pick<SupportTicket,"status"|"priority"|"subject">>)=>{
   if(!selected)return;setBusy(true);setError("");setNotice("");
   try{
    const updated=await api.patch(selected.id,selected.version,fields);
-   setSelected(updated);await load();setNotice("Ticket updated in the synthetic database.");
+   if(selectedIdRef.current===selected.id)setSelected(updated);
+   await load();setNotice("Ticket updated in the synthetic database.");
   }catch(e){
    setError(asText(e));
-   if(e instanceof SupportApiError&&e.status===412)await loadDetails(selected.id);
+   if(e instanceof SupportApiError&&e.status===412&&selectedIdRef.current===selected.id)await loadDetails(selected.id);
   }finally{setBusy(false);}
  };
  const addNote=async(e:React.FormEvent)=>{
@@ -95,7 +116,7 @@ export function SupportDeskSandbox({api:provided}:{api?:SandboxApi}){
   setBusy(true);setError("");setNotice("");
   try{
    await api.note(selected.id,note.trim());
-   setNote("");await loadDetails(selected.id);
+   setNote("");if(selectedIdRef.current===selected.id)await loadDetails(selected.id);
    setNotice("Private note saved in the synthetic database. Not emailed.");
   }catch(e){setError(asText(e));}finally{setBusy(false);}
  };
@@ -104,7 +125,8 @@ export function SupportDeskSandbox({api:provided}:{api?:SandboxApi}){
   setBusy(true);setError("");setNotice("");
   try{
    await api.linkJob(selected.id,jobId.trim());setJobId("");
-   await loadDetails(selected.id);setNotice("Existing synthetic job linked without altering its status.");
+   if(selectedIdRef.current===selected.id)await loadDetails(selected.id);
+   setNotice("Existing synthetic job linked without altering its status.");
   }catch(e){setError(asText(e));}finally{setBusy(false);}
  };
  const create=async(e:React.FormEvent)=>{
@@ -114,11 +136,11 @@ export function SupportDeskSandbox({api:provided}:{api?:SandboxApi}){
    const ticket=await api.create(newSubject.trim(),newPriority);
    setCreateOpen(false);setNewSubject("");setNewPriority("normal");
    setFilter("all");setSearch("");setDraftSearch("");
-   await load();setSelectedId(ticket.id);setMobileDetail(true);
+   await load();selectedIdRef.current=ticket.id;setSelectedId(ticket.id);setMobileDetail(true);
    setScreen("inbox");setNotice("Synthetic ticket created. No customer notification sent.");
   }catch(e){setError(asText(e));}finally{setBusy(false);}
  };
- const open=(id:string)=>{setSelectedId(id);setMobileDetail(true);setScreen("inbox");};
+ const open=(id:string)=>{selectedIdRef.current=id;setSelectedId(id);setMobileDetail(true);setScreen("inbox");};
  const agents=useMemo(()=>tickets.filter(t=>t.assignedTo==="agentA").length,[tickets]);
  const activeCount=tickets.filter(t=>!["resolved","closed"].includes(t.status)).length;
  const unavailable=tickets.filter(t=>t.status==="new"&&!t.assignedTo).length;
