@@ -73,7 +73,7 @@ export function createSandboxApi(base="",actor="agentA",account="demoA",fetcher:
   linkJob:async(id:string,jobId:string)=>{
    return (await request<{kind:string;targetId:string;created:boolean}>(
     "/tickets/"+encodeURIComponent(id)+"/links",{
-    method:"POST",body:JSON.stringify({kind:"service_job",targetId})
+    method:"POST",body:JSON.stringify({kind:"service_job",targetId:jobId})
    })).data;
   }
  };
