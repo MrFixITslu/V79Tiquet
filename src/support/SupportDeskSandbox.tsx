@@ -47,6 +47,7 @@ export function SupportDeskSandbox({api:provided}:{api?:SandboxApi}){
  const [jobId,setJobId]=useState("");
  const [createOpen,setCreateOpen]=useState(false);
  const modalRef=useRef<HTMLFormElement>(null);
+ const modalTriggerRef=useRef<HTMLButtonElement|null>(null);
  const [newSubject,setNewSubject]=useState("");
  const [newPriority,setNewPriority]=useState<TicketPriority>("normal");
  const [busy,setBusy]=useState(false);
@@ -59,9 +60,8 @@ export function SupportDeskSandbox({api:provided}:{api?:SandboxApi}){
  useEffect(()=>{noteRef.current=note;},[note]);
  useEffect(()=>{
   if(!createOpen)return;
-  const previous=document.activeElement instanceof HTMLElement?document.activeElement:null;
   modalRef.current?.querySelector<HTMLInputElement>('input')?.focus();
-  return ()=>{previous?.focus();};
+  return ()=>{modalTriggerRef.current?.focus();};
  },[createOpen]);
  const modalKeydown=(event:React.KeyboardEvent<HTMLFormElement>)=>{
   if(event.key==="Escape"){event.preventDefault();setCreateOpen(false);return;}
@@ -234,7 +234,7 @@ export function SupportDeskSandbox({api:provided}:{api?:SandboxApi}){
       <h1>{nav.find(n=>n[0]===screen)?.[2]}</h1>
       <p>{screen==="inbox"?"One workspace for customer conversations, assignment and action.":"Synthetic-only workflow validation; no production connections."}</p></div>
      <div className="sd-actions"><button type="button" className="sd-button sd-button-secondary" onClick={()=>void refresh()} disabled={loading||busy}>↻ Refresh</button>
-      <button type="button" className="sd-button sd-button-primary" onClick={()=>setCreateOpen(true)}>+ New ticket</button></div>
+      <button type="button" className="sd-button sd-button-primary" onClick={e=>{modalTriggerRef.current=e.currentTarget;setCreateOpen(true);}}>+ New ticket</button></div>
     </div>
     {error&&<div role="alert" className="sd-feedback sd-error"><span>{error}</span><button onClick={()=>setError("")} aria-label="Dismiss error">×</button></div>}
     {notice&&<div role="status" className="sd-feedback sd-notice"><span>{notice}</span><button onClick={()=>setNotice("")} aria-label="Dismiss notice">×</button></div>}
