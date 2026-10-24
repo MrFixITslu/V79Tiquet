@@ -77,4 +77,30 @@ assert.deepEqual(repeatRules.data.newRules,[]);
 const recorded=await call("/api/support/staff/phase4/tickets/"+ruleTicket.data.id+"/alerts");
 assert.equal(recorded.data.items.length,1);
 assert.match(recorded.data.items[0].body,/Synthetic/i);
+// REDTEAM: rejected external Origin or Host can never use the synthetic header.
+const malicious=await fetch(base+"/api/support/staff/tickets",{
+ headers:{...headers,Origin:"https://malicious.example.invalid"},
+ signal:AbortSignal.timeout(5000)});
+assert.equal(malicious.status,403);
+const rebinding=await fetch(base+"/api/support/staff/tickets",{
+ headers:{...headers,Host:"evil.example.invalid:3088"},
+ signal:AbortSignal.timeout(5000)});
+assert.equal(rebinding.status,403);
+const safeOrigin=await fetch(base+"/api/support/staff/tickets",{
+ headers:{...headers,Origin:"http://127.0.0.1:4308"},
+ signal:AbortSignal.timeout(5000)});
+assert.equal(safeOrigin.status,200);
+const sqlInjection=await call("/api/support/staff/tickets?search="+
+ encodeURIComponent("' OR 1=1 --"));
+assert.equal(sqlInjection.status,200);
+assert.equal(sqlInjection.data.items.length,0);
+const invalidUnknown=await call("/api/support/staff/tickets","POST",
+ {subject:"Good synthetic",accountId:"other"},
+ {"Idempotency-Key":"synthetic_bad_tenant_request_01"});
+assert.equal(invalidUnknown.status,400);
+const attemptPublic=await call("/api/support/staff/tickets/"+mailTicket.id+"/messages","POST",
+ {body:"Do not send this synthetic reply",visibility:"public"},
+ {"Idempotency-Key":"synthetic_public_denial_0001"});
+assert.equal(attemptPublic.status,409);
+assert.equal(attemptPublic.data.code,"OUTBOUND_NOT_ENABLED");
 console.log("SUPPORT_UI_SYNTHETIC_HTTP_SMOKE=PASS");
