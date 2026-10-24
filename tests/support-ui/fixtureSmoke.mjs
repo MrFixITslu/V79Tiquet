@@ -110,4 +110,10 @@ const attemptPublic=await call("/api/support/staff/tickets/"+mailTicket.id+"/mes
  {"Idempotency-Key":"synthetic_public_denial_0001"});
 assert.equal(attemptPublic.status,409);
 assert.equal(attemptPublic.data.code,"OUTBOUND_NOT_ENABLED");
+const xssSubject="<img src=x onerror=window.__support_p5_xss=1>";
+const injected=await call("/api/support/staff/tickets","POST",
+ {subject:xssSubject,priority:"low"},
+ {"Idempotency-Key":"synthetic_phase5_xss_fixture_01"});
+assert.equal(injected.status,201);
+assert.equal(injected.data.subject,xssSubject);
 console.log("SUPPORT_UI_SYNTHETIC_HTTP_SMOKE=PASS");
