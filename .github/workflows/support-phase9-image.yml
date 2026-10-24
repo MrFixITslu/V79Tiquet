@@ -76,6 +76,16 @@ jobs:
           test "$(docker image inspect -f '{{.Config.Cmd}}' "$h")" = "[./node_modules/.bin/tsx server.ts]"
           test "$(docker run --rm --network none --read-only --security-opt no-new-privileges --entrypoint node "$t" --version | cut -d. -f1)" = v22
           test "$(docker run --rm --network none --read-only --security-opt no-new-privileges --entrypoint node "$h" --version | cut -d. -f1)" = v22
+          docker run --rm --network none --read-only --security-opt no-new-privileges --entrypoint /bin/sh "$t" -c '
+            test ! -e /app/server/support/phase6AuthHarness.js &&
+            test ! -e /app/server/support/phase6HubPolicy.js &&
+            test ! -e /app/server/support/phase6-hub-schema.sql &&
+            test ! -e /app/server/support/phase6-synthetic-rollback.sql &&
+            test ! -d /app/tests &&
+            test -e /app/server/hubSessionStatus.js &&
+            test -e /app/dist/index.html
+          '
+          echo "SUPPORT_P9_TEST_ONLY_AUTH_AND_ROLLBACK_NOT_IN_IMAGE=PASS"
           echo "SUPPORT_P9_EPHEMERAL_TWIN_IMAGE_BUILD=PASS"
           echo "SUPPORT_P9_IMAGE_RUNTIME_NODE22=PASS"
           echo "SUPPORT_P9_NO_APP_SERVERS_STARTED_OR_PORTS_PUBLISHED=YES"
