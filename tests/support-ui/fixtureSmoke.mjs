@@ -48,4 +48,33 @@ assert.equal(jobLink.status,201);
 const stale=await call("/api/support/staff/tickets/"+created.data.id,"PATCH",
  {status:"open"},{"If-Match":created.etag});
 assert.equal(stale.status,412);
+const calendar=await call("/api/support/staff/phase4/calendar");
+assert.equal(calendar.status,200);assert.equal(calendar.data.timezone,"America/St_Lucia");
+const sla=await call("/api/support/staff/phase4/tickets/"+mailTicket.id+"/sla");
+assert.equal(sla.status,200);assert.equal(sla.data.source,"synthetic");
+assert.equal(sla.data.firstResponse,"met");
+const presence=await call("/api/support/staff/phase4/tickets/"+created.data.id+"/presence","PUT",
+ {mode:"drafting"},{"If-Match":patch.etag});
+assert.equal(presence.status,200);
+assert.equal(presence.data.mode,"drafting");
+const stalePresence=await call("/api/support/staff/phase4/tickets/"+created.data.id+"/presence","PUT",
+ {mode:"viewing"},{"If-Match":created.etag});
+assert.equal(stalePresence.status,412);
+const pr=await call("/api/support/staff/phase4/tickets/"+created.data.id+"/presence");
+assert.equal(pr.status,200);assert.equal(pr.data.currentTicketVersion,2);
+const ruleTicket=await call("/api/support/staff/tickets","POST",
+ {subject:"Synthetic critical automation check",priority:"critical"},
+ {"Idempotency-Key":"synthetic_phase4_critical1"});
+assert.equal(ruleTicket.status,201);
+const evaluate=await call("/api/support/staff/phase4/tickets/"+ruleTicket.data.id+
+ "/automations/evaluate","POST",{});
+assert.equal(evaluate.status,200);
+assert.deepEqual(evaluate.data.newRules,["critical_unassigned"]);
+assert.equal(evaluate.data.notificationsSent,0);
+const repeatRules=await call("/api/support/staff/phase4/tickets/"+ruleTicket.data.id+
+ "/automations/evaluate","POST",{});
+assert.deepEqual(repeatRules.data.newRules,[]);
+const recorded=await call("/api/support/staff/phase4/tickets/"+ruleTicket.data.id+"/alerts");
+assert.equal(recorded.data.items.length,1);
+assert.match(recorded.data.items[0].body,/Synthetic/i);
 console.log("SUPPORT_UI_SYNTHETIC_HTTP_SMOKE=PASS");
