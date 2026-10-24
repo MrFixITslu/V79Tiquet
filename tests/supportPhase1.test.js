@@ -45,3 +45,11 @@ test("Phase 1 mount is fail-closed except explicit local synthetic test stack",(
  assert.equal(supportSandboxEnabled({...env,DATABASE_URL:"postgres://127.0.0.1:5432/tiquet"}),false);
  assert.equal(supportSandboxEnabled({...env,DATABASE_URL:undefined}),false);
 });
+
+test("cursor retains microseconds rather than rounding to milliseconds",()=>{
+ const filter=listArgs({limit:25});
+ const precise="2026-10-24T14:35:27.123456Z";
+ const token=makeCursor({id:"synthetic123",updatedAt:"2026-10-24T14:35:27.123Z",
+  cursorUpdatedAt:precise},filter);
+ assert.equal(readCursor(token,filter).at,precise);
+});
