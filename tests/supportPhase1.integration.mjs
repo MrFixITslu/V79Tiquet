@@ -54,7 +54,8 @@ test.before(async()=>{
  await pool.query("INSERT INTO accounts(id) VALUES('teamA'),('teamB')");
  await pool.query("INSERT INTO users VALUES('ownerA','teamA','Admin','[]'),"+
   "('staffA','teamA','Member','[\"support.view\",\"support.create\",\"support.note\",\"support.update\",\"support.link\"]'),"+
-  "('viewerA','teamA','Member','[\"support.view\"]'),"+
+  "('viewerA','teamA','Member','[\"support.view\"]'),
+  "('managerA','teamA','Member','[\"support.view\",\"support.view.all\"]'),"+"+
   "('legacyA','teamA','Member','[\"jobs\"]'),"+
   "('ownerB','teamB','Admin','[]')");
  await pool.query("INSERT INTO clients VALUES('clientA','teamA'),('clientB','teamB')");
@@ -83,7 +84,9 @@ test("Phase1 API: scope, idempotency, ETags, notes and links",async()=>{
  const legacy=await send("/api/support/staff/tickets","teamA","legacyA");
  assert.equal(legacy.status,403);
  const viewer=await send("/api/support/staff/tickets","teamA","viewerA");
- assert.equal(viewer.status,200);
+ assert.equal(viewer.status,200);assert.equal(viewer.body.items.length,0);
+ const manager=await send("/api/support/staff/tickets","teamA","managerA");
+ assert.equal(manager.status,200);assert.ok(manager.body.items.some(x=>x.id===ticket));
  const noIf=await send("/api/support/staff/tickets/"+ticket,"teamA","ownerA","PATCH",
   {status:"open"});
  assert.equal(noIf.status,428);
@@ -104,9 +107,16 @@ test("Phase1 API: scope, idempotency, ETags, notes and links",async()=>{
   {body:"Do not send this",visibility:"public"},{"Idempotency-Key":"synthetic_reply_100"});
  assert.equal(noSend.status,409);assert.equal(noSend.body.code,"OUTBOUND_NOT_ENABLED");
  const view=await send("/api/support/staff/tickets/"+ticket+"/messages","teamA","viewerA");
- assert.equal(view.status,200);assert.equal(view.body.items.length,0);
+ assert.equal(view.status,404);
  const staffView=await send("/api/support/staff/tickets/"+ticket+"/messages","teamA","staffA");
  assert.equal(staffView.body.items.length,1);
+ const privateTicket=await send("/api/support/staff/tickets","teamA","ownerA","POST",
+   {subject:"Unassigned private synthetic issue"},{"Idempotency-Key":"unassigned_private_001"});
+ assert.equal(privateTicket.status,201);
+ assert.equal((await send("/api/support/staff/tickets/"+privateTicket.body.id,"teamA","staffA")).status,404);
+ assert.equal((await send("/api/support/staff/tickets/"+privateTicket.body.id,"teamA","staffA","PATCH",
+   {priority:"low"},{"If-Match":privateTicket.etag})).status,404);
+ assert.equal((await send("/api/support/staff/tickets/"+privateTicket.body.id+"/messages","teamA","staffA")).status,404);
  const wrongJob=await send("/api/support/staff/tickets/"+ticket+"/links","teamA","staffA",
   "POST",{kind:"service_job",targetId:"jobB"});
  assert.equal(wrongJob.status,400);
@@ -135,9 +145,9 @@ test("cursor pagination is tenant scoped and bounded",async()=>{
 });
 
 test("10,000 synthetic tickets remain bounded behind server pagination",async()=>{
- await pool.query("INSERT INTO support_tickets(id,account_id,subject,status,priority) "+
+ await pool.query("INSERT INTO support_tickets(id,account_id,subject,status,priority,created_by) "+
   "SELECT 'bulk_'||lpad(n::text,6,'0'),'teamA','Synthetic bulk issue '||n,"+
-  "'new','normal' FROM generate_series(1,10000) AS n");
+  "'new','normal','ownerA' FROM generate_series(1,10000) AS n");
  const first=await send("/api/support/staff/tickets?limit=25","teamA","ownerA");
  assert.equal(first.status,200);
  assert.equal(first.body.items.length,25);
