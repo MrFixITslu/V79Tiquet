@@ -89,6 +89,13 @@ The owner executed the manifest-driven **read-only** SHA-256 and expected-size v
 - No image import, container startup, data recovery or production contact occurred.
 - The next gate is an isolated S2 dual-database restore with exact local image selection and cleanup proof. Commercial release remains NO-GO.
 
+## S2 PostgreSQL cached image selection — owner read-only Acer check
+- S2 manifest PG image pins match R1: **PASS 2/2**. Acer rootless Podman cache currently shows two PG16 candidates (`275447c94b11b151`, `75f5a96988cdf694`) and two PG17 candidates (`327daa8fae7178d6`, `79bd7c99e923138f`), reported as 16-character image ID prefixes only.
+- The number and major versions of local images do NOT prove the exact S2 config identities. No image imported, no archive decrypted and no production contacted during this local cache inventory.
+- Added a source-hash-pinned **local generator** on isolated Hub feature branch, commit `31bb3665b0c02d2ae650614eecdd71d364e29f08`, path `scripts/GENERATE_V79_S2_PG_Cache_Gate_v1.py`; source Git blob `8eaf87f0e452f21d607836eb2a2a9e4be8415a14` confirmed.
+- The generator is not a DB restoration: it creates a separate platform-aware exact-OCI-configuration-to-rootless-Podman-PG-image comparison and guarded isolation runners from the original pinned Acer files. Synthetic creation checks passed; **no owner run of this new gate yet**.
+- Pending: exact PG16/17 cache config ID match under offline guard, then new real-data PostgreSQL restore design/preflight, rootless network=none tmpfs-backed disposable containers and cleanup evidence. NO production or beta authorization.
+
 ## Important evidence limitations
 - Synthetic recovery is not a sanitized actual production image/DB/backup, does not establish real recovery time objective, recovery point objective, cross-store atomic capture, production-secret parity, or off-host encrypted restore integrity.
 - The Hub default-OFF Compose amendment exists on an isolated feature branch only; Hub main remains unchanged. Tiquet Phase 7–9 pinned tests still reference Hub main (which has not been amended), not this candidate.
