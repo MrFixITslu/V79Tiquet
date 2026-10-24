@@ -157,6 +157,15 @@ jobs:
         run: |
           node --check tests/supportPhase7.pairedHub.integration.mjs
           node --test tests/supportPhase7.pairedHub.integration.mjs
+      - name: Remove pinned Hub checkout from Tiquet TypeScript project
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_ACTIONS" = "true"
+          test "$CI_SUPPORT_SYNTHETIC" = "1"
+          test "$(git -C phase7-hub-source rev-parse HEAD)" = "ee79ec9353ee4248eb8276fee2e6c3476b3af491"
+          mv -- phase7-hub-source "$RUNNER_TEMP/tiquet-phase7-pinned-hub"
+          test ! -e phase7-hub-source
       - name: Existing TypeScript and unit regression checks
         run: |
           npm run lint
