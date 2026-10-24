@@ -9,6 +9,7 @@ const server=await createViteServer({configFile:path.resolve("tests/support-ui/v
 try{
  const mod=await server.ssrLoadModule(path.resolve("src/support/SupportDeskSandbox.tsx"));
  const api=await server.ssrLoadModule(path.resolve("src/support/sandboxApi.ts"));
+ const gates=await server.ssrLoadModule(path.resolve("src/support/requestGate.ts"));
  test("isolated UX renders scoped navigation and explicit simulated state",()=>{
   const html=renderToStaticMarkup(React.createElement(mod.SupportDeskSandbox,{
    api:{list:async()=>({items:[],nextCursor:null})}
@@ -60,6 +61,16 @@ try{
    assert.equal(call.init.headers["x-synthetic-account"],"demoA");
    assert.equal(call.init.credentials,"same-origin");
   }
+ });
+ test("out-of-order queue and conversation fetches cannot overwrite newer selection",()=>{
+  const list=gates.createRequestGate(),details=gates.createRequestGate();
+  const oldList=list.begin();const newList=list.begin();
+  assert.equal(list.isCurrent(oldList),false);
+  assert.equal(list.isCurrent(newList),true);
+  const oldTicket=details.begin();details.invalidate();
+  const newTicket=details.begin();
+  assert.equal(details.isCurrent(oldTicket),false);
+  assert.equal(details.isCurrent(newTicket),true);
  });
  test("API errors are explicit and never appear as success",async()=>{
   const reject=async()=>new Response(JSON.stringify({code:"STALE_TICKET",error:"Changed remotely"}),{
