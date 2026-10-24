@@ -1,3 +1,4 @@
+import {request as rawRequest} from "node:http";
 import assert from "node:assert/strict";
 const base="http://127.0.0.1:3088";
 const headers={"x-synthetic-user":"agentA","x-synthetic-account":"demoA",
@@ -82,10 +83,16 @@ const malicious=await fetch(base+"/api/support/staff/tickets",{
  headers:{...headers,Origin:"https://malicious.example.invalid"},
  signal:AbortSignal.timeout(5000)});
 assert.equal(malicious.status,403);
-const rebinding=await fetch(base+"/api/support/staff/tickets",{
- headers:{...headers,Host:"evil.example.invalid:3088"},
- signal:AbortSignal.timeout(5000)});
-assert.equal(rebinding.status,403);
+// Fetch implementations normalize the Host header. Exercise a true raw
+// Host-header attack using node:http instead.
+const rebinding=await new Promise((resolve,reject)=>{
+ const request=rawRequest(base+"/api/support/staff/tickets",{
+  method:"GET",headers:{...headers,host:"evil.example.invalid:3088"}
+ },response=>{response.resume();resolve(response.statusCode);});
+ request.on("error",reject);request.setTimeout(4000,()=>request.destroy(new Error("Host guard timeout")));
+ request.end();
+});
+assert.equal(rebinding,403);
 const safeOrigin=await fetch(base+"/api/support/staff/tickets",{
  headers:{...headers,Origin:"http://127.0.0.1:4308"},
  signal:AbortSignal.timeout(5000)});
