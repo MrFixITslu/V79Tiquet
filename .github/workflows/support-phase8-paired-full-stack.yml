@@ -58,6 +58,13 @@ jobs:
           ref: ee79ec9353ee4248eb8276fee2e6c3476b3af491
           path: phase8-hub-source
           persist-credentials: false
+      - name: Checkout exact feature commit into isolated paired Hub workspace
+        uses: actions/checkout@v4
+        with:
+          repository: MrFixITslu/V79Tiquet
+          ref: ${{ github.sha }}
+          path: phase8-hub-source/.paired-tiquet
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
@@ -69,6 +76,7 @@ jobs:
           test "$GITHUB_REF" = "refs/heads/feature/support-desk-phase1-20261024"
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           test "$(git -C phase8-hub-source rev-parse HEAD)" = "ee79ec9353ee4248eb8276fee2e6c3476b3af491"
+          test "$(git -C phase8-hub-source/.paired-tiquet rev-parse HEAD)" = "$GITHUB_SHA"
           test "$GITHUB_ACTIONS" = "true"
           test "$DATABASE_URL" = "postgresql://tiquet_test:tiquet_test_password@127.0.0.1:5432/tiquet_test"
           test "$V79_PAIRED_TEST_SCOPE" = "github-ci-disposable"
@@ -85,6 +93,7 @@ jobs:
           set -euo pipefail
           npm ci --ignore-scripts --no-audit --no-fund
           npm ci --prefix phase8-hub-source --ignore-scripts --no-audit --no-fund
+          npm ci --prefix phase8-hub-source/.paired-tiquet --ignore-scripts --no-audit --no-fund
       - name: Verify binding defaults and original app regression
         shell: bash
         run: |
@@ -104,7 +113,8 @@ jobs:
         run: |
           set -euo pipefail
           cd phase8-hub-source
-          ln -s .. .paired-tiquet
+          test -d .paired-tiquet/.git
+          test ! -L .paired-tiquet
           node ../tests/supportPhase8.prepare.mjs
           node --check tests/support-phase8-ci-copy.test.mjs
           test "$(git rev-parse HEAD)" = "ee79ec9353ee4248eb8276fee2e6c3476b3af491"
