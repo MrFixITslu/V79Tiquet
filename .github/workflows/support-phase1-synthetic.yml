@@ -74,6 +74,28 @@ jobs:
           npx vite build --config tests/support-ui/vite.config.ts
           test -s .support-ui-build/index.html
           test ! -e dist/support-sandbox.html
+      - name: Phase 3 isolated UX and typed API contracts
+        run: |
+          node --check tests/support-ui/fixtureServer.mjs
+          node --check tests/support-ui/fixtureSmoke.mjs
+          node --test tests/support-ui/contract.test.mjs
+      - name: Phase 3 synthetic HTTP workbench contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          CI_SUPPORT_UI_FIXTURE=1 node tests/support-ui/fixtureServer.mjs > /tmp/tiquet-support-ui-fixture.log 2>&1 &
+          fixture_pid=$!
+          trap 'kill "$fixture_pid" 2>/dev/null || true' EXIT
+          for attempt in $(seq 1 40); do
+            if curl --fail --silent http://127.0.0.1:3088/sandbox/health >/dev/null; then break; fi
+            if ! kill -0 "$fixture_pid" 2>/dev/null; then
+              cat /tmp/tiquet-support-ui-fixture.log
+              exit 1
+            fi
+            sleep 0.25
+          done
+          curl --fail --silent http://127.0.0.1:3088/sandbox/health >/dev/null
+          node tests/support-ui/fixtureSmoke.mjs
       - name: Existing TypeScript and unit regression checks
         run: |
           npm run lint
