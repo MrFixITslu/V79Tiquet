@@ -70,7 +70,8 @@ try{
    if(await evaluate(expression))return;
    await pause(200);
   }
-  throw Error("BROWSER_ACCEPTANCE_TIMEOUT: "+what);
+  const info=await evaluate("({href:location.href,title:document.title,body:document.body?.innerText?.slice(0,700),scripts:Array.from(document.scripts).map(x=>x.src),root:document.querySelector('#root')?.innerHTML?.slice(0,500)})");
+  throw Error("BROWSER_ACCEPTANCE_TIMEOUT: "+what+" DEBUG="+JSON.stringify(info));
  };
  await command("Page.enable");
  await command("Runtime.enable");
