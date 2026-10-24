@@ -78,6 +78,14 @@ try{
  await command("Page.navigate",{url:"http://127.0.0.1:4308/"});
  await until("document.querySelectorAll('.sd-ticket').length>=3","synthetic tickets load");
  assert.equal(await evaluate("document.body.innerText.includes('ENGINEERING SANDBOX')"),true);
+ // Chromium accessibility-tree audit of exposed actionable controls.
+ await command("Accessibility.enable");
+ const accessible=await command("Accessibility.getFullAXTree");
+ const nameless=accessible.nodes.filter(n=>!n.ignored&&
+  ["button","link","textbox","combobox"].includes(n.role?.value)&&
+  !String(n.name?.value||"").trim());
+ assert.deepEqual(nameless.map(n=>({role:n.role?.value,nodeId:n.nodeId})),[]);
+
  await until("Array.from(document.querySelectorAll('.sd-ticket')).some(x=>x.textContent.includes('<img src=x'))","XSS fixture visible as text");
  assert.equal(await evaluate("document.querySelector('.sd-ticket-list img')===null"),true);
  assert.equal(await evaluate("window.__support_p5_xss===undefined"),true);
