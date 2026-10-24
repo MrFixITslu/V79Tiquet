@@ -127,6 +127,16 @@ jobs:
         run: |
           set -euo pipefail
           bash tests/support-phase5-recovery.sh
+      - name: Phase 6 Hub SSO and synthetic entitlement integration
+        run: |
+          node --check server/support/phase6HubPolicy.js
+          node --check server/support/phase6AuthHarness.js
+          node --check tests/supportPhase6.hub.integration.mjs
+          node --test tests/supportPhase6.hub.integration.mjs
+      - name: Phase 6 isolated migration repeat and rollback
+        run: |
+          node --check tests/supportPhase6.migration.mjs
+          node tests/supportPhase6.migration.mjs
       - name: Existing TypeScript and unit regression checks
         run: |
           npm run lint
