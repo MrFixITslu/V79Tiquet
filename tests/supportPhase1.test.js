@@ -32,3 +32,16 @@ test("only explicit support grants allow Member access",()=>{
  assert.equal(supportCapabilities({role:"Member",permissions:'["support.view"]'}).has("support.note"),false);
  assert.equal(supportCapabilities({role:"Member",permissions:"invalid-json"}).size,0);
 });
+
+import {supportSandboxEnabled} from "../server/support/featureFlag.js";
+test("Phase 1 mount is fail-closed except explicit local synthetic test stack",()=>{
+ const env={NODE_ENV:"test",CI_SUPPORT_SYNTHETIC:"1",
+  V79_SUPPORT_DESK_ENABLED:"1",DATABASE_URL:"postgresql://test:test@127.0.0.1:5432/tiquet_support_test"};
+ assert.equal(supportSandboxEnabled(env),true);
+ assert.equal(supportSandboxEnabled({...env,NODE_ENV:"production"}),false);
+ assert.equal(supportSandboxEnabled({...env,CI_SUPPORT_SYNTHETIC:"0"}),false);
+ assert.equal(supportSandboxEnabled({...env,V79_SUPPORT_DESK_ENABLED:"0"}),false);
+ assert.equal(supportSandboxEnabled({...env,DATABASE_URL:"postgres://db.internal/tiquet_support_test"}),false);
+ assert.equal(supportSandboxEnabled({...env,DATABASE_URL:"postgres://127.0.0.1:5432/tiquet"}),false);
+ assert.equal(supportSandboxEnabled({...env,DATABASE_URL:undefined}),false);
+});
