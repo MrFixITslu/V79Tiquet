@@ -37,7 +37,7 @@ async function audit(tx,account,ticket,actor,event,details={}){
  'VALUES($1,$2,$3,$4,$5,$6::jsonb)',
  [crypto.randomUUID(),account,ticket,actor,event,JSON.stringify(details)]);
 }
-export function createSupportRouter({db,authenticateToken,phase4Hooks=null}){
+export function createSupportRouter({db,authenticateToken,phase4Hooks=null,resolveCapabilities=null}){
  if(!db?.query||!db?.transaction||typeof authenticateToken!=="function")
   throw new Error("Support Desk requires injected database and authentication");
  const router=express.Router();
@@ -48,7 +48,7 @@ export function createSupportRouter({db,authenticateToken,phase4Hooks=null}){
   const found=await db.query('SELECT role,permissions FROM users WHERE id=$1 AND account_id=$2',
    [req.user.id,req.accountId]);
   if(!found.rows[0]) throw new SupportError(401,"SUPPORT_UNAUTHENTICATED");
-  req.supportCaps=supportCapabilities(found.rows[0]);
+  req.supportCaps=supportCapabilities(resolveCapabilities?await resolveCapabilities(req):found.rows[0]);
   next();
  }));
  router.get("/tickets",wrap(async(req,res)=>{
