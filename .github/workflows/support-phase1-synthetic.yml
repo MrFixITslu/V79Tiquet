@@ -118,6 +118,15 @@ jobs:
           done
           curl --fail --silent http://127.0.0.1:4308/ >/dev/null
           node tests/support-ui/browserSmoke.mjs
+      - name: Phase 5 security and 15000-ticket bounded performance
+        run: |
+          node --check tests/supportPhase5.performance.mjs
+          node tests/supportPhase5.performance.mjs
+      - name: Phase 5 disposable backup and isolated restore
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash tests/support-phase5-recovery.sh
       - name: Existing TypeScript and unit regression checks
         run: |
           npm run lint
