@@ -6,7 +6,8 @@ import {requireIdentity,supportCapabilities,requireCapability} from "./permissio
 
 // This router is intentionally NOT mounted by the production app in Phase 1.
 const FIELDS='id,account_id AS "accountId",subject,client_id AS "clientId",'+
- 'status,priority,assigned_to AS "assignedTo",created_by AS "createdBy",version,created_at AS "createdAt",updated_at AS "updatedAt"';
+ 'status,priority,assigned_to AS "assignedTo",created_by AS "createdBy",version,created_at AS "createdAt",updated_at AS "updatedAt",'+
+ "to_char(updated_at AT TIME ZONE 'UTC','YYYY-MM-DD\"T\"HH24:MI:SS.US\"Z\"') AS \"cursorUpdatedAt\"";
 const MSG='id,ticket_id AS "ticketId",actor_id AS "actorId",visibility,channel,direction,'+
  'delivery_state AS "deliveryState",body,created_at AS "createdAt"';
 const wrap=fn=>(req,res,next)=>Promise.resolve().then(()=>fn(req,res,next)).catch(e=>{
@@ -71,8 +72,9 @@ export function createSupportRouter({db,authenticateToken}){
   const result=await db.query('SELECT '+FIELDS+' FROM support_tickets WHERE '+where+
    ' ORDER BY updated_at DESC,id DESC LIMIT $'+args.length,args);
   const more=result.rows.length>filter.limit;
-  const items=result.rows.slice(0,filter.limit);
-  res.json({items,nextCursor:more?makeCursor(items[items.length-1],filter):null});
+  const page=result.rows.slice(0,filter.limit);
+  const items=page.map(({cursorUpdatedAt,...row})=>row);
+  res.json({items,nextCursor:more?makeCursor(page[page.length-1],filter):null});
  }));
  router.post("/tickets",wrap(async(req,res)=>{
   requireCapability(req,"support.create");
