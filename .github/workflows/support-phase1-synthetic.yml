@@ -1,0 +1,68 @@
+name: Tiquet Support Phase 1 - Synthetic Only
+on:
+  push:
+    branches:
+      - feature/support-desk-phase1-20261024
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  isolated-support:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: support_test
+          POSTGRES_PASSWORD: support_test_password
+          POSTGRES_DB: tiquet_support_test
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U support_test -d tiquet_support_test"
+          --health-interval 5s --health-timeout 3s --health-retries 12
+    env:
+      CI_SUPPORT_SYNTHETIC: "1"
+      NODE_ENV: test
+      DATABASE_URL: postgresql://support_test:support_test_password@127.0.0.1:5432/tiquet_support_test
+      V79_SUPPORT_DESK_ENABLED: "0"
+      V79_ALLOW_LEGACY_AUTH: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Assert isolated feature branch and disposable target
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/feature/support-desk-phase1-20261024"
+          test "$CI_SUPPORT_SYNTHETIC" = "1"
+          test "$NODE_ENV" = "test"
+          test "$V79_SUPPORT_DESK_ENABLED" = "0"
+          [[ "$DATABASE_URL" == *"@127.0.0.1:5432/tiquet_support_test" ]]
+          if [ -n "$(git ls-files -- data uploads logs)" ]; then
+            echo "STOP: runtime data tracked in git" >&2
+            exit 1
+          fi
+      - name: Install dependencies - no external actions
+        run: npm ci --no-audit --no-fund
+      - name: Syntax and isolated support unit tests
+        run: |
+          node --check server/support/contracts.js
+          node --check server/support/permissions.js
+          node --check server/support/router.js
+          node --check tests/supportPhase1.integration.mjs
+          node --test tests/supportPhase1.test.js
+      - name: Synthetic local PostgreSQL integration
+        run: node --test tests/supportPhase1.integration.mjs
+      - name: Existing TypeScript and unit regression checks
+        run: |
+          npm run lint
+          npm test
+# No environment secrets, real email, GitHub packages, image build,
+# artifact publication, SSH, Tailscale, deployment or production database.
