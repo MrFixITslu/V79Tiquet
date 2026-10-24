@@ -27,7 +27,8 @@ function exact(old,neu){
 }
 exact('const TIQUET_COMMIT = "775d9f6c9afae70760896f5ef5cf090272d6a2af";',
  'const TIQUET_COMMIT = "'+tiquetSha+'";');
-s=s.replaceAll("https://tiquet.v79sl.com","https://tiquet.example.invalid");
+// Hub strictly validates the known .v79sl.com redirect hostname. The test
+// asserts the Location header and uses redirect:"manual" (never follows it).
 // The pinned full Hub requires its built-in admin email label at boot.
 // This is only a temporary test account with a fabricated password; SMTP and
 // external mail integrations are disabled by the GitHub Actions guard.
@@ -71,7 +72,9 @@ const extra=[
 ].join("\n");
 exact('  // Verify the exact issued JWT before explicit Tiquet logout.',
  extra+'\n  // Verify the exact issued JWT before explicit Tiquet logout.');
-assert.ok(!s.includes("https://tiquet.v79sl.com"));
+assert.ok(s.includes("https://tiquet.v79sl.com"));
+assert.ok(s.includes('redirect:"manual"'));
+assert.ok(s.includes("TIQUET_INTERNAL_URL:tiquet"));
 assert.ok(s.includes(tiquetSha));
 assert.ok(s.includes("HUB_ONLY_GLOBAL_LOGOUT_GATE=ISOLATED_PASS"));
 fs.writeFileSync(destPath,s,{mode:0o600});
