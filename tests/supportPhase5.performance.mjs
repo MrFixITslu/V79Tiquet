@@ -30,7 +30,7 @@ try{
  await pool.query("INSERT INTO users(id,account_id,role,permissions) "+
   "VALUES('perfAgent','perfA','Admin','[]') ON CONFLICT DO NOTHING");
  await pool.query("INSERT INTO support_tickets(id,account_id,subject,status,priority,created_by) "+
-  "SELECT 'perf_'+lpad(n::text,6,'0'),'perfA','Synthetic performance ticket '||n,"+
+  "SELECT 'perf_'||lpad(n::text,6,'0'),'perfA','Synthetic performance ticket '||n,"+
   "'open','normal','perfAgent' FROM generate_series(1,15000) AS n "+
   "ON CONFLICT DO NOTHING");
  await new Promise(resolve=>http.listen(0,"127.0.0.1",resolve));
