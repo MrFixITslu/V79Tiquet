@@ -28,7 +28,9 @@ function exact(old,neu){
 exact('const TIQUET_COMMIT = "775d9f6c9afae70760896f5ef5cf090272d6a2af";',
  'const TIQUET_COMMIT = "'+tiquetSha+'";');
 s=s.replaceAll("https://tiquet.v79sl.com","https://tiquet.example.invalid");
-s=s.replaceAll("vision79slu@gmail.com","synthetic-admin@example.invalid");
+// The pinned full Hub requires its built-in admin email label at boot.
+// This is only a temporary test account with a fabricated password; SMTP and
+// external mail integrations are disabled by the GitHub Actions guard.
 const extra=[
 '  // Additional synthetic job and invoice stage regression. No payment or email sends.',
 '  const invoiceCreate=await req(tiquet,"/api/jobs",{',
