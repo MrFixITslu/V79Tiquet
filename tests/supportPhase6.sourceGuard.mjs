@@ -22,7 +22,9 @@ assert.ok(!app.includes("phase6-synthetic-rollback"));
 assert.ok(!main.includes("SupportDeskSandbox"));
 assert.ok(routes.includes("resolveCapabilities=null"));
 assert.ok(phase4.includes("resolveCapabilities=null"));
-assert.ok(auth.includes('const hubUrl="http://127.0.0.1:4099"'));
+assert.ok(auth.includes('hubUrl="http://127.0.0.1:4099"'));
+assert.ok(auth.includes('target.hostname!=="127.0.0.1"'));
+assert.ok(auth.includes('target.protocol!=="http:"'));
 assert.ok(!/from ["']nodemailer["']|smtp\.|imap\./i.test(auth));
 assert.ok(!/\bCASCADE\b/i.test(rollback.replace(/^--.*$/gm,"")));
 for(const sensitive of ["DROP TABLE accounts","DROP TABLE users","DROP TABLE jobs","DROP TABLE clients",
