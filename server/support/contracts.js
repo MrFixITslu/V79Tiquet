@@ -76,7 +76,7 @@ export function listArgs(query) {
 }
 export const digest = value=>crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex");
 export function makeCursor(row,filter){
- return Buffer.from(JSON.stringify({at:new Date(row.updatedAt).toISOString(),id:row.id,
+ return Buffer.from(JSON.stringify({at:row.cursorUpdatedAt??new Date(row.updatedAt).toISOString(),id:row.id,
   filter:digest(filter)})).toString("base64url");
 }
 export function readCursor(input,filter) {
