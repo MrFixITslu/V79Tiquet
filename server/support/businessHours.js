@@ -80,10 +80,14 @@ export function currentSlaState({ticket,policy,record,now}){
  const moment=new Date(now);
  if(!Number.isFinite(moment.getTime()))throw new SupportError(400,"INVALID_SLA_DATE");
  const paused=ticket.status==="waiting_customer";
- const first=record.first_response_at? "met":
-  moment.getTime()>new Date(record.first_response_due).getTime()?"breached":"running";
- const resolution=record.resolved_at?"met":paused?"paused":
-  moment.getTime()>new Date(record.resolution_due).getTime()?"breached":"running";
+ const firstDue=new Date(record.first_response_due).getTime();
+ const resolveDue=new Date(record.resolution_due).getTime();
+ const first=record.first_response_at?
+  (new Date(record.first_response_at).getTime()<=firstDue?"met":"breached"):
+  moment.getTime()>firstDue?"breached":"running";
+ const resolution=record.resolved_at?
+  (new Date(record.resolved_at).getTime()<=resolveDue?"met":"breached"):
+  paused?"paused":moment.getTime()>resolveDue?"breached":"running";
  return {firstResponse:first,resolution,paused,firstResponseDue:record.first_response_due,
   resolutionDue:record.resolution_due,timezone:policy.timezone,
   asOf:moment.toISOString(),source:"synthetic"};
