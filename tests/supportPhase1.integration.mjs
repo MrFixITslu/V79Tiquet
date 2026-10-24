@@ -162,3 +162,19 @@ test("10,000 synthetic tickets remain bounded behind server pagination",async()=
  const other=await send("/api/support/staff/tickets?limit=25","teamB","ownerB");
  assert.deepEqual(other.body.items,[]);
 });
+
+test("concurrent identical requests create exactly one logical ticket",async()=>{
+ const path="/api/support/staff/tickets";
+ const body={subject:"Synthetic simultaneous duplicate request"};
+ const headers={"Idempotency-Key":"parallel_duplicate_key_01"};
+ const [one,two]=await Promise.all([
+  send(path,"teamA","ownerA","POST",body,headers),
+  send(path,"teamA","ownerA","POST",body,headers)
+ ]);
+ assert.deepEqual([one.status,two.status].sort(),[200,201]);
+ assert.equal(one.body.id,two.body.id);
+ const rows=await pool.query(
+  "SELECT count(*)::int AS n FROM support_tickets WHERE account_id='teamA' AND subject=$1",
+  [body.subject]);
+ assert.equal(rows.rows[0].n,1);
+});
