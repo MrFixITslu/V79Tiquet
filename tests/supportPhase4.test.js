@@ -52,3 +52,19 @@ test("only observed human reply marks first response; waiting states pause resol
  assert.equal(view.paused,true);
  assert.equal(DEFAULT_TARGETS.high.first,120);
 });
+
+test("late accepted response and late resolution remain breached, never met",()=>{
+ const base={first_response_due:"2026-10-26T15:00:00Z",
+  resolution_due:"2026-10-26T17:00:00Z",
+  first_response_at:"2026-10-26T15:01:00Z",
+  resolved_at:"2026-10-26T17:01:00Z"};
+ const status=currentSlaState({ticket:{status:"resolved"},policy:saint,
+  record:base,now:"2026-10-26T18:00:00Z"});
+ assert.equal(status.firstResponse,"breached");
+ assert.equal(status.resolution,"breached");
+ const onTime=currentSlaState({ticket:{status:"resolved"},policy:saint,
+  record:{...base,first_response_at:"2026-10-26T14:59:00Z",
+   resolved_at:"2026-10-26T16:59:00Z"},
+  now:"2026-10-26T18:00:00Z"});
+ assert.equal(onTime.firstResponse,"met");assert.equal(onTime.resolution,"met");
+});
