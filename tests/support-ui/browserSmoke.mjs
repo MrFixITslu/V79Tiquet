@@ -109,6 +109,24 @@ try{
  await until("document.querySelector('.sd-inbox').classList.contains('sd-show-detail')",
   "mobile conversation navigation");
  assert.equal(await evaluate("getComputedStyle(document.querySelector('.sd-mobile-back')).display!=='none'"),true);
+ // Accessibility and keyboard acceptance; no real customer actions.
+ assert.equal(await evaluate("!!document.querySelector('a[href=\"#support-main\"]')"),true);
+ assert.equal(await evaluate("document.querySelector('main#support-main')?.getAttribute('tabindex')"),"-1");
+ assert.equal(await evaluate("document.documentElement.scrollWidth<=document.documentElement.clientWidth+2"),true);
+ await evaluate("document.querySelector('.sd-titlebar .sd-button-primary').click()");
+ await until("!!document.querySelector('[role=\"dialog\"][aria-modal=\"true\"]')","ticket creation modal");
+ assert.equal(await evaluate("document.activeElement===document.querySelector('.sd-modal input')"),true);
+ assert.equal(await evaluate("document.querySelector('.sd-modal input').labels.length>0"),true);
+ assert.equal(await evaluate("document.querySelector('.sd-modal select').labels.length>0"),true);
+ await evaluate("document.querySelector('.sd-modal input').focus()");
+ // React's focus trap should wrap backwards from first to last focusable item.
+ await evaluate("document.querySelector('.sd-modal input').dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',shiftKey:true,bubbles:true,cancelable:true}))");
+ assert.equal(await evaluate("document.activeElement?.textContent==='Create synthetic ticket'"),false);
+ await command("Input.dispatchKeyEvent",{type:"keyDown",key:"Escape",code:"Escape",windowsVirtualKeyCode:27});
+ await command("Input.dispatchKeyEvent",{type:"keyUp",key:"Escape",code:"Escape",windowsVirtualKeyCode:27});
+ await until("!document.querySelector('[role=\"dialog\"]')","modal Escape close");
+ assert.equal(await evaluate("document.querySelector('.sd-titlebar .sd-button-primary')===document.activeElement"),true);
+ assert.equal(await evaluate("document.querySelectorAll('[role=\"alert\"] .sd-error').length"),0);
  assert.deepEqual(errors,[]);
  console.log("SUPPORT_UI_BROWSER_ACCEPTANCE=PASS_DESKTOP_MOBILE_SLAS_NAVIGATION");
 }finally{
