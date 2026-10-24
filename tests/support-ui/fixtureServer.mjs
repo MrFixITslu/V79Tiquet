@@ -96,6 +96,21 @@ const fixtureAuth=(req,res,next)=>{
 };
 const app=express();
 app.disable("x-powered-by");
+// Fail closed against DNS rebinding and cross-origin use of predictable fixture
+// headers. This is test infrastructure only, never production authentication.
+app.use((req,res,next)=>{
+ const host=String(req.headers.host||"");
+ const origin=req.headers.origin;
+ const allowedHosts=new Set(["127.0.0.1:3088","localhost:3088","127.0.0.1:4308","localhost:4308"]);
+ const allowedOrigins=new Set(["http://127.0.0.1:4308","http://localhost:4308"]);
+ if(!allowedHosts.has(host)||origin!==undefined&&!allowedOrigins.has(origin)){
+  return res.status(403).json({code:"SYNTHETIC_ORIGIN_DENIED"});
+ }
+ res.set("Cache-Control","no-store");
+ res.set("X-Content-Type-Options","nosniff");
+ res.set("X-Frame-Options","DENY");
+ next();
+});
 app.use(express.json({limit:"16kb"}));
 app.get("/sandbox/health",(req,res)=>res.json({synthetic:true,mailProvider:"mock",production:false}));
 const phase4=createPhase4Service({db});
