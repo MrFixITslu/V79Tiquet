@@ -61,6 +61,14 @@ The owner executed the manifest-driven **read-only** SHA-256 and expected-size v
 - **Closed gate:** the listed ciphertext files presently match their stored checksums and sizes on the Acer. **Open gates:** manifest authenticity, decryption, archive contents/completeness, cross-store consistent recovery, actual off-host encrypted restore with measurements, and production authorization. Commercial beta still **NO-GO**.
 - REDTEAM: no further discovery loop and no implicit authorization to decrypt any customer-bearing archive. Separately approve and isolate any real backup decryption/restoration, with least-privilege keys, no external network, no customer data export and exact path guards.
 
+## S2 Acer restore preflight and cached-image identity inventory (owner run, Oct 24)
+- Current S2 2026-10-22: 15/15 verified encrypted files (0.77 GiB), 10/10 mount-artifact references, GPG recipient private key matched; 642.2 GiB free disk, 7.7 GiB available RAM, 5.8 GiB free /dev/shm. All three required Hub/Tiquet data mount destinations MAPPED.
+- Early S2 role-hint counter incorrectly counted substring `pg` inside `.gpg` extension. Corrected metadata-only inventory verified: one Hub DB-name hint, one Tiquet DB-name hint, one encrypted images-name hint, 10 mount-name hints, one config-name hint and one unclassified; names are **not contents proof**.
+- Rootless Podman = true; cached images = 7; PostgreSQL 16 candidates = 2 and PostgreSQL 17 candidates = 2 by local image metadata. **None** of five S2 image digests directly matches cached reported IDs; no image identity proof yet.
+- Swapfile 2 GiB in size, **0 bytes used**. It remains enabled. Network active/default routes were observed at earlier preflight. No decryption, image import, container boot, backup write, or production contact occurred.
+- REDTEAM selected: code-reviewable, separately hash-pinned S2-specific OCI identity proof that operates only **after network interfaces/routes are disabled and swap disabled**, streams encrypted images through GPG to a bounded in-memory TAR parser without extraction or importing. Synthetic OCI positive/negative tests PASS, but owner Acer execution **NOT YET PERFORMED**. Full restoration still blocked until image identity and complete layout/capacity gates clear.
+- **No release GO.** Existing R1 pinned image proof uses older images and cannot be treated as S2 identity proof. This record does not authorize live operations.
+
 ## Important evidence limitations
 - Synthetic recovery is not a sanitized actual production image/DB/backup, does not establish real recovery time objective, recovery point objective, cross-store atomic capture, production-secret parity, or off-host encrypted restore integrity.
 - The Hub default-OFF Compose amendment exists on an isolated feature branch only; Hub main remains unchanged. Tiquet Phase 7–9 pinned tests still reference Hub main (which has not been amended), not this candidate.
