@@ -61,6 +61,9 @@
   client collection or other tenants' jobs are fetched.
 - **Stale update recovery.** HTTP 412 displays error, reloads ticket,
   and does not silently overwrite a concurrent change.
+- **Rapid navigation races.** Request-generation checks suppress out-of-order
+  queue or conversation responses so one customer cannot appear under a
+  later-selected ticket. Private-note refresh is scoped to current selection.
 
 ## Scope and known gaps
 
