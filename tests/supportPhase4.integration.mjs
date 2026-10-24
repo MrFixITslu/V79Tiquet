@@ -35,6 +35,7 @@ test.before(async()=>{
  await pool.query("CREATE TABLE IF NOT EXISTS clients(id TEXT PRIMARY KEY,account_id TEXT)");
  await pool.query("CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY,account_id TEXT,status TEXT,amount INTEGER)");
  await pool.query(await fs.readFile(path.join(dir,"../server/support/schema.sql"),"utf8"));
+ await pool.query(await fs.readFile(path.join(dir,"../server/support/mail-schema.sql"),"utf8"));
  const ddl=await fs.readFile(path.join(dir,"../server/support/phase4-schema.sql"),"utf8");
  await pool.query(ddl);await pool.query(ddl);
  await pool.query("INSERT INTO accounts VALUES('p4a'),('p4b')");
