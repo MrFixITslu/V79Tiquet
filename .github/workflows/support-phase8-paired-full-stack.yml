@@ -94,7 +94,10 @@ jobs:
           node --check server/hubAwareAuthentication.js
           node --check server/tiquetSocketAccess.js
           node --test tests/hubSessionStatus.test.js
+          # Keep Hub's pinned files out of Tiquet's TypeScript include glob.
+          mv -- phase8-hub-source "$RUNNER_TEMP/phase8-hub-source"
           npm run lint
+          mv -- "$RUNNER_TEMP/phase8-hub-source" phase8-hub-source
           node --check tests/supportPhase8.prepare.mjs
       - name: Create temporary Hub fixture test without modifying tracked sources
         shell: bash
