@@ -124,7 +124,8 @@ try{
  assert.equal(await evaluate("document.querySelector('.sd-modal select').labels.length>0"),true);
  // React's focus trap should wrap from the first to the last enabled control.
  await evaluate("document.querySelector('.sd-modal-title button').focus()");
- await evaluate("document.querySelector('.sd-modal-title button').dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',shiftKey:true,bubbles:true,cancelable:true}))");
+ await command("Input.dispatchKeyEvent",{type:"keyDown",key:"Tab",code:"Tab",windowsVirtualKeyCode:9,modifiers:8});
+ await command("Input.dispatchKeyEvent",{type:"keyUp",key:"Tab",code:"Tab",windowsVirtualKeyCode:9,modifiers:8});
  assert.equal(await evaluate("document.activeElement===document.querySelector('.sd-modal select')"),true);
  await command("Input.dispatchKeyEvent",{type:"keyDown",key:"Escape",code:"Escape",windowsVirtualKeyCode:27});
  await command("Input.dispatchKeyEvent",{type:"keyUp",key:"Escape",code:"Escape",windowsVirtualKeyCode:27});
