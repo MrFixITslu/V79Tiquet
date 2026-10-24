@@ -83,6 +83,12 @@ The owner executed the manifest-driven **read-only** SHA-256 and expected-size v
 - REDTEAM: reject assuming arbitrary PG16/17 image versions match the pinned OCI images, reject altering live containers and reject bypassing the offline guard. Prepared a local **v2 platform-aware OCI resolver and v3 pinned/reversible runners**, generated deterministically from previously verified Acer scripts (no download needed). Tests on synthetic single-platform image IDs and missing-pin negative cases PASSED; the exact v2 script + v3 shell wrapper hashes verified locally. A real run **HAS NOT OCCURRED**.
 - Scope next: recreate pinned files on Acer, self-test, then run guarded physical-terminal isolation for a **single** repeat of OCI metadata proof; stop if either PG pin remains ambiguous. No restoration/merge/production access authorized by this result; beta remains NO-GO.
 
+## S2 image proof: complete (Acer operator report, Oct 24)
+- Owner's offline V3 run passed 81/81 OCI blob digests and all 5/5 Linux amd64 image identity links, including both PostgreSQL roles.
+- Reported host isolation and swap-off checks passed. The wrapper also reported successful swap, Wi-Fi and Tailscale configuration restoration.
+- No image import, container startup, data recovery or production contact occurred.
+- The next gate is an isolated S2 dual-database restore with exact local image selection and cleanup proof. Commercial release remains NO-GO.
+
 ## Important evidence limitations
 - Synthetic recovery is not a sanitized actual production image/DB/backup, does not establish real recovery time objective, recovery point objective, cross-store atomic capture, production-secret parity, or off-host encrypted restore integrity.
 - The Hub default-OFF Compose amendment exists on an isolated feature branch only; Hub main remains unchanged. Tiquet Phase 7–9 pinned tests still reference Hub main (which has not been amended), not this candidate.
