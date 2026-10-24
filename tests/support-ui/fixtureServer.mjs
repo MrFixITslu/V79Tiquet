@@ -38,7 +38,7 @@ async function fixtureSetup(){
  await pool.query("INSERT INTO accounts(id) VALUES('demoA') ON CONFLICT DO NOTHING");
  await pool.query("INSERT INTO users VALUES('agentA','demoA','Admin','[]') ON CONFLICT DO NOTHING");
  await pool.query("INSERT INTO clients VALUES('synthetic-client','demoA') ON CONFLICT DO NOTHING");
- await pool.query("INSERT INTO jobs VALUES('jobA','demoA','in-progress',100) ON CONFLICT DO NOTHING");
+ await pool.query("INSERT INTO jobs VALUES('demoJobA','demoA','in-progress',100) ON CONFLICT DO NOTHING");
  await pool.query(
   "INSERT INTO support_mailboxes(id,account_id,address) VALUES('demoMailbox','demoA','help@example.invalid') ON CONFLICT DO NOTHING");
  const fake={kind:"synthetic-mail-provider",send:async()=>({state:"accepted",receipt:"mock-accepted-ui"})};
@@ -69,7 +69,7 @@ async function fixtureSetup(){
   await pool.query("UPDATE support_tickets SET assigned_to='agentA',status='waiting_customer',priority='normal' WHERE id=$1",[b.ticketId]);
   await pool.query("UPDATE support_tickets SET assigned_to=NULL,status='new',priority='low' WHERE id=$1",[c.ticketId]);
   await pool.query("INSERT INTO support_ticket_links(account_id,ticket_id,job_id,created_by) "+
-    "VALUES('demoA',$1,'jobA','agentA') ON CONFLICT DO NOTHING",[a.ticketId]);
+    "VALUES('demoA',$1,'demoJobA','agentA') ON CONFLICT DO NOTHING",[a.ticketId]);
   await mail.queueReply({accountId:"demoA",actorId:"agentA",ticketId:a.ticketId,
    mailboxId:"demoMailbox",recipient:"customer@example.invalid",
    body:"This is an accepted mock reply, not a real email.",
