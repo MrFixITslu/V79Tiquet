@@ -1,6 +1,6 @@
 import React,{useCallback,useEffect,useMemo,useRef,useState} from "react";
 import {createRequestGate} from "./requestGate";
-import type {SupportTicket,SupportMessage,TicketStatus,TicketPriority,SandboxApi,LinkedJob} from "./sandboxApi";
+import type {SupportTicket,SupportMessage,TicketStatus,TicketPriority,SandboxApi,LinkedJob,SyntheticSla,SyntheticPresence,SyntheticAlert} from "./sandboxApi";
 import {createSandboxApi,assertLocalSyntheticUrl,SupportApiError} from "./sandboxApi";
 import "./supportDesk.css";
 
@@ -39,6 +39,10 @@ export function SupportDeskSandbox({api:provided}:{api?:SandboxApi}){
  const [selected,setSelected]=useState<SupportTicket|null>(null);
  const [messages,setMessages]=useState<SupportMessage[]>([]);
  const [links,setLinks]=useState<LinkedJob[]>([]);
+ const [sla,setSla]=useState<SyntheticSla|null>(null);
+ const [presence,setPresence]=useState<SyntheticPresence|null>(null);
+ const [alerts,setAlerts]=useState<SyntheticAlert[]>([]);
+ const noteRef=useRef("");
  const [note,setNote]=useState("");
  const [jobId,setJobId]=useState("");
  const [createOpen,setCreateOpen]=useState(false);
@@ -51,6 +55,7 @@ export function SupportDeskSandbox({api:provided}:{api?:SandboxApi}){
  const [notice,setNotice]=useState("");
  const [mobileDetail,setMobileDetail]=useState(false);
  const [sidebarOpen,setSidebarOpen]=useState(false);
+ useEffect(()=>{noteRef.current=note;},[note]);
  const listGate=useRef(createRequestGate());
  const detailGate=useRef(createRequestGate());
  const selectedIdRef=useRef<string|null>(null);
@@ -84,11 +89,15 @@ export function SupportDeskSandbox({api:provided}:{api?:SandboxApi}){
   setDetailsLoading(true);setError("");
   try{
    const [record,comments,relations]=await Promise.all([api.get(id),api.messages(id),api.links(id)]);
+   const extra=await Promise.allSettled([api.sla(id),api.presence(id),api.alerts(id)]);
    if(!detailGate.current.isCurrent(request)||selectedIdRef.current!==id)return;
    setSelected(record.data);setMessages(comments.items);setLinks(relations.items);
+   setSla(extra[0].status==="fulfilled"?extra[0].value:null);
+   setPresence(extra[1].status==="fulfilled"?extra[1].value:null);
+   setAlerts(extra[2].status==="fulfilled"?extra[2].value.items:[]);
   }catch(e){
    if(!detailGate.current.isCurrent(request)||selectedIdRef.current!==id)return;
-   setSelected(null);setMessages([]);setLinks([]);setError(asText(e));
+   setSelected(null);setMessages([]);setLinks([]);setSla(null);setPresence(null);setAlerts([]);setError(asText(e));
   }finally{
    if(detailGate.current.isCurrent(request))setDetailsLoading(false);
   }
@@ -96,9 +105,38 @@ export function SupportDeskSandbox({api:provided}:{api?:SandboxApi}){
  useEffect(()=>{
   selectedIdRef.current=selectedId;
   detailGate.current.invalidate();
-  setSelected(null);setMessages([]);setLinks([]);
+  setSelected(null);setMessages([]);setLinks([]);setSla(null);setPresence(null);setAlerts([]);
   if(selectedId)void loadDetails(selectedId);
  },[selectedId,loadDetails]);
+ useEffect(()=>{
+  if(!selected)return;
+  const ticket=selected.id,version=selected.version;
+  let active=true;
+  const beat=async()=>{
+   try{
+    await api.heartbeat(ticket,version,noteRef.current.trim()?"drafting":"viewing");
+    const state=await api.presence(ticket);
+    if(active&&selectedIdRef.current===ticket)setPresence(state);
+   }catch(e){
+    if(active&&selectedIdRef.current===ticket&&e instanceof SupportApiError&&e.status===412)
+     setError("Ticket changed in another session. Refresh before editing.");
+   }
+  };
+  void beat();
+  const timer=setInterval(()=>void beat(),30000);
+  return ()=>{active=false;clearInterval(timer);};
+ },[api,selected?.id,selected?.version]);
+ const evaluateAutomation=async()=>{
+  if(!selected)return;
+  setBusy(true);setError("");
+  try{
+   const result=await api.evaluateRules(selected.id);
+   if(selectedIdRef.current===selected.id)await loadDetails(selected.id);
+   setNotice(result.newRules.length?
+    "Internal synthetic rules recorded: "+result.newRules.join(", ")+". No messages sent.":
+    "No new internal rule actions. Nothing sent.");
+  }catch(e){setError(asText(e));}finally{setBusy(false);}
+ };
  const refresh=async()=>{await load();if(selectedIdRef.current)await loadDetails(selectedIdRef.current);};
  const mutate=async(fields:Partial<Pick<SupportTicket,"status"|"priority"|"subject">>)=>{
   if(!selected)return;setBusy(true);setError("");setNotice("");
@@ -263,7 +301,20 @@ export function SupportDeskSandbox({api:provided}:{api?:SandboxApi}){
         <form onSubmit={e=>void link(e)}><label htmlFor="linkJobId">Link existing synthetic job ID</label>
          <input id="linkJobId" placeholder="e.g. demoJobA" value={jobId} onChange={e=>setJobId(e.target.value)} maxLength={128}/>
          <button disabled={busy||!jobId.trim()} type="submit" className="sd-button sd-button-secondary">Link job</button></form>
-        <hr/><h3>Service level</h3><p>SLA countdown not enabled. No deadline is being calculated.</p>
+        <hr/><h3>Business-hours SLA</h3>
+        {sla?<div className="sd-context">
+         <div className="sd-context-value"><span>First response</span><strong>{pretty(sla.firstResponse)} · {relative(sla.firstResponseDue)}</strong></div>
+         <div className="sd-context-value"><span>Resolution</span><strong>{pretty(sla.resolution)} · {relative(sla.resolutionDue)}</strong></div>
+         <small>Synthetic policy · {sla.timezone} · business hours only</small>
+        </div>:<p>SLA information unavailable. Do not assume a deadline was met.</p>}
+        <hr/><h3>Agent collaboration</h3>
+        <p>{presence?.agents.length?presence.agents.map(a=>a.actorId+" ("+a.mode+")").join(", "):"No other active synthetic agents"}</p>
+        <small>Presence expires after 90 seconds. Refresh for changes.</small>
+        <hr/><h3>Internal rule alerts</h3>
+        {alerts.length?alerts.map(a=><p key={a.id} className="sd-related">{a.body}</p>):<p>No internal synthetic alerts recorded.</p>}
+        <button type="button" disabled={busy} onClick={()=>void evaluateAutomation()} className="sd-button sd-button-secondary">
+         Evaluate synthetic rules</button>
+        <small>Creates internal test alerts only. Never sends email.</small>
        </div>:<p className="sd-muted">Select a ticket to see its context.</p>}
       </aside>
      </div>
