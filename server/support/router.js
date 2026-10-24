@@ -37,7 +37,7 @@ async function audit(tx,account,ticket,actor,event,details={}){
  'VALUES($1,$2,$3,$4,$5,$6::jsonb)',
  [crypto.randomUUID(),account,ticket,actor,event,JSON.stringify(details)]);
 }
-export function createSupportRouter({db,authenticateToken}){
+export function createSupportRouter({db,authenticateToken,phase4Hooks=null}){
  if(!db?.query||!db?.transaction||typeof authenticateToken!=="function")
   throw new Error("Support Desk requires injected database and authentication");
  const router=express.Router();
@@ -125,6 +125,9 @@ export function createSupportRouter({db,authenticateToken}){
      'assigned_to=$6,version=version+1,updated_at=now() WHERE account_id=$1 AND id=$2 '+
      'RETURNING '+FIELDS,
      [req.accountId,req.params.id,next.subject,next.status,next.priority,next.assignedTo]);
+   if(phase4Hooks && previous.status!==next.status)
+    await phase4Hooks.onStatusChanged(tx,{accountId:req.accountId,ticketId:req.params.id,
+     previousStatus:previous.status,nextStatus:next.status,actorId:req.user.id});
    await audit(tx,req.accountId,req.params.id,req.user.id,"ticket.updated",
      {fields:Object.keys(patch),oldStatus:previous.status,newStatus:next.status});
    return updated.rows[0];
