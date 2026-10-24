@@ -50,6 +50,17 @@ Acer copy is off-server, not necessarily off-site. No backup contents, customer 
 - REDTEAM decision: avoid repetitive discovery or decrypting customer-bearing snapshots without separate authorization. Next permitted evidence step is manifest/checksum discovery and ciphertext hash verification only, with no live access and no decryption.
 - Release decision remains **NO-GO** until coverage, integrity, decryption and isolated complete recoverability are independently verified; no RTO/RPO claim.
 
+## Ciphertext SHA-256 verification — Acer manual check, 2026-10-24
+The owner executed the manifest-driven **read-only** SHA-256 and expected-size verifier from the Acer `firelion-Aspire-A315-51`. The three manifest lists use recorded `name`, `bytes`, `sha256` entries; the checker resolved archive references without ambiguity and streamed the encrypted bytes without decrypting them:
+- S2 October 22 (s2-20261022T182118Z-4fc56843): **15/15 PASS**.
+- S2 October 21 (s2-20261021T123846Z-f7b53863): **14/14 PASS**.
+- R18 October 19 (r18-d9Yt4fJ1): **12/12 PASS**.
+- Total **41/41 manifest-listed ciphertext references PASS**. MISSING=0; AMBIGUOUS=0; SIZE_MISMATCH=0; HASH_MISMATCH=0; INVALID_RECORD=0.
+- Operator output explicitly states CIPHERTEXT_INTEGRITY=PASS_41_OF_41, DECRYPTION=NONE, FILES_MODIFIED=NONE, PRODUCTION_CONTACT=NONE.
+- These are *manifest entries*, not a claim of 41 different physical files or all 96 discovered backups; independent signature/trust of manifests was not established.
+- **Closed gate:** the listed ciphertext files presently match their stored checksums and sizes on the Acer. **Open gates:** manifest authenticity, decryption, archive contents/completeness, cross-store consistent recovery, actual off-host encrypted restore with measurements, and production authorization. Commercial beta still **NO-GO**.
+- REDTEAM: no further discovery loop and no implicit authorization to decrypt any customer-bearing archive. Separately approve and isolate any real backup decryption/restoration, with least-privilege keys, no external network, no customer data export and exact path guards.
+
 ## Important evidence limitations
 - Synthetic recovery is not a sanitized actual production image/DB/backup, does not establish real recovery time objective, recovery point objective, cross-store atomic capture, production-secret parity, or off-host encrypted restore integrity.
 - The Hub default-OFF Compose amendment exists on an isolated feature branch only; Hub main remains unchanged. Tiquet Phase 7–9 pinned tests still reference Hub main (which has not been amended), not this candidate.
