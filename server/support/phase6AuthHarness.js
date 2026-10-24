@@ -34,7 +34,8 @@ const same=(a,b)=>{
  return left.length===right.length&&timingSafeEqual(left,right);
 };
 export function createPhase6SyntheticHubAuth({
- db,secret,signatureSecret,entitlements,clock,env=process.env
+ db,secret,signatureSecret,entitlements,clock,env=process.env,
+ hubUrl="http://127.0.0.1:4099",httpTransport=null
 }){
  requireMailSandbox(env);
  if(!db?.query||typeof secret!=="string"||secret.length<40||
@@ -42,10 +43,14 @@ export function createPhase6SyntheticHubAuth({
   !(entitlements instanceof Map)||typeof clock!=="function")
   throw Error("PHASE6_MOCK_TRUST_INPUT_REQUIRED");
  let hubCalls=0;
- const hubUrl="http://127.0.0.1:4099";
+ const target=new URL(hubUrl);
+ if(target.protocol!=="http:"||target.hostname!=="127.0.0.1"||
+    target.username||target.password||target.pathname!=="/"||!target.port||
+    (httpTransport!==null&&typeof httpTransport!=="function"))
+  throw Error("PHASE7_LOCAL_HUB_ONLY");
  const checker=createHubEntitlementChecker({
   product:"tiquet",hubUrl,secret:signatureSecret,now:clock,
-  transport:async(uri,options)=>{
+  transport:httpTransport??(async(uri,options)=>{
    // Not a network call. Verify the *real* HMAC request emitted by the
    // production checker before returning synthetic entitlement decisions.
    hubCalls++;
@@ -64,7 +69,7 @@ export function createPhase6SyntheticHubAuth({
    return new Response(JSON.stringify({allowed,validForSeconds:1}),{
     status:200,headers:{"content-type":"application/json"}
    });
-  }
+  })
  });
  // Synthetic purpose pinning *in addition to* production JWT verification.
  const verifyJwt={
