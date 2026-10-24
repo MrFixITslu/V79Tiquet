@@ -57,7 +57,7 @@ test("SLA records use ticket-created time, priority and configured business hour
  assert.equal(new Date(sla.resolutionDue).toISOString(),"2026-10-26T17:00:00.000Z");
  assert.equal(sla.firstResponse,"running");assert.equal(sla.source,"synthetic");
  const repeat=await phase4.readSla(input());
- assert.equal(repeat.firstResponseDue,sla.firstResponseDue);
+ assert.equal(new Date(repeat.firstResponseDue).getTime(),new Date(sla.firstResponseDue).getTime());
 });
 test("member can view only an assigned or creator-owned ticket",async()=>{
  await assert.rejects(phase4.readSla(input("p4critical","p4a","p4agent",member)),/TICKET_NOT_FOUND/);
