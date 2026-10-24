@@ -8,6 +8,7 @@ on:
       - tests/supportPhase9.contract.mjs
       - tests/supportPhase9.compose.mjs
       - tests/supportPhase9.recovery.mjs
+      - 'docs/support/phase9-*.md'
       - .github/workflows/support-phase9-image.yml
   workflow_dispatch:
 permissions:
