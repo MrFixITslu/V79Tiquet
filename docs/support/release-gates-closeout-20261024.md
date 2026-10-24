@@ -96,6 +96,10 @@ The owner executed the manifest-driven **read-only** SHA-256 and expected-size v
 - The generator is not a DB restoration: it creates a separate platform-aware exact-OCI-configuration-to-rootless-Podman-PG-image comparison and guarded isolation runners from the original pinned Acer files. Synthetic creation checks passed; **no owner run of this new gate yet**.
 - Pending: exact PG16/17 cache config ID match under offline guard, then new real-data PostgreSQL restore design/preflight, rootless network=none tmpfs-backed disposable containers and cleanup evidence. NO production or beta authorization.
 
+## S2 exact cached PostgreSQL image gate — PASS
+On Oct 24, the owner ran the guarded Acer v4 proof: all 81 OCI blobs verified, all five S2 OCI identities verified, and both Tiquet PG16 and Hub PG17 exact local Podman image configurations matched. Reported swap/Wi-Fi/Tailscale configuration restoration passed. No image import, database restore, or production contact occurred.
+The isolated Hub feature branch now has a separately pinned S2 offline dual-database restore runner, commit 8ec9ce5accffca17be2d1da7747eefcf7ae58450, script SHA256 a5029eeb2b98a2363df3ef7aee57375c2fc6df356f33f25687303e3a0404ac4d. Local synthetic selection, tamper, and cleanup checks passed. Real database recovery NOT RUN. Commercial release remains NO-GO.
+
 ## Important evidence limitations
 - Synthetic recovery is not a sanitized actual production image/DB/backup, does not establish real recovery time objective, recovery point objective, cross-store atomic capture, production-secret parity, or off-host encrypted restore integrity.
 - The Hub default-OFF Compose amendment exists on an isolated feature branch only; Hub main remains unchanged. Tiquet Phase 7–9 pinned tests still reference Hub main (which has not been amended), not this candidate.
