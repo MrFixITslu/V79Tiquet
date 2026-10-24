@@ -28,6 +28,7 @@ jobs:
       DATABASE_URL: postgresql://support_test:support_test_password@127.0.0.1:5432/tiquet_support_test
       V79_SUPPORT_DESK_ENABLED: "0"
       V79_ALLOW_LEGACY_AUTH: "0"
+      V79_ALLOW_PRODUCTION_DEPLOY: "0"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -157,6 +158,20 @@ jobs:
         run: |
           node --check tests/supportPhase7.pairedHub.integration.mjs
           node --test tests/supportPhase7.pairedHub.integration.mjs
+      - name: Phase 9 static release parity and fail-closed flag audit
+        env:
+          PHASE9_HUB_ROOT: phase7-hub-source
+        run: |
+          node --check tests/supportPhase9.contract.mjs
+          node tests/supportPhase9.contract.mjs
+      - name: Phase 9 disposable Compose OFF/ON rendering
+        run: |
+          node --check tests/supportPhase9.compose.mjs
+          node tests/supportPhase9.compose.mjs
+      - name: Phase 9 full disposable PostgreSQL plus synthetic Hub JSON/uploads restore
+        run: |
+          node --check tests/supportPhase9.recovery.mjs
+          node tests/supportPhase9.recovery.mjs
       - name: Remove pinned Hub checkout from Tiquet TypeScript project
         shell: bash
         run: |
@@ -170,5 +185,6 @@ jobs:
         run: |
           npm run lint
           npm test
-# No environment secrets, real email, GitHub packages, image build,
-# artifact publication, SSH, Tailscale, deployment or production database.
+# No live environment secrets, real email, image publication, SSH,
+# Tailscale, deployment, or production database access. Image validation
+# runs separately with no container started on the dedicated CI runner.
