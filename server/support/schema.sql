@@ -8,6 +8,7 @@ CREATE TABLE IF NOT EXISTS support_tickets (
  status TEXT NOT NULL DEFAULT 'new' CHECK(status IN ('new','open','waiting_customer','resolved','closed')),
  priority TEXT NOT NULL DEFAULT 'normal' CHECK(priority IN ('low','normal','high','critical')),
  assigned_to TEXT,
+ created_by TEXT NOT NULL,
  version INTEGER NOT NULL DEFAULT 1 CHECK(version > 0),
  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
