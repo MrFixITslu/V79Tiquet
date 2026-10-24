@@ -170,7 +170,8 @@ test("Hub HMAC signature, body and timestamp binding reject tampering",async()=>
  assert.equal((await make(body,time,signature)).status,200);
  assert.equal((await make(body.replace("p7orgA","p7orgB"),time,signature)).status,401);
  assert.equal((await make(body,String(Date.now()-600000),signature)).status,401);
- assert.equal((await make(body,time,signature.slice(0,-1)+"a")).status,401);
+ const altered=(signature[0]==="a"?"b":"a")+signature.slice(1);
+ assert.equal((await make(body,time,altered)).status,401);
 });
 test("Hub plan, membership, mapping and entitlement changes revoke access after bounded cache",async()=>{
  const a=token("p7ownerA","p7A","p7orgA");
