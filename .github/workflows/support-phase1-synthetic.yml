@@ -127,6 +127,10 @@ jobs:
         run: |
           set -euo pipefail
           bash tests/support-phase5-recovery.sh
+      - name: Phase 6 no-production-mount and support-only rollback gate
+        run: |
+          node --check tests/supportPhase6.sourceGuard.mjs
+          node tests/supportPhase6.sourceGuard.mjs
       - name: Phase 6 Hub SSO and synthetic entitlement integration
         run: |
           node --check server/support/phase6HubPolicy.js
