@@ -1,0 +1,89 @@
+name: Tiquet Phase 9 - Isolated Release Image Proof
+on:
+  push:
+    branches: [feature/support-desk-phase1-20261024]
+    paths:
+      - Dockerfile
+      - docker-compose.yml
+      - tests/supportPhase9.contract.mjs
+      - tests/supportPhase9.compose.mjs
+      - tests/supportPhase9.recovery.mjs
+      - .github/workflows/support-phase9-image.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  ephemeral-source-images:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      CI_SUPPORT_SYNTHETIC: "1"
+      NODE_ENV: test
+      V79_ALLOW_PRODUCTION_DEPLOY: "0"
+      V79_SUPPORT_DESK_ENABLED: "0"
+      DOCKER_BUILDKIT: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: MrFixITslu/V79hub
+          ref: ee79ec9353ee4248eb8276fee2e6c3476b3af491
+          path: phase9-hub-source
+          persist-credentials: false
+      - name: Guard immutable source, daemon context and no credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/feature/support-desk-phase1-20261024
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git -C phase9-hub-source rev-parse HEAD)" = ee79ec9353ee4248eb8276fee2e6c3476b3af491
+          test "$V79_ALLOW_PRODUCTION_DEPLOY" = 0
+          test "$(docker context show)" = default
+          test -z "$(git ls-files -- data uploads backups logs)"
+          test -z "$(git -C phase9-hub-source ls-files -- data uploads backups logs)"
+          test ! -e .env
+          test ! -e phase9-hub-source/.env
+          ! grep -Eq "^(ENV|ARG) (WIPAY|SMTP|RESEND|V79_.*SECRET).*=" Dockerfile
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Static release contract on pinned Hub and Tiquet sources
+        env:
+          PHASE9_HUB_ROOT: phase9-hub-source
+        run: |
+          node --check tests/supportPhase9.contract.mjs
+          node tests/supportPhase9.contract.mjs
+      - name: Build source images in disposable runner only
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="$(printf '%.12s' "$GITHUB_SHA")"
+          mkdir -p "$RUNNER_TEMP/phase9-hub"
+          mv phase9-hub-source "$RUNNER_TEMP/phase9-hub/source"
+          docker build --pull=false --progress=plain --target production -t "tiquet-p9-synthetic:$TAG" .
+          docker build --pull=false --progress=plain -t "hub-p9-synthetic:$TAG" "$RUNNER_TEMP/phase9-hub/source"
+      - name: Validate assembled images without service startup
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="$(printf '%.12s' "$GITHUB_SHA")"
+          t="tiquet-p9-synthetic:$TAG"
+          h="hub-p9-synthetic:$TAG"
+          test "$(docker image inspect -f '{{.Config.User}}' "$t")" = appuser
+          test "$(docker image inspect -f '{{.Config.Cmd}}' "$t")" = "[node server/index.js]"
+          test "$(docker image inspect -f '{{.Config.Cmd}}' "$h")" = "[./node_modules/.bin/tsx server.ts]"
+          test "$(docker run --rm --network none --read-only --security-opt no-new-privileges --entrypoint node "$t" --version | cut -d. -f1)" = v22
+          test "$(docker run --rm --network none --read-only --security-opt no-new-privileges --entrypoint node "$h" --version | cut -d. -f1)" = v22
+          echo "SUPPORT_P9_EPHEMERAL_TWIN_IMAGE_BUILD=PASS"
+          echo "SUPPORT_P9_IMAGE_RUNTIME_NODE22=PASS"
+          echo "SUPPORT_P9_NO_APP_SERVERS_STARTED_OR_PORTS_PUBLISHED=YES"
+          echo "SUPPORT_P9_IMAGE_PUSH=NONE"
+      - name: Ensure tracked source still unmodified
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(git status --porcelain --untracked-files=no)"
+          test -z "$(git -C "$RUNNER_TEMP/phase9-hub/source" status --porcelain --untracked-files=no)"
+          echo "SUPPORT_P9_LIVE_SERVICES_UNTOUCHED=YES"
