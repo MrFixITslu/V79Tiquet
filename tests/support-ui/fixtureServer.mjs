@@ -9,6 +9,8 @@ import {fileURLToPath} from "node:url";
 import {createSupportRouter} from "../../server/support/router.js";
 import {createSyntheticMailService} from "../../server/support/syntheticMail.js";
 import {requireMailSandbox} from "../../server/support/mailContracts.js";
+import {createPhase4Service} from "../../server/support/phase4Service.js";
+import {createPhase4Router} from "../../server/support/phase4Router.js";
 
 requireMailSandbox(process.env);
 if(process.env.CI_SUPPORT_UI_FIXTURE!=="1"||process.env.V79_SUPPORT_DESK_ENABLED!=="0")
@@ -35,7 +37,10 @@ async function fixtureSetup(){
  await pool.query("CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY,account_id TEXT,status TEXT,amount INTEGER)");
  await pool.query(await fs.readFile(path.resolve(root,"../../server/support/schema.sql"),"utf8"));
  await pool.query(await fs.readFile(path.resolve(root,"../../server/support/mail-schema.sql"),"utf8"));
+ await pool.query(await fs.readFile(path.resolve(root,"../../server/support/phase4-schema.sql"),"utf8"));
  await pool.query("INSERT INTO accounts(id) VALUES('demoA') ON CONFLICT DO NOTHING");
+ await pool.query("INSERT INTO support_sla_policies(account_id,timezone,start_minute,end_minute) "+
+  "VALUES('demoA','America/St_Lucia',540,1020) ON CONFLICT DO NOTHING");
  await pool.query("INSERT INTO users VALUES('agentA','demoA','Admin','[]') ON CONFLICT DO NOTHING");
  await pool.query("INSERT INTO clients VALUES('synthetic-client','demoA') ON CONFLICT DO NOTHING");
  await pool.query("INSERT INTO jobs VALUES('demoJobA','demoA','in-progress',100) ON CONFLICT DO NOTHING");
@@ -93,7 +98,9 @@ const app=express();
 app.disable("x-powered-by");
 app.use(express.json({limit:"16kb"}));
 app.get("/sandbox/health",(req,res)=>res.json({synthetic:true,mailProvider:"mock",production:false}));
-app.use("/api/support/staff",createSupportRouter({db,authenticateToken:fixtureAuth}));
+const phase4=createPhase4Service({db});
+app.use("/api/support/staff/phase4",createPhase4Router({db,authenticateToken:fixtureAuth,service:phase4}));
+app.use("/api/support/staff",createSupportRouter({db,authenticateToken:fixtureAuth,phase4Hooks:phase4}));
 await fixtureSetup();
 const listener=createServer(app);
 await new Promise(resolve=>listener.listen(3088,"127.0.0.1",resolve));
