@@ -173,6 +173,15 @@ export function createSupportRouter({db,authenticateToken}){
   });
   res.status(result.replay?200:201).json(result.row);
  }));
+ router.get("/tickets/:id/links",wrap(async(req,res)=>{
+  requireCapability(req,"support.view");
+  await getTicket(db,req,req.params.id);
+  const found=await db.query(
+   'SELECT job_id AS "jobId" FROM support_ticket_links '+
+   'WHERE account_id=$1 AND ticket_id=$2 ORDER BY job_id LIMIT 100',
+   [req.accountId,req.params.id]);
+  res.json({items:found.rows});
+ }));
  router.post("/tickets/:id/links",wrap(async(req,res)=>{
   requireCapability(req,"support.link");
   const body=ensureObject(req.body);noExtraKeys(body,["kind","targetId"]);
