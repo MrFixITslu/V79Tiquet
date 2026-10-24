@@ -61,15 +61,19 @@ export function createPhase4Service({db,env=process.env,clock=()=>new Date()}){
   // The only qualifying response is an accepted public email from a real
   // synthetic *staff user*. Auto-acknowledgements, inbound mail, drafts
   // and unaccepted outbox messages cannot satisfy first response SLA.
-  const q=await tx.query("SELECT m.created_at FROM support_messages m JOIN users u "+
+  const q=await tx.query("SELECT COALESCE(o.updated_at,m.created_at) AS accepted_at "+
+   "FROM support_messages m JOIN users u "+
    "ON u.account_id=m.account_id AND u.id=m.actor_id "+
+   "LEFT JOIN support_outbox o ON o.account_id=m.account_id "+
+   "AND o.ticket_id=m.ticket_id AND o.message_id=m.id "+
    "WHERE m.account_id=$1 AND m.ticket_id=$2 AND m.visibility='public' "+
    "AND m.direction='outbound' AND m.delivery_state='accepted' "+
-   "ORDER BY m.created_at ASC,m.id ASC LIMIT 1",[t.account_id,t.id]);
+   "AND (o.id IS NULL OR o.state='accepted') "+
+   "ORDER BY accepted_at ASC,m.id ASC LIMIT 1",[t.account_id,t.id]);
   if(!q.rows[0])return record;
   const r=await tx.query("UPDATE support_sla_records SET first_response_at=$3,updated_at=now() "+
    "WHERE account_id=$1 AND ticket_id=$2 RETURNING *",
-   [t.account_id,t.id,q.rows[0].created_at]);
+   [t.account_id,t.id,q.rows[0].accepted_at]);
   return r.rows[0];
  }
  async function readSla({accountId,ticketId,actorId,caps}){
