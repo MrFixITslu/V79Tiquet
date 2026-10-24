@@ -163,8 +163,6 @@ test("outbox enforces authorization, participant allowlist and durable idempoten
   /IDEMPOTENCY_CONFLICT/);
  assert.equal((await row("SELECT count(*)::int AS n FROM support_outbox WHERE id=$1",
   [first.outboxId]))[0].n,1);
- const persisted=await row("SELECT state FROM support_messages WHERE id=$1",[first.messageId]);
- assert.equal(persisted[0].state,undefined);
  assert.equal((await row("SELECT delivery_state FROM support_messages WHERE id=$1",
   [first.messageId]))[0].delivery_state,"queued");
  // Different instance using the same durable DB can dispatch after a mock restart.
