@@ -1,0 +1,125 @@
+name: Tiquet Phase 8 - Full Paired Synthetic Hub and Tiquet
+
+on:
+  push:
+    branches: [feature/support-desk-phase1-20261024]
+    paths:
+      - "server/index.js"
+      - "server/hubAwareAuthentication.js"
+      - "server/hubSessionStatus.js"
+      - "server/tiquetSocketAccess.js"
+      - "tests/hubSessionStatus.test.js"
+      - "tests/supportPhase8.prepare.mjs"
+      - ".github/workflows/support-phase8-paired-full-stack.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  paired-full-apps:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 16
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: tiquet_test
+          POSTGRES_USER: tiquet_test
+          POSTGRES_PASSWORD: tiquet_test_password
+        ports:
+          - 127.0.0.1:5432:5432
+        options: >-
+          --health-cmd "pg_isready -U tiquet_test -d tiquet_test"
+          --health-interval 5s --health-timeout 5s --health-retries 18
+    env:
+      V79_PAIRED_TEST_SCOPE: github-ci-disposable
+      DATABASE_URL: postgresql://tiquet_test:tiquet_test_password@127.0.0.1:5432/tiquet_test
+      NODE_ENV: test
+      WIPAY_ENABLED: "0"
+      V79_MCP_READONLY_ENABLE: "0"
+      V79_ALLOW_PRODUCTION_DEPLOY: "0"
+      V79_ALLOW_LEGACY_AUTH: "0"
+      V79_SUPPORT_DESK_ENABLED: "0"
+      SMTP_HOST: ""
+      SMTP_USER: ""
+      SMTP_PASS: ""
+      RESEND_API_KEY: ""
+      SEED_DEMO_DATA: "false"
+    steps:
+      - name: Checkout authorized Tiquet branch only
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Checkout immutable Hub source only
+        uses: actions/checkout@v4
+        with:
+          repository: MrFixITslu/V79hub
+          ref: ee79ec9353ee4248eb8276fee2e6c3476b3af491
+          path: phase8-hub-source
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Verify source, offline targets, release flags and test-data-only access
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = "refs/heads/feature/support-desk-phase1-20261024"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git -C phase8-hub-source rev-parse HEAD)" = "ee79ec9353ee4248eb8276fee2e6c3476b3af491"
+          test "$GITHUB_ACTIONS" = "true"
+          test "$DATABASE_URL" = "postgresql://tiquet_test:tiquet_test_password@127.0.0.1:5432/tiquet_test"
+          test "$V79_PAIRED_TEST_SCOPE" = "github-ci-disposable"
+          test "$NODE_ENV" = "test"
+          test "$WIPAY_ENABLED" = "0"
+          test "$V79_ALLOW_PRODUCTION_DEPLOY" = "0"
+          test "$V79_SUPPORT_DESK_ENABLED" = "0"
+          test -z "$SMTP_HOST$SMTP_USER$SMTP_PASS$RESEND_API_KEY"
+          test -z "$(git ls-files -- data uploads backups logs)"
+          test -z "$(git -C phase8-hub-source ls-files -- data uploads backups logs)"
+      - name: Install two exact source trees without lifecycle scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm ci --prefix phase8-hub-source --ignore-scripts --no-audit --no-fund
+      - name: Verify binding defaults and original app regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check server/index.js
+          node --check server/hubSessionStatus.js
+          node --check server/hubAwareAuthentication.js
+          node --check server/tiquetSocketAccess.js
+          node --test tests/hubSessionStatus.test.js
+          npm run lint
+          node --check tests/supportPhase8.prepare.mjs
+      - name: Create temporary Hub fixture test without modifying tracked sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd phase8-hub-source
+          ln -s .. .paired-tiquet
+          node ../tests/supportPhase8.prepare.mjs
+          node --check tests/support-phase8-ci-copy.test.mjs
+          test "$(git rev-parse HEAD)" = "ee79ec9353ee4248eb8276fee2e6c3476b3af491"
+      - name: Full real Hub and Tiquet synthetic SSO, replay, logout and finance regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd phase8-hub-source
+          node --test tests/support-phase8-ci-copy.test.mjs
+      - name: Confirm tracked source unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(git status --porcelain --untracked-files=no)"
+          test -z "$(git -C phase8-hub-source status --porcelain --untracked-files=no)"
+          echo "PHASE8_PRODUCTION_UNCONTACTED=YES"
+          echo "PHASE8_MAIN_UNCHANGED=YES"
+          echo "PHASE8_REAL_EMAIL_OR_PAYMENTS=NONE"
+
+# This workflow never deploys, signs into live apps, publishes images, merges,
+# uses real credentials, queries a production DB, or sends customer messages.
