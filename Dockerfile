@@ -1,4 +1,4 @@
-ARG NODE_BASE=node:20-alpine
+ARG NODE_BASE=node:22-alpine
 # ─────────────────────────────────────────────────────────────────────────────
 # Stage 1 — Build the React/Vite frontend
 # ─────────────────────────────────────────────────────────────────────────────
@@ -11,7 +11,7 @@ WORKDIR /app
 RUN apk add --no-cache python3 make g++
 
 COPY package.json package-lock.json* ./
-RUN npm install
+RUN npm ci --no-audit --no-fund
 
 COPY . .
 RUN npm run build
@@ -39,7 +39,7 @@ WORKDIR /app
 COPY package.json package-lock.json* ./
 
 RUN apk add --no-cache python3 make g++ && \
-    npm install --omit=dev && \
+    npm ci --omit=dev --no-audit --no-fund && \
     apk del python3 make g++ && \
     rm -rf /root/.npm /root/.node-gyp
 
