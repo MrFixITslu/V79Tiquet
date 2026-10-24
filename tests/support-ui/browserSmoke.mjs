@@ -132,6 +132,27 @@ try{
  await until("!document.querySelector('[role=\"dialog\"]')","modal Escape close");
  assert.equal(await evaluate("document.querySelector('.sd-titlebar .sd-button-primary')===document.activeElement"),true);
  assert.equal(await evaluate("document.querySelectorAll('[role=\"alert\"] .sd-error').length"),0);
+ // Full browser workflow: create a synthetic ticket and save a private note.
+ await evaluate("document.querySelector('.sd-titlebar .sd-button-primary').click()");
+ await until("!!document.querySelector('.sd-modal input')","create dialog reopened");
+ await evaluate("document.querySelector('.sd-modal input').focus()");
+ await command("Input.insertText",{text:"Phase5 synthetic browser journey"});
+ await until("!document.querySelector('.sd-modal button[type=\"submit\"]').disabled",
+  "valid synthetic ticket title");
+ await evaluate("document.querySelector('.sd-modal button[type=\"submit\"]').click()");
+ await until("!document.querySelector('.sd-modal')","ticket created");
+ await until("document.querySelector('.sd-conversation h2')?.textContent.includes('Phase5 synthetic browser journey')",
+  "new ticket conversation selected");
+ await evaluate("document.querySelector('#supportInternalNote').focus()");
+ await command("Input.insertText",{text:"Phase5 private synthetic note only"});
+ await until("!document.querySelector('.sd-composer button[type=\"submit\"]').disabled",
+  "private note composer");
+ await evaluate("document.querySelector('.sd-composer button[type=\"submit\"]').click()");
+ await until("document.querySelector('.sd-thread')?.textContent.includes('Phase5 private synthetic note only')",
+  "private note persisted after save");
+ assert.equal(await evaluate("!!Array.from(document.querySelectorAll('.sd-message-private')).find(x=>x.textContent.includes('Phase5 private synthetic note only'))"),true);
+ assert.equal(await evaluate("document.querySelector('.sd-composer').textContent.includes('No emails sent')"),true);
+
  assert.deepEqual(errors,[]);
  console.log("SUPPORT_UI_BROWSER_ACCEPTANCE=PASS_DESKTOP_MOBILE_SLAS_NAVIGATION");
 }finally{
