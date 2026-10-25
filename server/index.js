@@ -11,7 +11,6 @@ import { isStalledSocketRevalidation } from "./tiquetSocketHeartbeatGuard.js";
 import { createHubEntitlementChecker } from "./hubEntitlementRevalidation.js";
 import { createHubSessionStatusChecker } from "./hubSessionStatus.js";
 import 'dotenv/config';
-import { createServer as createViteServer } from "vite";
 import express from "express";
 import cors from "cors";
 import http from "http";
@@ -3923,6 +3922,7 @@ if (process.env.STRIPE_SECRET_KEY) {
 
 // Serve frontend
 if (!isProduction) {
+  const { createServer: createViteServer } = await import("vite");
   const vite = await createViteServer({
     root: path.resolve(__dirname, '..'),
     server: {
