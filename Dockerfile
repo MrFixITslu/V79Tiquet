@@ -1,61 +1,30 @@
-ARG NODE_BASE=node:20-alpine
-# ─────────────────────────────────────────────────────────────────────────────
-# Stage 1 — Build the React/Vite frontend
-# ─────────────────────────────────────────────────────────────────────────────
-FROM ${NODE_BASE} AS builder
-
+ARG NODE_BASE=node:22-alpine
+ARG RUNTIME_BASE=alpine:3.24
+FROM ${NODE_BASE} AS node-runtime
+FROM node-runtime AS builder
 WORKDIR /app
-
-# better-sqlite3 needs to compile a native addon on Alpine (musl) if no
-# prebuilt binary matches this platform.
 RUN apk add --no-cache python3 make g++
-
-COPY package.json package-lock.json* ./
-RUN npm install
-
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
 COPY . .
-RUN npm run build
+RUN npm run build && npm prune --omit=dev --no-audit --no-fund
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Stage 2 — Production runtime. server/index.js serves the API + WebSocket AND
-# the built frontend (express.static on ./dist when NODE_ENV=production) from
-# a single container, sitting behind Nginx Proxy Manager on the shared
-# proxy_network — same convention as the rest of the V79 app portfolio.
-#
-# NOTE: this replaces the previous static-nginx-only Dockerfile. That was no
-# longer viable once real login, 2FA, and data storage were added — plain
-# nginx can't run an API. Container name is kept unchanged from the original
-# V79Tiquet setup. NOTE: the app listens on port 3050 (set via PORT in
-# docker-compose.yml / .env, see server/index.js) — in Nginx Proxy Manager,
-# the Proxy Host's "Forward Port" for this app MUST be 3050, not 8080.
-# Pointing NPM at 8080 (nothing listens there) causes a 502 Bad Gateway.
-# ─────────────────────────────────────────────────────────────────────────────
-FROM ${NODE_BASE} AS production
-
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
-
+# Native modules use the same Node ABI/musl family at build and runtime.
+# npm, compilers, Vite and development binaries stay in the builder stage.
+FROM ${RUNTIME_BASE} AS production
+RUN apk add --no-cache libstdc++ && addgroup -g 1000 node && adduser -u 1000 -G node -s /bin/sh -D node && addgroup -S -g 101 appgroup && adduser -S -u 100 appuser -G appgroup
+COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-runtime /usr/local/bin/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 WORKDIR /app
-
-COPY package.json package-lock.json* ./
-
-RUN apk add --no-cache python3 make g++ && \
-    npm install --omit=dev && \
-    apk del python3 make g++ && \
-    rm -rf /root/.npm /root/.node-gyp
-
-COPY server/ ./server/
-COPY scripts/ ./scripts/
+COPY --from=builder /app/package.json /app/package-lock.json ./
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/server ./server
+COPY --from=builder /app/scripts ./scripts
 COPY --from=builder /app/dist ./dist
-
-# Runtime volumes (mounted by docker-compose): /app/data holds the SQLite
-# file, /app/uploads holds uploaded job/client files.
 RUN mkdir -p data uploads logs && chown appuser:appgroup data uploads logs
-
 USER appuser
-
 EXPOSE 3050
-
+ENTRYPOINT ["docker-entrypoint.sh"]
 HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
     CMD wget -qO- "http://127.0.0.1:${PORT:-3050}/health" || exit 1
-
 CMD ["node", "server/index.js"]

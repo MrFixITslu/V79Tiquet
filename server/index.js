@@ -9,8 +9,8 @@ import { authorizeTiquetStaffSocket, revalidateTiquetStaffSocket } from "./tique
 import { revalidateTiquetPortalSocket } from "./tiquetPortalSocketAccess.js";
 import { isStalledSocketRevalidation } from "./tiquetSocketHeartbeatGuard.js";
 import { createHubEntitlementChecker } from "./hubEntitlementRevalidation.js";
+import { createHubSessionStatusChecker } from "./hubSessionStatus.js";
 import 'dotenv/config';
-import { createServer as createViteServer } from "vite";
 import express from "express";
 import cors from "cors";
 import http from "http";
@@ -223,8 +223,18 @@ const checkHubSubscription = process.env.V79_ENTITLEMENT_RECHECK_ENABLED === "1"
     })
   : null;
 
+// OFF by default. Enable only on isolated paired Hub/Tiquet candidates.
+if (process.env.V79_TIQUET_SESSION_BINDING_ENABLED === "1" && !checkHubSubscription) {
+  throw new Error("Hub session binding requires active signed entitlement checks");
+}
+const checkHubSession = process.env.V79_TIQUET_SESSION_BINDING_ENABLED === "1"
+  ? createHubSessionStatusChecker({
+      hubUrl: process.env.V79_HUB_INTERNAL_URL,
+      secret: process.env.V79_TIQUET_LAUNCH_SECRET,
+    })
+  : null;
 const authenticateToken = createTiquetAuthentication({
-  jwt, jwtSecret: JWT_SECRET, db, checkHubSubscription,
+  jwt, jwtSecret: JWT_SECRET, db, checkHubSubscription, checkHubSession,
 });
 
 // --- Admin-only middleware ---
@@ -329,8 +339,7 @@ if (!isProduction) {
  * All file access in production must go through this authenticated route.
  */
 app.get('/api/files/:accountId/*', authenticateToken, requireAnyPagePermission("files"), (req, res, next) => {
-  // Reserve the existing general-file endpoint for its DB-scoped handler.
-  // This wildcard would otherwise treat the file ID as an account ID.
+  // Reserve the general-file endpoint for its authenticated DB-scoped handler.
   if (req.params[0] === 'download') return next('route');
   const {
     accountId
@@ -499,6 +508,14 @@ app.get("/api/platform/launch", async (req, res) => {
   try {
     const hubSession = await consumeHubLaunchTicket(ticket);
     const local = await provisionHubIdentity(hubSession);
+    if (checkHubSession) {
+      if (!/^[a-f0-9]{64}$/.test(String(hubSession.hubSessionId || "")) ||
+          !(await checkHubSession({
+            hubSessionId: hubSession.hubSessionId,
+            organizationId: hubSession.organization.id,
+            scopedUserId: hubSession.user.id,
+          }))) throw new Error("Hub session lineage is unavailable.");
+    }
     const token = jwt.sign({
       id: local.userId,
       email: local.email,
@@ -506,6 +523,7 @@ app.get("/api/platform/launch", async (req, res) => {
       account_id: local.accountId,
       hub_managed: true,
       hub_organization_id: hubSession.organization.id,
+      ...(checkHubSession ? { hub_session_id: hubSession.hubSessionId } : {}),
     }, JWT_SECRET, { expiresIn: "30m", jwtid: uuidv4() });
     setHubSessionCookie(res, token);
     logger.audit("hub_login_success", {
@@ -3904,6 +3922,7 @@ if (process.env.STRIPE_SECRET_KEY) {
 
 // Serve frontend
 if (!isProduction) {
+  const { createServer: createViteServer } = await import("vite");
   const vite = await createViteServer({
     root: path.resolve(__dirname, '..'),
     server: {
@@ -4023,7 +4042,7 @@ wss.on("connection", async (ws, req) => {
         return;
       }
       const staffAccess = await authorizeTiquetStaffSocket({
-        decoded, db, checkHubSubscription,
+        decoded, db, checkHubSubscription, checkHubSession,
       });
       if (!staffAccess.allowed) {
         ws.close(4003, "Hub entitlement or staff session unavailable");
@@ -4032,6 +4051,7 @@ wss.on("connection", async (ws, req) => {
       jobId = job.id;
       ws.role = "staff";
       ws.hubIdentity = staffAccess.hubIdentity;
+      ws.hubSessionId = staffAccess.hubSessionId;
       ws.sessionIdentity = staffAccess.sessionIdentity;
       ws.tokenHash = tokenFingerprint(authParam);
       ws.jwtExpiresAt = staffAccess.jwtExpiresAt;
@@ -4082,7 +4102,7 @@ const wsHeartbeat = setInterval(() => {
             unsubscribeFromJob(ws.jobId, ws);
             return ws.close(4003, "Portal link no longer authorized");
           }
-        } else if (!(await revalidateTiquetStaffSocket(ws, checkHubSubscription, Date.now(), db))) {
+        } else if (!(await revalidateTiquetStaffSocket(ws, checkHubSubscription, Date.now(), db, checkHubSession))) {
           unsubscribeFromJob(ws.jobId, ws);
           return ws.close(4003, "Hub entitlement or session expired");
         }
