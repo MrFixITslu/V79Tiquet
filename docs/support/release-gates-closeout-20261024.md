@@ -107,6 +107,13 @@ REDTEAM: reject disabling the tmpfs check or forcing restore. On Hub feature bra
 Mock-based tests cover three tmpfs mounts, overlay non-tmpfs refusal, persistent volume/bind refusal, network/rootfs violations, and a failed-start cleanup path; CI **40144176480 SUCCESS** at commit `78942b942b34bdd0907faa7cd8785969064f2afd`.
 **Real v2 execution NOT YET PERFORMED.** No merge, production restart/write, image import, customer outreach or deployment authorized.
   
+## S2 v2 database restore — swap preflight safe stop (Oct 24)
+- Acer V2 source integrity, script self-test and guarded runner preparation all PASS.
+- Read-only `swapon --show=NAME,USED --bytes` reported `/swapfile 12288` (12 KiB in use).
+- The owner's guarded V2 invocation passed source hash checks and returned `SAFE_STOP=SWAP_IN_USE` **before offline isolation or database restore**. No PostgreSQL archive decryption or startup occurred in this attempt.
+- Keep fail-closed guard; do not bypass. Next step is separately guarded, minimal swap reset **only if** current Acer RAM safety checks and no leftover S2 containers pass. Then repeat V2 once when swap usage is exactly zero.
+- Actual real S2 Hub/Tiquet database restores remain **NOT VERIFIED**, commercial release **NO-GO**.
+
 ## Important evidence limitations
 - Synthetic recovery is not a sanitized actual production image/DB/backup, does not establish real recovery time objective, recovery point objective, cross-store atomic capture, production-secret parity, or off-host encrypted restore integrity.
 - The Hub default-OFF Compose amendment exists on an isolated feature branch only; Hub main remains unchanged. Tiquet Phase 7–9 pinned tests still reference Hub main (which has not been amended), not this candidate.
