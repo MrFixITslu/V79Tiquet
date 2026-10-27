@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Search, Shield, Zap, ChevronDown, UserPlus, Clock, X, Loader2, Menu, Moon, Sun } from "lucide-react";
+import { Search, Shield, Zap, ChevronDown, UserPlus, Clock, X, Loader2, Menu, Moon, Sun, LayoutDashboard, Briefcase, PlusCircle, FileText, MoreHorizontal } from "lucide-react";
 import { JobBoard } from "./components/JobBoard";
 import { Sidebar } from "./components/Sidebar";
 import { JobRequestForm } from "./components/JobRequestForm";
@@ -428,7 +428,7 @@ export default function App() {
           </div>
         )}
 
-        <div className="flex-1 overflow-auto p-4 sm:p-5 xl:p-6 bg-[#07111f]">
+        <div className="flex-1 overflow-auto p-4 pb-24 sm:p-5 sm:pb-24 lg:pb-6 xl:p-6 bg-[#07111f]">
           {activeTab === "dashboard" && canOpenTab("dashboard") && <Dashboard jobs={jobs} jobsLoading={jobsLoading} jobsError={jobsError} onRetryJobs={() => { void reloadJobs(); }} currency={settings.currency} onOpenJob={canOpenTab("jobs") ? (id) => {
             window.history.replaceState(window.history.state, "", tiquetNavigationPath(window.location.href, "jobs", id));
             setActiveTab("jobs");
@@ -508,6 +508,30 @@ export default function App() {
           {activeTab === "no-access" && <div role="status" className="rounded-xl border border-amber-500/30 p-5 text-sm text-slate-200">No workspace pages are assigned to your account. Contact your workspace administrator.</div>}
         </div>
       </main>
+
+      {/* Quick access on phones/tablets. Authorisation is identical to Sidebar. */}
+      <nav aria-label="Mobile workspace navigation"
+        className={`lg:hidden fixed inset-x-0 bottom-0 z-30 flex items-stretch justify-around border-t shadow-lg pb-[env(safe-area-inset-bottom)] ${theme === "light" ? "bg-white border-slate-200 text-slate-700" : "bg-[#06101d] border-[#1b3956] text-slate-300"}`}>
+        {[
+          { tab: "dashboard", label: "Overview", Icon: LayoutDashboard },
+          { tab: "jobs", label: "Jobs", Icon: Briefcase },
+          { tab: "new-request", label: "New", Icon: PlusCircle },
+          { tab: "invoices", label: "Invoices", Icon: FileText },
+        ].filter(({ tab }) => canOpenTab(tab)).map(({ tab, label, Icon }) => (
+          <button key={tab} type="button" onClick={() => { setActiveTab(tab); setIsMobileSidebarOpen(false); }}
+            aria-current={activeTab === tab ? "page" : undefined}
+            className={`flex min-h-[62px] min-w-0 flex-1 flex-col items-center justify-center gap-1 px-1 text-[11px] font-bold ${activeTab === tab ? (theme === "light" ? "text-[#0758B8]" : "text-[#74d0ff]") : ""}`}>
+            <Icon className="h-5 w-5" aria-hidden="true" />
+            <span className="truncate">{label}</span>
+          </button>
+        ))}
+        <button type="button" onClick={() => setIsMobileSidebarOpen(true)}
+          aria-label="More navigation options" aria-expanded={isMobileSidebarOpen}
+          className="flex min-h-[62px] min-w-0 flex-1 flex-col items-center justify-center gap-1 px-1 text-[11px] font-bold">
+          <MoreHorizontal className="h-5 w-5" aria-hidden="true" />
+          <span>More</span>
+        </button>
+      </nav>
 
       {isNewClientModalOpen && canOpenTab("clients") && (
         <NewClientModal
