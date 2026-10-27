@@ -60,8 +60,8 @@ export default function App() {
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [theme, setTheme] = useState<"dark" | "light">(() => {
-    try { return window.localStorage.getItem("v79-tiquet-theme") === "light" ? "light" : "dark"; }
-    catch { return "dark"; }
+    try { return window.localStorage.getItem("v79-tiquet-theme") === "dark" ? "dark" : "light"; }
+    catch { return "light"; }
   });
   useEffect(() => {
     try { window.localStorage.setItem("v79-tiquet-theme", theme); } catch { /* Private browsing can restrict storage. */ }
@@ -323,7 +323,7 @@ export default function App() {
             <button
               onClick={() => setIsMobileSidebarOpen(true)}
               aria-label="Open navigation menu"
-              className="p-2 text-slate-500 hover:text-white hover:bg-white/5 rounded-xl lg:hidden cursor-pointer"
+              className="min-h-11 min-w-11 flex items-center justify-center text-slate-300 hover:text-white hover:bg-white/5 rounded-xl lg:hidden cursor-pointer"
               title="Open Navigation Menu"
             >
               <Menu className="w-5 h-5" />
@@ -344,7 +344,7 @@ export default function App() {
               <Search className="w-4 h-4 text-slate-600 group-hover:text-[#55c7ff] transition-colors shrink-0" />
               <span className="ml-2 text-sm text-slate-500 truncate flex-1">Search jobs, clients, actions...</span>
               <kbd className="text-[9px] font-mono font-bold text-slate-600 bg-[#07111f] border border-[#1a3854] px-1.5 py-0.5 rounded">
-                ⌘K
+                Ctrl / ⌘ K
               </kbd>
             </button>
 
