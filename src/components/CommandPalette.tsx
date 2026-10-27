@@ -70,10 +70,11 @@ export function CommandPalette({
     // Filter Jobs
     jobs
       .filter(
-        (j) => canOpenTab("jobs") &&
+        (j) => canOpenTab("jobs") && (
           j.title.toLowerCase().includes(q) ||
           j.client.toLowerCase().includes(q) ||
           j.status.toLowerCase().includes(q)
+        )
       )
       .slice(0, 5)
       .forEach((j) => {
@@ -94,10 +95,11 @@ export function CommandPalette({
     // Filter Clients
     clients
       .filter(
-        (c) => canOpenTab("clients") &&
+        (c) => canOpenTab("clients") && (
           c.name.toLowerCase().includes(q) ||
           (c.company && c.company.toLowerCase().includes(q)) ||
           c.email.toLowerCase().includes(q)
+        )
       )
       .slice(0, 4)
       .forEach((c) => {
