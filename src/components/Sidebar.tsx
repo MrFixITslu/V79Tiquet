@@ -53,7 +53,7 @@ export function Sidebar({
   const itemClass = (active: boolean) =>
     `group w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-semibold transition-all border ${
       active
-        ? "bg-gradient-to-r from-[#FF7A00]/25 to-[#ff9a3d]/10 text-white border-[#FF7A00]/45 shadow-[0_0_22px_rgba(255,122,0,.10)]"
+        ? "bg-[#164783] text-white border-[#4c9ae8]"
         : "text-slate-400 border-transparent hover:text-white hover:bg-white/[0.045]"
     }`;
 
@@ -72,9 +72,9 @@ export function Sidebar({
 
         <div className="relative px-5 pt-5 pb-5 border-b border-[#17324d]/60 flex items-center justify-between">
           <div className="flex items-center gap-3 min-w-0">
-            <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-[#0A86FF] via-[#0871d4] to-[#FF7A00] p-[1px] shadow-[0_0_24px_rgba(10,134,255,.15)] shrink-0">
+            <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-[#0A86FF] via-[#0871d4] to-[#00bdb9] p-[1px] shadow-[0_0_24px_rgba(10,134,255,.15)] shrink-0">
               <div className="w-full h-full rounded-[15px] bg-[#081727] flex items-center justify-center">
-                <Briefcase className="w-5 h-5 text-[#ff9a3d]" />
+                <img src="/vision79-tiquet-icon.svg" alt="" className="w-7 h-7" />
               </div>
             </div>
             <div className="min-w-0">
@@ -92,18 +92,18 @@ export function Sidebar({
 
         <nav className="relative flex-1 p-3.5 space-y-6 overflow-y-auto">
           <div>
-            <p className="px-3 mb-2 text-[9px] font-black uppercase tracking-[0.2em] text-slate-600">Operations</p>
+            <p className="px-3 mb-2 text-[11px] font-bold uppercase tracking-[0.12em] text-slate-400">Operations</p>
             <div className="space-y-1">
               {can("dashboard") && <NavItem icon={<LayoutDashboard className="w-4 h-4" />} label="Overview" active={activeTab === "dashboard"} onClick={() => handleNavClick("dashboard")} className={itemClass(activeTab === "dashboard")} />}
               {can("jobs") && <NavItem icon={<Briefcase className="w-4 h-4" />} label="Jobs Pipeline" badge={jobCount} active={activeTab === "jobs"} onClick={() => handleNavClick("jobs")} className={itemClass(activeTab === "jobs")} />}
               {can("clients") && <NavItem icon={<Contact className="w-4 h-4" />} label="Clients" active={activeTab === "clients"} onClick={() => handleNavClick("clients")} className={itemClass(activeTab === "clients")} />}
               {can("invoices") && <NavItem icon={<FileText className="w-4 h-4" />} label="Invoices" badge={openInvoiceCount} active={activeTab === "invoices"} onClick={() => handleNavClick("invoices")} className={itemClass(activeTab === "invoices")} />}
-              {can("new-request") && <NavItem icon={<PlusCircle className="w-4 h-4 text-[#ff9a3d]" />} label="New Request" active={activeTab === "new-request"} onClick={() => handleNavClick("new-request")} className={itemClass(activeTab === "new-request")} />}
+              {can("new-request") && <NavItem icon={<PlusCircle className="w-4 h-4 text-[#37d2ce]" />} label="New Request" active={activeTab === "new-request"} onClick={() => handleNavClick("new-request")} className={itemClass(activeTab === "new-request")} />}
             </div>
           </div>
 
           <div>
-            <p className="px-3 mb-2 text-[9px] font-black uppercase tracking-[0.2em] text-slate-600">Resources</p>
+            <p className="px-3 mb-2 text-[11px] font-bold uppercase tracking-[0.12em] text-slate-400">Resources</p>
             <div className="space-y-1">
               {can("files") && <NavItem icon={<FolderOpen className="w-4 h-4" />} label="Files" active={activeTab === "files"} onClick={() => handleNavClick("files")} className={itemClass(activeTab === "files")} />}
               {can("payroll") && <NavItem icon={<CreditCard className="w-4 h-4" />} label="Payroll Tracker" active={activeTab === "payroll"} onClick={() => handleNavClick("payroll")} className={itemClass(activeTab === "payroll")} />}
@@ -112,7 +112,7 @@ export function Sidebar({
 
           {role === "Admin" && (
             <div>
-              <p className="px-3 mb-2 text-[9px] font-black uppercase tracking-[0.2em] text-slate-600">Administration</p>
+              <p className="px-3 mb-2 text-[11px] font-bold uppercase tracking-[0.12em] text-slate-400">Administration</p>
               <div className="space-y-1">
                 <NavItem icon={<Users className="w-4 h-4" />} label="Users & Roles" active={activeTab === "users"} onClick={() => handleNavClick("users")} className={itemClass(activeTab === "users")} />
                 <NavItem icon={<Settings className="w-4 h-4" />} label="Settings" active={activeTab === "settings"} onClick={() => handleNavClick("settings")} className={itemClass(activeTab === "settings")} />
@@ -135,12 +135,12 @@ export function Sidebar({
             </div>
           </div>
 
-          <a href="https://hub.v79sl.com" className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl border border-[#0A86FF]/30 bg-[#0A86FF]/10 hover:bg-[#0A86FF]/18 text-[10px] font-bold text-[#74d0ff] transition-colors">
+          <a href="https://hub.v79sl.com" className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl border border-[#0A86FF]/30 bg-[#0A86FF]/10 hover:bg-[#0A86FF]/18 text-xs font-bold text-[#74d0ff] transition-colors">
             <ArrowLeft className="w-3.5 h-3.5" />
             Back to V79 Digital Hub
           </a>
 
-          <button onClick={onLogout} className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-[10px] font-bold text-slate-500 hover:text-rose-300 hover:bg-rose-500/10 transition-colors">
+          <button onClick={onLogout} className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-xs font-bold text-slate-400 hover:text-rose-300 hover:bg-rose-500/10 transition-colors">
             <LogOut className="w-3.5 h-3.5" /> Log out
           </button>
 
@@ -175,7 +175,7 @@ function NavItem({
         <span>{label}</span>
       </div>
       {badge !== undefined && badge > 0 && (
-        <span className="min-w-5 h-5 px-1.5 rounded-full bg-[#FF7A00]/15 border border-[#FF7A00]/25 text-[#ffad65] text-[9px] font-black flex items-center justify-center">
+        <span className="min-w-5 h-5 px-1.5 rounded-full bg-[#00bdb9]/15 border border-[#00bdb9]/25 text-[#75e3df] text-[9px] font-black flex items-center justify-center">
           {badge}
         </span>
       )}
