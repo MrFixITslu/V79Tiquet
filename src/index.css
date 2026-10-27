@@ -134,7 +134,7 @@
 .v79-tiquet-app[data-theme="light"] main > .flex-1 .text-rose-300 { color: #9f1239 !important; }
 .v79-tiquet-app[data-theme="light"] main > .flex-1 .text-emerald-400 { color: #047857 !important; }
 .v79-tiquet-app[data-theme="light"] main > .flex-1 .text-sky-400 { color: #0758b8 !important; }
-.v79-tiquet-app[data-theme="light"] main > .flex-1 .hover\\:bg-white\\/\\[0\\.018\\]:hover {
+.v79-tiquet-app[data-theme="light"] main > .flex-1 [class*="hover:bg-white/[0.018]"]:hover {
   background-color: #f1f5f9 !important;
 }
 .v79-job-lane {
@@ -145,7 +145,7 @@
   background-color: #0b1a2c;
   border-color: #244560;
 }
-.v79-tiquet-app[data-theme="dark"] .bg-slate-200\\/70 {
+.v79-tiquet-app[data-theme="dark"] [class~="bg-slate-200/70"] {
   background-color: #20334a !important;
 }
 .v79-tiquet-app[data-theme="light"] main .recharts-cartesian-axis-tick-value {
