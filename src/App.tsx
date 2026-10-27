@@ -522,6 +522,7 @@ export default function App() {
         isOpen={isCommandPaletteOpen}
         canOpenTab={canOpenTab}
         onClose={() => setIsCommandPaletteOpen(false)}
+        onOpen={() => setIsCommandPaletteOpen(true)}
         jobs={jobs}
         clients={clients}
         onSelectTab={(tab) => { if (canOpenTab(tab)) setActiveTab(tab); }}
