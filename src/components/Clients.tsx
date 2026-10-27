@@ -69,7 +69,7 @@ export function Clients({ clients, setClients, jobs, industries, currency }: Cli
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h2 className="text-2xl font-bold text-slate-900">Client Management</h2>
           <p className="text-slate-500 text-sm mt-1">
@@ -81,18 +81,19 @@ export function Clients({ clients, setClients, jobs, industries, currency }: Cli
             setEditingClient(null);
             setIsModalOpen(true);
           }}
-          className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors shadow-sm"
+          className="min-h-11 bg-[#0758B8] hover:bg-[#164783] text-white px-4 py-2 rounded-xl text-sm font-semibold flex items-center justify-center gap-2 transition-colors shadow-sm"
         >
           <Plus className="w-4 h-4" />
           Add Client
         </button>
       </div>
 
-      <div className="flex items-center gap-4 bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
+      <div className="flex flex-col sm:flex-row sm:items-center gap-3 bg-white p-4 rounded-2xl border border-slate-200 shadow-sm">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
           <input
             type="text"
+            aria-label="Search clients by name, company or email"
             placeholder="Search clients by name, company, or email..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
@@ -104,7 +105,32 @@ export function Clients({ clients, setClients, jobs, industries, currency }: Cli
         </div>
       </div>
 
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+      <section aria-label="Client records on mobile" className="md:hidden space-y-3">
+        {filteredClients.map((client) => (
+          <article key={client.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs">
+            <div className="flex items-start gap-3">
+              <div className="h-11 w-11 shrink-0 rounded-xl bg-blue-100 text-blue-700 flex items-center justify-center font-bold">{client.name.charAt(0)}</div>
+              <div className="min-w-0 flex-1">
+                <h3 className="font-bold text-slate-900">{client.name}</h3>
+                <p className="text-sm text-slate-500 break-words">{client.company || "No company listed"}</p>
+                {client.leadSource === "website" && <span className="mt-2 inline-flex rounded-full bg-emerald-100 px-2 py-1 text-xs font-bold text-emerald-800">Website lead</span>}
+              </div>
+            </div>
+            <dl className="mt-4 space-y-2 border-t border-slate-200 pt-3 text-sm">
+              <div><dt className="font-semibold text-slate-500 text-xs">Email</dt><dd className="text-slate-800 break-all">{client.email || "Not provided"}</dd></div>
+              <div><dt className="font-semibold text-slate-500 text-xs">Phone</dt><dd className="text-slate-800">{client.phone || "Not provided"}</dd></div>
+              {client.address && <div><dt className="font-semibold text-slate-500 text-xs">Address</dt><dd className="text-slate-800 break-words">{client.address}</dd></div>}
+            </dl>
+            <div className="mt-4 grid grid-cols-3 gap-2">
+              <button type="button" onClick={() => setSelectedClient(client)} className="min-h-11 rounded-xl bg-[#0758B8] text-white text-sm font-bold">View</button>
+              <button type="button" onClick={() => { setEditingClient(client); setIsModalOpen(true); }} className="min-h-11 rounded-xl border border-slate-300 text-slate-700 text-sm font-semibold">Edit</button>
+              <button type="button" onClick={() => handleDelete(client.id)} className="min-h-11 rounded-xl border border-red-200 text-red-700 text-sm font-semibold" aria-label={`Delete client ${client.name}`}>Delete</button>
+            </div>
+          </article>
+        ))}
+      </section>
+
+      <div className="hidden md:block bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full min-w-[720px] text-left border-collapse">
             <thead>
