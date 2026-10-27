@@ -128,6 +128,9 @@ export function Clients({ clients, setClients, jobs, industries, currency }: Cli
             </div>
           </article>
         ))}
+        {filteredClients.length === 0 && (
+          <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-500">No clients match this search.</div>
+        )}
       </section>
 
       <div className="hidden md:block bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
