@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Search, Shield, Zap, ChevronDown, UserPlus, Clock, X, Loader2, Menu } from "lucide-react";
+import { Search, Shield, Zap, ChevronDown, UserPlus, Clock, X, Loader2, Menu, Moon, Sun } from "lucide-react";
 import { JobBoard } from "./components/JobBoard";
 import { Sidebar } from "./components/Sidebar";
 import { JobRequestForm } from "./components/JobRequestForm";
@@ -59,6 +59,13 @@ export default function App() {
   const [isLogTimeModalOpen, setIsLogTimeModalOpen] = useState(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+  const [theme, setTheme] = useState<"dark" | "light">(() => {
+    try { return window.localStorage.getItem("v79-tiquet-theme") === "light" ? "light" : "dark"; }
+    catch { return "dark"; }
+  });
+  useEffect(() => {
+    try { window.localStorage.setItem("v79-tiquet-theme", theme); } catch { /* Private browsing can restrict storage. */ }
+  }, [theme]);
   const [selectedJobForModal, setSelectedJobForModal] = useState<Job | null>(null);
 
   const authenticated = !!currentUser && !!activeBusiness;
@@ -283,7 +290,7 @@ export default function App() {
   }
 
   return (
-    <div className="v79-tiquet-app flex h-[100dvh] min-h-[100dvh] bg-[#07111f] text-slate-100 font-sans overflow-hidden">
+    <div data-theme={theme} className="v79-tiquet-app flex h-[100dvh] min-h-[100dvh] bg-[#07111f] text-slate-100 font-sans overflow-hidden">
       <Sidebar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
@@ -336,6 +343,7 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-4">
+            <button type="button" onClick={() => setTheme((old) => old === "dark" ? "light" : "dark")} title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"} aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"} className="min-h-11 min-w-11 rounded-xl border border-[#1a3854] text-slate-200 hover:text-white hover:bg-white/10 flex items-center justify-center focus-visible:outline focus-visible:outline-2">{theme === "dark" ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}</button>
             <div className="hidden sm:flex items-center text-xs text-slate-300 px-2" aria-label="Current workspace">Tiquet workspace</div>
 
             {(canOpenTab("clients") || canOpenTab("payroll")) && <div className="relative">
