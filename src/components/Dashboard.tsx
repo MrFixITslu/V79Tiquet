@@ -33,17 +33,16 @@ type PaymentSummary = {
 };
 
 export function Dashboard({ jobs, currency = "USD" }: { jobs: Job[]; currency?: string }) {
-  const [payments, setPayments] = useState<PaymentSummary>({
-    received: 0,
-    count: 0,
-    outstandingInvoices: 0,
-  });
+  const [payments, setPayments] = useState<PaymentSummary | null>(null);
+  const [paymentError, setPaymentError] = useState(false);
 
   useEffect(() => {
+    setPaymentError(false);
+    setPayments(null);
     api.get<PaymentSummary>("/payments/summary")
       .then(setPayments)
       .catch(() => {
-        // The dashboard remains usable if the financial summary is temporarily unavailable.
+        setPaymentError(true);
       });
   }, [jobs]);
 
@@ -96,7 +95,7 @@ export function Dashboard({ jobs, currency = "USD" }: { jobs: Job[]; currency?: 
           <p className="text-slate-400 text-sm mt-1">Work requiring attention, invoice exposure and confirmed cash across this workspace.</p>
         </div>
         <div className="text-xs text-slate-400">
-          {jobs.length} total jobs · {payments.count} recorded payments
+          {jobs.length} total jobs · {payments ? `${payments.count} recorded payments` : paymentError ? "Payment summary unavailable" : "Loading payment summary…"}
         </div>
       </div>
 
@@ -116,13 +115,13 @@ export function Dashboard({ jobs, currency = "USD" }: { jobs: Job[]; currency?: 
         />
         <KpiCard
           label="Outstanding Invoices"
-          value={formatMoney(payments.outstandingInvoices, currency)}
+          value={payments ? formatMoney(payments.outstandingInvoices, currency) : paymentError ? "Unavailable" : "Loading…"}
           helper={`${pendingInvoicedJobs.length} invoice${pendingInvoicedJobs.length === 1 ? "" : "s"} awaiting settlement`}
           icon={<FileText className="w-5 h-5" />}
         />
         <KpiCard
           label="Cash Collected"
-          value={formatMoney(payments.received, currency)}
+          value={payments ? formatMoney(payments.received, currency) : paymentError ? "Unavailable" : "Loading…"}
           helper="Confirmed payment ledger only"
           icon={<DollarSign className="w-5 h-5" />}
           emphasis="positive"
