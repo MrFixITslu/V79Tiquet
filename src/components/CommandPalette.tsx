@@ -5,6 +5,7 @@ import { Job, Client } from "../types";
 interface CommandPaletteProps {
   isOpen: boolean;
   onClose: () => void;
+  onOpen: () => void;
   jobs: Job[];
   clients: Client[];
   onSelectTab: (tab: string) => void;
@@ -16,6 +17,7 @@ interface CommandPaletteProps {
 export function CommandPalette({
   isOpen,
   onClose,
+  onOpen,
   jobs,
   clients,
   onSelectTab,
@@ -34,6 +36,7 @@ export function CommandPalette({
         else {
           setQuery("");
           setSelectedIndex(0);
+          onOpen();
         }
       }
       if (e.key === "Escape" && isOpen) {
@@ -42,7 +45,7 @@ export function CommandPalette({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, onClose]);
+  }, [isOpen, onClose, onOpen]);
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -236,7 +239,7 @@ export function CommandPalette({
         {/* Footer info */}
         <div className="px-4 py-2 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-400">
           <span>Navigate with ↑ and ↓, press Enter to open</span>
-          <span>Shortcut: ⌘K</span>
+          <span>Shortcut: Ctrl/⌘ K</span>
         </div>
       </div>
     </div>
