@@ -27,12 +27,18 @@ export function Invoices({
   employees,
   clients,
   settings,
+  jobsLoading = false,
+  jobsError = null,
+  onRetryJobs,
 }: {
   jobs: Job[];
   setJobs: React.Dispatch<React.SetStateAction<Job[]>>;
   employees: Employee[];
   clients: Client[];
   settings: BusinessSettings;
+  jobsLoading?: boolean;
+  jobsError?: string | null;
+  onRetryJobs?: () => void;
 }) {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
@@ -107,6 +113,13 @@ export function Invoices({
         </p>
       </div>
 
+      {jobsLoading && <p role="status" className="text-sm text-slate-300">Loading invoice jobs…</p>}
+      {jobsError && (
+        <div role="alert" className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200">
+          Invoice jobs are unavailable. Invoice counts and payment entry are paused.
+          {onRetryJobs && <button type="button" onClick={onRetryJobs} className="ml-3 min-h-11 px-2 font-semibold underline">Retry jobs</button>}
+        </div>
+      )}
       {paymentLoading && <p role="status" className="text-sm text-slate-400">Loading the payment ledger…</p>}
       {paymentError && (
         <div role="alert" className="flex flex-wrap items-center gap-3 rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
@@ -124,13 +137,13 @@ export function Invoices({
         />
         <MetricCard
           label="Outstanding"
-          value={payments ? formatMoney(totalOutstanding, currency) : paymentLoading ? "Loading…" : "Unavailable"}
-          helper={payments ? "Invoiced and completed work" : "Verified ledger required"}
+          value={jobsError ? "Unavailable" : jobsLoading ? "Loading…" : payments ? formatMoney(totalOutstanding, currency) : paymentLoading ? "Loading…" : "Unavailable"}
+          helper={jobsError || jobsLoading ? "Verified jobs required" : payments ? "Invoiced and completed work" : "Verified ledger required"}
           icon={<Clock className="w-5 h-5" />}
         />
         <MetricCard
           label="Open Invoices"
-          value={jobs.filter((job) => job.status === "invoiced").length.toString()}
+          value={jobsError ? "Unavailable" : jobsLoading ? "Loading…" : jobs.filter((job) => job.status === "invoiced").length.toString()}
           helper="Awaiting settlement"
           icon={<FileText className="w-5 h-5" />}
         />
@@ -149,7 +162,7 @@ export function Invoices({
         </div>
       </div>
 
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+      {!jobsError && !jobsLoading && <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse min-w-[820px]">
             <thead>
@@ -220,9 +233,9 @@ export function Invoices({
             </tbody>
           </table>
         </div>
-      </div>
+      </div>}
 
-      {paymentJob && payments !== null && (
+      {paymentJob && !jobsError && !jobsLoading && payments !== null && (
         <RecordPaymentModal
           job={paymentJob}
           currency={currency}
