@@ -51,7 +51,7 @@ export function Sidebar({
   };
 
   const itemClass = (active: boolean) =>
-    `group w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-xs font-bold transition-all border ${
+    `group w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-semibold transition-all border ${
       active
         ? "bg-gradient-to-r from-[#FF7A00]/25 to-[#ff9a3d]/10 text-white border-[#FF7A00]/45 shadow-[0_0_22px_rgba(255,122,0,.10)]"
         : "text-slate-400 border-transparent hover:text-white hover:bg-white/[0.045]"
@@ -85,7 +85,7 @@ export function Sidebar({
               <div className="text-[9px] text-slate-500 mt-0.5 truncate max-w-[135px]">{businessName}</div>
             </div>
           </div>
-          <button onClick={onCloseMobile} className="p-1.5 text-slate-500 hover:text-white rounded-lg hover:bg-white/5 lg:hidden">
+          <button onClick={onCloseMobile} aria-label="Close navigation" className="p-1.5 text-slate-500 hover:text-white rounded-lg hover:bg-white/5 lg:hidden">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -128,7 +128,7 @@ export function Sidebar({
               <div className="min-w-0">
                 <div className="text-[11px] font-bold text-white truncate">{businessName}</div>
                 <div className="text-[9px] text-emerald-400 flex items-center gap-1.5 mt-0.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" /> Connected
+                  Workspace
                 </div>
               </div>
               <ShieldCheck className="w-4 h-4 text-[#55c7ff] shrink-0" />
@@ -154,6 +154,7 @@ export function Sidebar({
 }
 
 function NavItem({
+  active,
   icon,
   label,
   badge,
@@ -168,7 +169,7 @@ function NavItem({
   className: string;
 }) {
   return (
-    <button onClick={onClick} className={className}>
+    <button onClick={onClick} className={className} aria-current={active ? "page" : undefined}>
       <div className="flex items-center gap-3">
         <span className="text-slate-400 group-hover:text-white">{icon}</span>
         <span>{label}</span>
