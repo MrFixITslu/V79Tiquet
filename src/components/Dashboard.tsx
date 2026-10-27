@@ -32,19 +32,22 @@ type PaymentSummary = {
   outstandingInvoices: number;
 };
 
-export function Dashboard({ jobs, currency = "USD" }: { jobs: Job[]; currency?: string }) {
+export function Dashboard({ jobs, currency = "USD", onOpenJob }: { jobs: Job[]; currency?: string; onOpenJob?: (id: string) => void }) {
   const [payments, setPayments] = useState<PaymentSummary | null>(null);
   const [paymentError, setPaymentError] = useState(false);
+  const [paymentRetry, setPaymentRetry] = useState(0);
 
   useEffect(() => {
+    let current = true;
     setPaymentError(false);
     setPayments(null);
     api.get<PaymentSummary>("/payments/summary")
-      .then(setPayments)
+      .then((summary) => { if (current) setPayments(summary); })
       .catch(() => {
-        setPaymentError(true);
+        if (current) setPaymentError(true);
       });
-  }, [jobs]);
+    return () => { current = false; };
+  }, [jobs, paymentRetry]);
 
   const activeJobs = jobs.filter(
     (job) => ["request", "estimation", "in-progress", "review", "invoiced"].includes(job.status)
@@ -99,6 +102,13 @@ export function Dashboard({ jobs, currency = "USD" }: { jobs: Job[]; currency?: 
         </div>
       </div>
 
+      {paymentError && (
+        <div role="status" className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200">
+          Payment information could not be loaded. Amounts are unavailable.
+          <button type="button" onClick={() => setPaymentRetry((n) => n + 1)} className="ml-3 min-h-11 font-semibold underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2">Retry</button>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
         <KpiCard
           label="Active Jobs"
@@ -144,7 +154,7 @@ export function Dashboard({ jobs, currency = "USD" }: { jobs: Job[]; currency?: 
             {attentionJobs.map(({ job, overdue, unassigned, highPriority }) => (
               <div key={job.id} className="p-4 flex flex-col md:flex-row md:items-center justify-between gap-3 hover:bg-white/[0.018]">
                 <div className="min-w-0">
-                  <div className="font-semibold text-slate-100 truncate">{job.title}</div>
+                  {onOpenJob ? <button type="button" onClick={() => onOpenJob(job.id)} className="font-semibold text-sky-300 text-left hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2">{job.title}</button> : <div className="font-semibold text-slate-100 truncate">{job.title}</div>}
                   <div className="text-xs text-slate-400 mt-1">{job.client} · {job.status.replace("-", " ")}</div>
                 </div>
                 <div className="flex flex-wrap gap-2">
