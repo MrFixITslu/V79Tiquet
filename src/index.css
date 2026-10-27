@@ -154,3 +154,12 @@
 @media (max-width: 767px) {
   .v79-tiquet-app main > .flex-1 { overscroll-behavior: contain; }
 }
+
+
+/* Actual-browser QA: light mobile nav must not inherit the dark slate-700 override. */
+.v79-tiquet-app[data-theme="light"] nav[aria-label="Mobile workspace navigation"] {
+  color: #334155 !important;
+}
+.v79-tiquet-app[data-theme="light"] nav[aria-label="Mobile workspace navigation"] button[aria-current="page"] {
+  color: #0758b8 !important;
+}
