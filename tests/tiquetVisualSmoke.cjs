@@ -65,7 +65,7 @@ function dataFor(pathname, role, permissions) {
     "/api/files": [],
     "/api/payments": payments,
     "/api/payments/summary": {
-      received: 100, count: 1, outstandingInvoices: 1100
+      received: 100, count: 1, outstandingInvoices: 340
     },
     "/api/team-management-mode": {
       managedByHub: true, hubUrl: "https://hub.v79sl.com"
