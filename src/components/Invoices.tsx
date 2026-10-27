@@ -162,7 +162,45 @@ export function Invoices({
         </div>
       </div>
 
-      {!jobsError && !jobsLoading && <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+      {!jobsError && !jobsLoading && (
+        <section aria-label="Invoices on mobile" className="md:hidden space-y-3">
+          <p className="text-xs font-medium text-slate-500">{invoiceableJobs.length} matching invoices</p>
+          {invoiceableJobs.map((job) => {
+            const received = paidByJob.get(job.id) || 0;
+            const outstanding = Math.max(0, Number(job.amount || 0) - received);
+            return (
+              <article key={job.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h3 className="font-bold text-slate-900">{job.title}</h3>
+                    <p className="mt-1 text-sm text-slate-500">{job.client}</p>
+                  </div>
+                  <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-bold capitalize ${job.status === "paid" ? "bg-emerald-100 text-emerald-800" : "bg-blue-100 text-blue-800"}`}>{job.status}</span>
+                </div>
+                <dl className="mt-4 grid grid-cols-2 gap-3 border-t border-slate-200 pt-3">
+                  <div><dt className="text-xs text-slate-500">Invoice value</dt><dd className="mt-1 text-sm font-bold text-slate-900">{formatMoney(job.amount || 0, currency)}</dd></div>
+                  <div><dt className="text-xs text-slate-500">Cash received</dt><dd className="mt-1 text-sm font-bold text-slate-900">{payments ? formatMoney(received, currency) : paymentLoading ? "Loading…" : "Unavailable"}</dd></div>
+                  <div className="col-span-2"><dt className="text-xs text-slate-500">Outstanding balance</dt><dd className="mt-1 font-bold text-slate-900">{payments ? formatMoney(outstanding, currency) : paymentLoading ? "Loading…" : "Unavailable"}</dd></div>
+                </dl>
+                <div className="mt-4 flex flex-col gap-2">
+                  <button type="button" onClick={() => setSelectedJobId(job.id)}
+                    className="w-full min-h-11 rounded-xl border border-[#0758B8] px-4 text-sm font-bold text-[#0758B8] hover:bg-blue-50">View invoice</button>
+                  {payments !== null && outstanding > 0.005 && (
+                    <button type="button" onClick={() => setPaymentJob(job)}
+                      className="w-full min-h-11 rounded-xl bg-[#0758B8] px-4 text-sm font-bold text-white hover:bg-[#164783]">Record payment</button>
+                  )}
+                </div>
+              </article>
+            );
+          })}
+          {invoiceableJobs.length === 0 && (
+            <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-500">
+              No invoices match this search.
+            </div>
+          )}
+        </section>
+      )}
+      {!jobsError && !jobsLoading && <div className="hidden md:block bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse min-w-[820px]">
             <thead>
