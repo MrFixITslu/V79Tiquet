@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Job, Employee, Client, BusinessSettings, PaymentRecord } from "../types";
 import {
   FileText,
@@ -36,27 +36,36 @@ export function Invoices({
 }) {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
-  const [payments, setPayments] = useState<PaymentRecord[]>([]);
+  const [payments, setPayments] = useState<PaymentRecord[] | null>(null);
+  const [paymentLoading, setPaymentLoading] = useState(true);
+  const paymentRequest = useRef(0);
   const [paymentJob, setPaymentJob] = useState<Job | null>(null);
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const currency = settings.currency || "USD";
 
   const loadPayments = async () => {
+    const request = ++paymentRequest.current;
+    setPaymentLoading(true);
+    setPaymentError(null);
+    setPayments(null); // Never display previous or missing ledger data as a real zero.
     try {
-      setPayments(await api.get<PaymentRecord[]>("/payments"));
-      setPaymentError(null);
-    } catch (error: any) {
-      setPaymentError(error.message || "Could not load recorded payments.");
+      const response = await api.get<PaymentRecord[]>("/payments");
+      if (request === paymentRequest.current) setPayments(response);
+    } catch {
+      if (request === paymentRequest.current) setPaymentError("Recorded payments could not be loaded.");
+    } finally {
+      if (request === paymentRequest.current) setPaymentLoading(false);
     }
   };
 
   useEffect(() => {
-    loadPayments();
+    void loadPayments();
+    return () => { paymentRequest.current += 1; };
   }, []);
 
   const paidByJob = useMemo(() => {
     const totals = new Map<string, number>();
-    for (const payment of payments) {
+    for (const payment of payments ?? []) {
       if (payment.status !== "recorded") continue;
       totals.set(payment.jobId, (totals.get(payment.jobId) || 0) + Number(payment.amount || 0));
     }
@@ -70,7 +79,7 @@ export function Invoices({
         job.client.toLowerCase().includes(searchQuery.toLowerCase()))
   );
 
-  const totalReceived = payments
+  const totalReceived = (payments ?? [])
     .filter((payment) => payment.status === "recorded")
     .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
 
@@ -98,23 +107,25 @@ export function Invoices({
         </p>
       </div>
 
+      {paymentLoading && <p role="status" className="text-sm text-slate-400">Loading the payment ledger…</p>}
       {paymentError && (
-        <div className="rounded-xl border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
-          {paymentError}
+        <div role="alert" className="flex flex-wrap items-center gap-3 rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+          <span>{paymentError} Amounts and payment entry are unavailable until the ledger loads.</span>
+          <button type="button" onClick={() => { void loadPayments(); }} className="min-h-11 rounded-lg px-3 font-semibold underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2">Retry</button>
         </div>
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
         <MetricCard
           label="Cash Received"
-          value={formatMoney(totalReceived, currency)}
-          helper={`${payments.filter((payment) => payment.status === "recorded").length} recorded payments`}
+          value={payments ? formatMoney(totalReceived, currency) : paymentLoading ? "Loading…" : "Unavailable"}
+          helper={payments ? `${payments.filter((payment) => payment.status === "recorded").length} recorded payments` : "Verified ledger required"}
           icon={<CheckCircle2 className="w-5 h-5" />}
         />
         <MetricCard
           label="Outstanding"
-          value={formatMoney(totalOutstanding, currency)}
-          helper="Invoiced and completed work"
+          value={payments ? formatMoney(totalOutstanding, currency) : paymentLoading ? "Loading…" : "Unavailable"}
+          helper={payments ? "Invoiced and completed work" : "Verified ledger required"}
           icon={<Clock className="w-5 h-5" />}
         />
         <MetricCard
@@ -162,8 +173,8 @@ export function Invoices({
                       <p className="text-xs text-slate-500 mt-0.5">{job.client}</p>
                     </td>
                     <td className="px-5 py-4 font-semibold text-slate-900">{formatMoney(job.amount || 0, currency)}</td>
-                    <td className="px-5 py-4 font-semibold text-emerald-600">{formatMoney(received, currency)}</td>
-                    <td className="px-5 py-4 font-semibold text-slate-900">{formatMoney(outstanding, currency)}</td>
+                    <td className="px-5 py-4 font-semibold text-emerald-600">{payments ? formatMoney(received, currency) : paymentLoading ? "Loading…" : "Unavailable"}</td>
+                    <td className="px-5 py-4 font-semibold text-slate-900">{payments ? formatMoney(outstanding, currency) : paymentLoading ? "Loading…" : "Unavailable"}</td>
                     <td className="px-5 py-4">
                       <span className={`text-[11px] font-bold uppercase tracking-wide px-2.5 py-1 rounded-full ${
                         job.status === "paid"
@@ -177,7 +188,7 @@ export function Invoices({
                     </td>
                     <td className="px-5 py-4 text-right">
                       <div className="flex justify-end gap-2">
-                        {outstanding > 0.005 && (
+                        {payments !== null && outstanding > 0.005 && (
                           <button
                             onClick={() => setPaymentJob(job)}
                             className="px-3 py-2 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors flex items-center gap-2 text-xs font-bold"
@@ -211,7 +222,7 @@ export function Invoices({
         </div>
       </div>
 
-      {paymentJob && (
+      {paymentJob && payments !== null && (
         <RecordPaymentModal
           job={paymentJob}
           currency={currency}
