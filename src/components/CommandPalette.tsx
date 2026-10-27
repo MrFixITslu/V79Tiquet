@@ -8,6 +8,7 @@ interface CommandPaletteProps {
   jobs: Job[];
   clients: Client[];
   onSelectTab: (tab: string) => void;
+  canOpenTab: (tab: string) => boolean;
   onSelectJob: (job: Job) => void;
   onSelectClient: (client: Client) => void;
 }
@@ -18,6 +19,7 @@ export function CommandPalette({
   jobs,
   clients,
   onSelectTab,
+  canOpenTab,
   onSelectJob,
   onSelectClient,
 }: CommandPaletteProps) {
@@ -53,7 +55,7 @@ export function CommandPalette({
         { type: "nav", id: "clients", title: "View Clients", subtitle: "Directory of client accounts", icon: User, action: () => onSelectTab("clients") },
         { type: "nav", id: "invoices", title: "View Invoices", subtitle: "Billing & invoice management", icon: FileText, action: () => onSelectTab("invoices") },
         { type: "nav", id: "settings", title: "Workspace Settings", subtitle: "Branding, email templates, & plans", icon: Settings, action: () => onSelectTab("settings") },
-      ];
+      ].filter((item) => canOpenTab(item.id));
     }
 
     const items: Array<{
@@ -68,7 +70,7 @@ export function CommandPalette({
     // Filter Jobs
     jobs
       .filter(
-        (j) =>
+        (j) => canOpenTab("jobs") &&
           j.title.toLowerCase().includes(q) ||
           j.client.toLowerCase().includes(q) ||
           j.status.toLowerCase().includes(q)
@@ -92,7 +94,7 @@ export function CommandPalette({
     // Filter Clients
     clients
       .filter(
-        (c) =>
+        (c) => canOpenTab("clients") &&
           c.name.toLowerCase().includes(q) ||
           (c.company && c.company.toLowerCase().includes(q)) ||
           c.email.toLowerCase().includes(q)
@@ -125,7 +127,7 @@ export function CommandPalette({
     ];
 
     navs
-      .filter((n) => n.title.toLowerCase().includes(q) || n.subtitle.toLowerCase().includes(q))
+      .filter((n) => canOpenTab(n.id) && (n.title.toLowerCase().includes(q) || n.subtitle.toLowerCase().includes(q)))
       .forEach((n) => {
         items.push({
           type: "nav",
@@ -141,7 +143,7 @@ export function CommandPalette({
       });
 
     return items;
-  }, [query, jobs, clients, onSelectTab, onSelectJob, onSelectClient, onClose]);
+  }, [query, jobs, clients, canOpenTab, onSelectTab, onSelectJob, onSelectClient, onClose]);
 
   useEffect(() => {
     setSelectedIndex(0);
@@ -173,6 +175,7 @@ export function CommandPalette({
           <Search className="w-5 h-5 text-slate-400 shrink-0" />
           <input
             type="text"
+            aria-label="Search authorised workspace pages, jobs and clients"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
@@ -223,7 +226,7 @@ export function CommandPalette({
               );
             })
           ) : (
-            <div className="py-10 text-center text-slate-400 text-xs">
+            <div className="py-10 text-center text-slate-400 text-sm">
               No matching jobs, clients, or workspace actions found for "{query}".
             </div>
           )}
