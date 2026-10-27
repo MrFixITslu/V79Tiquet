@@ -51,7 +51,7 @@ export function Sidebar({
   };
 
   const itemClass = (active: boolean) =>
-    `group w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-semibold transition-all border ${
+    `group w-full min-h-11 flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-semibold transition-all border ${
       active
         ? "bg-[#164783] text-white border-[#4c9ae8]"
         : "text-slate-400 border-transparent hover:text-white hover:bg-white/[0.045]"
@@ -60,7 +60,7 @@ export function Sidebar({
   return (
     <>
       {isOpenMobile && (
-        <div onClick={onCloseMobile} className="fixed inset-0 bg-[#020711]/80 backdrop-blur-sm z-40 lg:hidden" />
+        <button type="button" onClick={onCloseMobile} aria-label="Close navigation overlay" className="fixed inset-0 w-full bg-[#020711]/80 backdrop-blur-sm z-40 lg:hidden" />
       )}
 
       <aside
@@ -68,7 +68,7 @@ export function Sidebar({
           isOpenMobile ? "translate-x-0" : "-translate-x-full"
         }`}
       >
-        <div className="absolute inset-x-0 top-0 h-60 bg-[radial-gradient(circle_at_22%_0%,rgba(10,134,255,.18),transparent_58%),radial-gradient(circle_at_78%_12%,rgba(255,122,0,.10),transparent_44%)] pointer-events-none" />
+        <div className="absolute inset-x-0 top-0 h-60 bg-[radial-gradient(circle_at_22%_0%,rgba(10,134,255,.18),transparent_58%),radial-gradient(circle_at_78%_12%,rgba(0,174,187,.10),transparent_44%)] pointer-events-none" />
 
         <div className="relative px-5 pt-5 pb-5 border-b border-[#17324d]/60 flex items-center justify-between">
           <div className="flex items-center gap-3 min-w-0">
@@ -80,12 +80,12 @@ export function Sidebar({
             <div className="min-w-0">
               <div className="flex items-baseline gap-1.5">
                 <span className="text-[16px] font-black tracking-[-0.04em] text-white">TIQUET</span>
-                <span className="text-[8px] font-black tracking-[0.18em] text-[#55c7ff]">V79</span>
+                <span className="text-[11px] font-bold tracking-[0.09em] text-[#74d0ff]">Vision79</span>
               </div>
-              <div className="text-[9px] text-slate-500 mt-0.5 truncate max-w-[135px]">{businessName}</div>
+              <div className="text-xs text-slate-300 mt-0.5 truncate max-w-[135px]">{businessName}</div>
             </div>
           </div>
-          <button onClick={onCloseMobile} aria-label="Close navigation" className="p-1.5 text-slate-500 hover:text-white rounded-lg hover:bg-white/5 lg:hidden">
+          <button onClick={onCloseMobile} aria-label="Close navigation" className="min-h-11 min-w-11 flex items-center justify-center text-slate-300 hover:text-white rounded-lg hover:bg-white/5 lg:hidden">
             <X className="w-5 h-5" />
           </button>
         </div>
@@ -137,7 +137,7 @@ export function Sidebar({
 
           <a href="https://hub.v79sl.com" className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl border border-[#0A86FF]/30 bg-[#0A86FF]/10 hover:bg-[#0A86FF]/18 text-xs font-bold text-[#74d0ff] transition-colors">
             <ArrowLeft className="w-3.5 h-3.5" />
-            Back to V79 Digital Hub
+            Back to Vision79 Hub
           </a>
 
           <button onClick={onLogout} className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-xs font-bold text-slate-400 hover:text-rose-300 hover:bg-rose-500/10 transition-colors">
@@ -169,7 +169,7 @@ function NavItem({
   className: string;
 }) {
   return (
-    <button onClick={onClick} className={className} aria-current={active ? "page" : undefined}>
+    <button type="button" onClick={onClick} className={className} aria-current={active ? "page" : undefined}>
       <div className="flex items-center gap-3">
         <span className="text-slate-400 group-hover:text-white">{icon}</span>
         <span>{label}</span>
