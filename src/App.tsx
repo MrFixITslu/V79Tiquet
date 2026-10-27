@@ -414,7 +414,7 @@ export default function App() {
             setActiveTab("jobs");
           } : undefined} />}
           {activeTab === "jobs" && canOpenTab("jobs") && (
-            <JobBoard jobs={jobs} setJobs={setJobs} employees={employees} clients={clients} settings={settings} />
+            <JobBoard jobs={jobs} setJobs={setJobs} employees={employees} clients={clients} settings={settings} jobsLoading={jobsLoading} jobsError={jobsError} onRetryJobs={() => { void reloadJobs(); }} />
           )}
           {activeTab === "clients" && canOpenTab("clients") && <Clients clients={clients} setClients={setClients} jobs={jobs} industries={industries} currency={settings.currency} />}
           {activeTab === "payroll" && canOpenTab("payroll") && (
@@ -429,13 +429,16 @@ export default function App() {
           {activeTab === "users" && canOpenTab("users") && <UserManagement users={users} setUsers={setUsers} />}
           {activeTab === "files" && canOpenTab("files") && <FileRepository files={files} onFilesChanged={reloadFiles} />}
           {activeTab === "invoices" && canOpenTab("invoices") && (
-            <Invoices jobs={jobs} setJobs={setJobs} employees={employees} clients={clients} settings={settings} />
+            <Invoices jobs={jobs} setJobs={setJobs} employees={employees} clients={clients} settings={settings} jobsLoading={jobsLoading} jobsError={jobsError} onRetryJobs={() => { void reloadJobs(); }} />
           )}
           {activeTab === "settings" && canOpenTab("settings") && (
             <Settings settings={settings} setSettings={handleUpdateSettings} industries={industries} setIndustries={setIndustries} workspaceId={activeBusiness!.id} />
           )}
           {activeTab === "new-request" && canOpenTab("new-request") && (
-            <div className="max-w-4xl mx-auto">
+            jobsLoading || jobsError ? <div role={jobsError ? "alert" : "status"} className="rounded-xl border border-amber-500/30 p-5 text-sm text-slate-200">
+              {jobsError ? "Requests cannot be submitted while the job list is unavailable." : "Loading jobs before starting a request…"}
+              {jobsError && <button type="button" onClick={() => { void reloadJobs(); }} className="ml-3 min-h-11 font-semibold underline">Retry</button>}
+            </div> : <div className="max-w-4xl mx-auto">
               <JobRequestForm
                 employees={employees}
                 clients={clients}
