@@ -164,7 +164,7 @@ export default function App() {
     canAccess("clients") || canAccess("jobs") || canAccess("new-request")
   );
   const { items: jobs, setItems: setJobs, loading: jobsLoading, error: jobsError, reload: reloadJobs } = useSyncedCollection<Job>("/jobs", canReadJobs);
-  const { items: clients, setItems: setClients } = useSyncedCollection<Client>("/clients", canReadClients);
+  const { items: clients, setItems: setClients, loading: clientsLoading, error: clientsError, reload: reloadClients } = useSyncedCollection<Client>("/clients", canReadClients);
 
   // Surfaces whether the welcome email on a newly-created client actually
   // went out. Previously this was invisible — client creation "succeeded"
@@ -196,19 +196,31 @@ export default function App() {
       }
     }
   }, [clients]);
-  const { items: employees, setItems: setEmployees } = useSyncedCollection<Employee>("/employees", authenticated && canAccess("payroll"));
-  const { items: payrollRecords, setItems: setPayrollRecords } = useSyncedCollection<PayrollRecord>("/payroll", authenticated && canAccess("payroll"));
-  const { items: users, setItems: setUsers } = useSyncedCollection<AppUser>("/users", authenticated && currentUser?.role === "Admin");
-  const { items: industries, setItems: setIndustries } = useSyncedCollection<Industry>("/industries", authenticated && canAccess("clients"));
+  const { items: employees, setItems: setEmployees, loading: employeesLoading, error: employeesError, reload: reloadEmployees } = useSyncedCollection<Employee>("/employees", authenticated && canAccess("payroll"));
+  const { items: payrollRecords, setItems: setPayrollRecords, loading: payrollLoading, error: payrollError, reload: reloadPayroll } = useSyncedCollection<PayrollRecord>("/payroll", authenticated && canAccess("payroll"));
+  const { items: users, setItems: setUsers, loading: usersLoading, error: usersError, reload: reloadUsers } = useSyncedCollection<AppUser>("/users", authenticated && currentUser?.role === "Admin");
+  const { items: industries, setItems: setIndustries, loading: industriesLoading, error: industriesError, reload: reloadIndustries } = useSyncedCollection<Industry>("/industries", authenticated && canAccess("clients"));
 
   const [files, setFilesState] = useState<import("./types").FileItem[]>([]);
+  const [filesLoading, setFilesLoading] = useState(false);
+  const [filesError, setFilesError] = useState(false);
+  const filesRequest = useRef(0);
   const reloadFiles = useCallback(async () => {
-    if (!authenticated || !canAccess("files")) return;
+    const request = ++filesRequest.current;
+    setFilesState([]);
+    setFilesError(false);
+    if (!authenticated || !canAccess("files")) {
+      setFilesLoading(false);
+      return;
+    }
+    setFilesLoading(true);
     try {
       const data = await api.get<import("./types").FileItem[]>("/files");
-      setFilesState(data);
+      if (request === filesRequest.current) setFilesState(data);
     } catch {
-      // non-fatal — file repository will just show empty state
+      if (request === filesRequest.current) setFilesError(true);
+    } finally {
+      if (request === filesRequest.current) setFilesLoading(false);
     }
   }, [authenticated, canAccess]);
   useEffect(() => { reloadFiles(); }, [reloadFiles]);
@@ -424,9 +436,20 @@ export default function App() {
           {activeTab === "jobs" && canOpenTab("jobs") && (
             <JobBoard jobs={jobs} setJobs={setJobs} employees={employees} clients={clients} settings={settings} jobsLoading={jobsLoading} jobsError={jobsError} onRetryJobs={() => { void reloadJobs(); }} />
           )}
-          {activeTab === "clients" && canOpenTab("clients") && <Clients clients={clients} setClients={setClients} jobs={jobs} industries={industries} currency={settings.currency} />}
+          {activeTab === "clients" && canOpenTab("clients") && (clientsLoading || clientsError || industriesLoading || industriesError
+            ? <div role={clientsError || industriesError ? "alert" : "status"} className="rounded-xl border border-[#1a3854] p-5 text-sm">
+                {clientsError || industriesError ? "Client information is unavailable." : "Loading clients…"}
+                {(clientsError || industriesError) && <button type="button" onClick={() => { void reloadClients(); void reloadIndustries(); }} className="ml-3 min-h-11 font-semibold underline">Retry</button>}
+              </div>
+            : <Clients clients={clients} setClients={setClients} jobs={jobs} industries={industries} currency={settings.currency} />
+          )}
           {activeTab === "payroll" && canOpenTab("payroll") && (
-            <Payroll
+            employeesLoading || payrollLoading || employeesError || payrollError
+            ? <div role={employeesError || payrollError ? "alert" : "status"} className="rounded-xl border border-[#1a3854] p-5 text-sm">
+                {employeesError || payrollError ? "Payroll and timesheet data are unavailable." : "Loading payroll…"}
+                {(employeesError || payrollError) && <button type="button" onClick={() => { void reloadEmployees(); void reloadPayroll(); }} className="ml-3 min-h-11 font-semibold underline">Retry</button>}
+              </div>
+            : <Payroll
               employees={employees}
               setEmployees={setEmployees}
               payrollRecords={payrollRecords}
@@ -434,8 +457,20 @@ export default function App() {
               currency={settings.currency}
             />
           )}
-          {activeTab === "users" && canOpenTab("users") && <UserManagement users={users} setUsers={setUsers} />}
-          {activeTab === "files" && canOpenTab("files") && <FileRepository files={files} onFilesChanged={reloadFiles} />}
+          {activeTab === "users" && canOpenTab("users") && (usersLoading || usersError
+            ? <div role={usersError ? "alert" : "status"} className="rounded-xl border border-[#1a3854] p-5 text-sm">
+                {usersError ? "User and role data are unavailable." : "Loading users…"}
+                {usersError && <button type="button" onClick={() => { void reloadUsers(); }} className="ml-3 min-h-11 font-semibold underline">Retry</button>}
+              </div>
+            : <UserManagement users={users} setUsers={setUsers} />
+          )}
+          {activeTab === "files" && canOpenTab("files") && (filesLoading || filesError
+            ? <div role={filesError ? "alert" : "status"} className="rounded-xl border border-[#1a3854] p-5 text-sm">
+                {filesError ? "The file repository is unavailable; no empty-state claim is shown." : "Loading files…"}
+                {filesError && <button type="button" onClick={() => { void reloadFiles(); }} className="ml-3 min-h-11 font-semibold underline">Retry</button>}
+              </div>
+            : <FileRepository files={files} onFilesChanged={reloadFiles} />
+          )}
           {activeTab === "invoices" && canOpenTab("invoices") && (
             <Invoices jobs={jobs} setJobs={setJobs} employees={employees} clients={clients} settings={settings} jobsLoading={jobsLoading} jobsError={jobsError} onRetryJobs={() => { void reloadJobs(); }} />
           )}
@@ -443,9 +478,9 @@ export default function App() {
             <Settings settings={settings} setSettings={handleUpdateSettings} industries={industries} setIndustries={setIndustries} workspaceId={activeBusiness!.id} />
           )}
           {activeTab === "new-request" && canOpenTab("new-request") && (
-            jobsLoading || jobsError ? <div role={jobsError ? "alert" : "status"} className="rounded-xl border border-amber-500/30 p-5 text-sm text-slate-200">
-              {jobsError ? "Requests cannot be submitted while the job list is unavailable." : "Loading jobs before starting a request…"}
-              {jobsError && <button type="button" onClick={() => { void reloadJobs(); }} className="ml-3 min-h-11 font-semibold underline">Retry</button>}
+            jobsLoading || jobsError || clientsLoading || clientsError ? <div role={jobsError || clientsError ? "alert" : "status"} className="rounded-xl border border-amber-500/30 p-5 text-sm text-slate-200">
+              {jobsError || clientsError ? "Requests cannot be submitted until jobs and clients load successfully." : "Loading jobs and clients before starting a request…"}
+              {(jobsError || clientsError) && <button type="button" onClick={() => { void reloadJobs(); void reloadClients(); }} className="ml-3 min-h-11 font-semibold underline">Retry</button>}
             </div> : <div className="max-w-4xl mx-auto">
               <JobRequestForm
                 employees={employees}
