@@ -21,14 +21,27 @@ export function UserManagement({
 }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<AppUser | null>(null);
-  const [hubManagement, setHubManagement] = useState<{managedByHub:boolean;hubUrl:string}|null>(null);
+  const [hubManagement, setHubManagement] = useState<{ managedByHub: boolean; hubUrl: string } | null>(null);
+  const [modeError, setModeError] = useState(false);
+  const [modeRetry, setModeRetry] = useState(0);
 
+  // Do not show legacy user-editing controls unless the Hub mode check succeeds.
   useEffect(() => {
-    fetch("/api/team-management-mode", { credentials:"same-origin" })
-      .then(async (response) => response.ok ? response.json() : null)
-      .then((body) => { if (body) setHubManagement(body); })
-      .catch(() => {});
-  }, []);
+    let current = true;
+    setHubManagement(null);
+    setModeError(false);
+    fetch("/api/team-management-mode", { credentials: "same-origin" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Team management mode unavailable");
+        return response.json();
+      })
+      .then((body) => {
+        if (!body || typeof body.managedByHub !== "boolean") throw new Error("Invalid team management mode");
+        if (current) setHubManagement({ managedByHub: body.managedByHub, hubUrl: "https://hub.v79sl.com" });
+      })
+      .catch(() => { if (current) setModeError(true); });
+    return () => { current = false; };
+  }, [modeRetry]);
 
   const handleDelete = (id: string) => {
     if (confirm("Are you sure you want to delete this user?")) {
@@ -36,7 +49,24 @@ export function UserManagement({
     }
   };
 
-  if (hubManagement?.managedByHub) {
+  if (!hubManagement) {
+    return (
+      <div className="max-w-xl rounded-2xl border border-slate-200 bg-white p-5" role={modeError ? "alert" : "status"}>
+        <h2 className="text-lg font-bold text-slate-900">Team access</h2>
+        <p className="mt-2 text-sm text-slate-600">
+          {modeError
+            ? "Unable to verify whether team access is managed in Vision79 Hub. User management is unavailable until this check succeeds."
+            : "Checking how this workspace manages team access…"}
+        </p>
+        {modeError && (
+          <button type="button" onClick={() => setModeRetry((value) => value + 1)}
+            className="mt-4 min-h-11 rounded-xl bg-[#0758B8] px-4 text-sm font-bold text-white hover:bg-[#164783]">Retry verification</button>
+        )}
+      </div>
+    );
+  }
+
+  if (hubManagement.managedByHub) {
     return (
       <div className="space-y-6">
         <div>
@@ -98,7 +128,38 @@ export function UserManagement({
         </button>
       </div>
 
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+      <section aria-label="Workspace users on mobile" className="md:hidden space-y-3">
+        {users.map((user) => (
+          <article key={user.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs">
+            <div className="flex items-start gap-3">
+              <div className="h-11 w-11 shrink-0 rounded-full bg-blue-100 text-blue-700 flex items-center justify-center font-bold">{user.name.charAt(0)}</div>
+              <div className="min-w-0 flex-1">
+                <h3 className="font-bold text-slate-900">{user.name}</h3>
+                <p className="text-sm text-slate-500 break-all">{user.email}</p>
+                <p className="mt-2 text-sm font-semibold text-slate-700">Role: {user.role}</p>
+              </div>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-1.5" aria-label="Assigned permissions">
+              {(user.permissions || []).map((permission) => (
+                <span key={permission} className="rounded-lg bg-blue-50 border border-blue-100 px-2 py-1 text-xs font-medium text-blue-800">{permission.replace("-", " ")}</span>
+              ))}
+              {(!user.permissions || user.permissions.length === 0) && <span className="text-xs text-slate-500">No additional page permissions</span>}
+            </div>
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <button type="button" onClick={() => { setEditingUser(user); setIsModalOpen(true); }}
+                className="min-h-11 rounded-xl bg-[#0758B8] px-3 text-sm font-bold text-white"
+                aria-label={`Edit permissions for ${user.name}`}>Edit access</button>
+              <button type="button" onClick={() => handleDelete(user.id)}
+                className="min-h-11 rounded-xl border border-red-200 px-3 text-sm font-semibold text-red-700"
+                aria-label={`Delete user ${user.name}`}>Delete</button>
+            </div>
+          </article>
+        ))}
+        {users.length === 0 && <p className="rounded-xl border border-slate-200 bg-white p-6 text-sm text-slate-500">No users in this workspace.</p>}
+      </section>
+
+      <div className="hidden md:block bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className="overflow-x-auto">
         <table className="w-full min-w-[720px] text-left border-collapse">
           <thead>
             <tr className="bg-slate-50 border-b border-slate-200">
@@ -159,6 +220,7 @@ export function UserManagement({
             ))}
           </tbody>
         </table>
+        </div>
       </div>
 
       {isModalOpen && (

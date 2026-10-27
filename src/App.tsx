@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Search, Shield, Zap, ChevronDown, UserPlus, Clock, X, Loader2, Menu } from "lucide-react";
+import { Search, Shield, Zap, ChevronDown, UserPlus, Clock, X, Loader2, Menu, Moon, Sun, LayoutDashboard, Briefcase, PlusCircle, FileText, MoreHorizontal } from "lucide-react";
 import { JobBoard } from "./components/JobBoard";
 import { Sidebar } from "./components/Sidebar";
 import { JobRequestForm } from "./components/JobRequestForm";
@@ -59,6 +59,13 @@ export default function App() {
   const [isLogTimeModalOpen, setIsLogTimeModalOpen] = useState(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+  const [theme, setTheme] = useState<"dark" | "light">(() => {
+    try { return window.localStorage.getItem("v79-tiquet-theme") === "dark" ? "dark" : "light"; }
+    catch { return "light"; }
+  });
+  useEffect(() => {
+    try { window.localStorage.setItem("v79-tiquet-theme", theme); } catch { /* Private browsing can restrict storage. */ }
+  }, [theme]);
   const [selectedJobForModal, setSelectedJobForModal] = useState<Job | null>(null);
 
   const authenticated = !!currentUser && !!activeBusiness;
@@ -93,8 +100,21 @@ export default function App() {
   }, [currentUser, canAccess]);
 
   useEffect(() => {
-    if (currentUser && !canOpenTab(activeTab)) setActiveTab("dashboard");
+    if (!currentUser || canOpenTab(activeTab)) return;
+    const next = ["dashboard", "jobs", "clients", "invoices", "new-request", "files", "payroll"]
+      .find((tab) => canOpenTab(tab)) || "no-access";
+    if (next !== activeTab) setActiveTab(next);
   }, [activeTab, currentUser, canOpenTab]);
+
+  useEffect(() => {
+    if (!authenticated || portalRoute.matched || resetPasswordRoute.matched) return;
+    const names: Record<string, string> = {
+      dashboard: "Overview", jobs: "Jobs", clients: "Clients", invoices: "Invoices",
+      "new-request": "New Request", files: "Files", payroll: "Payroll",
+      users: "Users & Roles", settings: "Settings",
+    };
+    document.title = `${names[activeTab] || "Workspace"} | Tiquet | Vision79`;
+  }, [activeTab, authenticated, portalRoute.matched, resetPasswordRoute.matched]);
 
   // On load, if a session token already exists (page refresh, not a fresh
   // login), restore the session instead of bouncing back to the login screen.
@@ -143,8 +163,8 @@ export default function App() {
   const canReadClients = authenticated && (
     canAccess("clients") || canAccess("jobs") || canAccess("new-request")
   );
-  const { items: jobs, setItems: setJobs } = useSyncedCollection<Job>("/jobs", canReadJobs);
-  const { items: clients, setItems: setClients } = useSyncedCollection<Client>("/clients", canReadClients);
+  const { items: jobs, setItems: setJobs, loading: jobsLoading, error: jobsError, reload: reloadJobs } = useSyncedCollection<Job>("/jobs", canReadJobs);
+  const { items: clients, setItems: setClients, loading: clientsLoading, error: clientsError, reload: reloadClients } = useSyncedCollection<Client>("/clients", canReadClients);
 
   // Surfaces whether the welcome email on a newly-created client actually
   // went out. Previously this was invisible — client creation "succeeded"
@@ -176,19 +196,31 @@ export default function App() {
       }
     }
   }, [clients]);
-  const { items: employees, setItems: setEmployees } = useSyncedCollection<Employee>("/employees", authenticated && canAccess("payroll"));
-  const { items: payrollRecords, setItems: setPayrollRecords } = useSyncedCollection<PayrollRecord>("/payroll", authenticated && canAccess("payroll"));
-  const { items: users, setItems: setUsers } = useSyncedCollection<AppUser>("/users", authenticated && currentUser?.role === "Admin");
-  const { items: industries, setItems: setIndustries } = useSyncedCollection<Industry>("/industries", authenticated && canAccess("clients"));
+  const { items: employees, setItems: setEmployees, loading: employeesLoading, error: employeesError, reload: reloadEmployees } = useSyncedCollection<Employee>("/employees", authenticated && canAccess("payroll"));
+  const { items: payrollRecords, setItems: setPayrollRecords, loading: payrollLoading, error: payrollError, reload: reloadPayroll } = useSyncedCollection<PayrollRecord>("/payroll", authenticated && canAccess("payroll"));
+  const { items: users, setItems: setUsers, loading: usersLoading, error: usersError, reload: reloadUsers } = useSyncedCollection<AppUser>("/users", authenticated && currentUser?.role === "Admin");
+  const { items: industries, setItems: setIndustries, loading: industriesLoading, error: industriesError, reload: reloadIndustries } = useSyncedCollection<Industry>("/industries", authenticated && canAccess("clients"));
 
   const [files, setFilesState] = useState<import("./types").FileItem[]>([]);
+  const [filesLoading, setFilesLoading] = useState(false);
+  const [filesError, setFilesError] = useState(false);
+  const filesRequest = useRef(0);
   const reloadFiles = useCallback(async () => {
-    if (!authenticated || !canAccess("files")) return;
+    const request = ++filesRequest.current;
+    setFilesState([]);
+    setFilesError(false);
+    if (!authenticated || !canAccess("files")) {
+      setFilesLoading(false);
+      return;
+    }
+    setFilesLoading(true);
     try {
       const data = await api.get<import("./types").FileItem[]>("/files");
-      setFilesState(data);
+      if (request === filesRequest.current) setFilesState(data);
     } catch {
-      // non-fatal — file repository will just show empty state
+      if (request === filesRequest.current) setFilesError(true);
+    } finally {
+      if (request === filesRequest.current) setFilesLoading(false);
     }
   }, [authenticated, canAccess]);
   useEffect(() => { reloadFiles(); }, [reloadFiles]);
@@ -270,7 +302,7 @@ export default function App() {
   }
 
   return (
-    <div className="v79-tiquet-app flex h-[100dvh] min-h-[100dvh] bg-[#07111f] text-slate-100 font-sans overflow-hidden">
+    <div data-theme={theme} className="v79-tiquet-app flex h-[100dvh] min-h-[100dvh] bg-[#07111f] text-slate-100 font-sans overflow-hidden">
       <Sidebar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
@@ -291,7 +323,7 @@ export default function App() {
             <button
               onClick={() => setIsMobileSidebarOpen(true)}
               aria-label="Open navigation menu"
-              className="p-2 text-slate-500 hover:text-white hover:bg-white/5 rounded-xl lg:hidden cursor-pointer"
+              className="min-h-11 min-w-11 flex items-center justify-center text-slate-300 hover:text-white hover:bg-white/5 rounded-xl lg:hidden cursor-pointer"
               title="Open Navigation Menu"
             >
               <Menu className="w-5 h-5" />
@@ -312,7 +344,7 @@ export default function App() {
               <Search className="w-4 h-4 text-slate-600 group-hover:text-[#55c7ff] transition-colors shrink-0" />
               <span className="ml-2 text-sm text-slate-500 truncate flex-1">Search jobs, clients, actions...</span>
               <kbd className="text-[9px] font-mono font-bold text-slate-600 bg-[#07111f] border border-[#1a3854] px-1.5 py-0.5 rounded">
-                ⌘K
+                Ctrl / ⌘ K
               </kbd>
             </button>
 
@@ -323,16 +355,14 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-4">
-            <div className="hidden sm:flex items-center gap-1.5 text-[9px] text-emerald-400 font-bold uppercase tracking-wider bg-emerald-500/10 px-3 py-1.5 rounded-full border border-emerald-500/20">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              Connected
-            </div>
+            <button type="button" onClick={() => setTheme((old) => old === "dark" ? "light" : "dark")} title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"} aria-label={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"} className="min-h-11 min-w-11 rounded-xl border border-[#1a3854] text-slate-200 hover:text-white hover:bg-white/10 flex items-center justify-center focus-visible:outline focus-visible:outline-2">{theme === "dark" ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}</button>
+            <div className="hidden sm:flex items-center text-xs text-slate-300 px-2" aria-label="Current workspace">Tiquet workspace</div>
 
-            <div className="relative">
+            {(canOpenTab("clients") || canOpenTab("payroll")) && <div className="relative">
               <button
                 id="btn-quick-actions"
                 onClick={() => setIsQuickActionsOpen(!isQuickActionsOpen)}
-                className="flex min-h-10 min-w-10 items-center justify-center gap-2 bg-gradient-to-r from-[#FF7A00] to-[#ff9638] hover:from-[#ff8b21] hover:to-[#ffa14d] text-white px-2.5 sm:px-3.5 py-1.5 rounded-xl text-[10px] font-black transition-all shadow-[0_8px_28px_rgba(255,122,0,.16)] active:scale-[0.98] cursor-pointer"
+                className="flex min-h-10 min-w-10 items-center justify-center gap-2 bg-gradient-to-r from-[#0758B8] to-[#009FAD] hover:from-[#164783] hover:to-[#007b85] text-white px-3 sm:px-4 py-2 rounded-xl text-sm font-semibold transition-all shadow-[0_8px_28px_rgba(255,122,0,.16)] active:scale-[0.98] cursor-pointer"
               >
                 <Zap className="w-3.5 h-3.5 text-white" />
                 <span className="hidden sm:inline">Quick Actions</span>
@@ -345,24 +375,24 @@ export default function App() {
                     <p className="text-[9px] font-black text-slate-600 uppercase tracking-wider">Workspace Shortcuts</p>
                   </div>
 
-                  <button
+                  {canOpenTab("clients") && <button
                     onClick={() => { setIsNewClientModalOpen(true); setIsQuickActionsOpen(false); }}
                     className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-white/[0.04] text-left text-[10px] font-bold text-slate-300 transition-colors cursor-pointer"
                   >
                     <UserPlus className="w-4 h-4 text-[#55c7ff]" />
                     New Client
-                  </button>
+                  </button>}
 
-                  <button
+                  {canOpenTab("payroll") && <button
                     onClick={() => { setIsLogTimeModalOpen(true); setIsQuickActionsOpen(false); }}
                     className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-white/[0.04] text-left text-[10px] font-bold text-slate-300 transition-colors cursor-pointer"
                   >
                     <Clock className="w-4 h-4 text-emerald-500" />
                     Log Time / Time Card
-                  </button>
+                  </button>}
                 </div>
               )}
-            </div>
+            </div>}
 
             <div className="flex items-center gap-2 sm:gap-3 border-l border-[#17324d] pl-2 sm:pl-3">
               {currentUser!.photoUrl ? (
@@ -398,14 +428,28 @@ export default function App() {
           </div>
         )}
 
-        <div className="flex-1 overflow-auto p-4 sm:p-5 xl:p-6 bg-[#07111f]">
-          {activeTab === "dashboard" && <Dashboard jobs={jobs} currency={settings.currency} />}
-          {activeTab === "jobs" && (
-            <JobBoard jobs={jobs} setJobs={setJobs} employees={employees} clients={clients} settings={settings} />
+        <div className="flex-1 overflow-auto p-4 pb-24 sm:p-5 sm:pb-24 lg:pb-6 xl:p-6 bg-[#07111f]">
+          {activeTab === "dashboard" && canOpenTab("dashboard") && <Dashboard jobs={jobs} jobsLoading={jobsLoading} jobsError={jobsError} onRetryJobs={() => { void reloadJobs(); }} currency={settings.currency} onOpenJob={canOpenTab("jobs") ? (id) => {
+            window.history.replaceState(window.history.state, "", tiquetNavigationPath(window.location.href, "jobs", id));
+            setActiveTab("jobs");
+          } : undefined} />}
+          {activeTab === "jobs" && canOpenTab("jobs") && (
+            <JobBoard jobs={jobs} setJobs={setJobs} employees={employees} clients={clients} settings={settings} jobsLoading={jobsLoading} jobsError={jobsError} onRetryJobs={() => { void reloadJobs(); }} />
           )}
-          {activeTab === "clients" && <Clients clients={clients} setClients={setClients} jobs={jobs} industries={industries} currency={settings.currency} />}
-          {activeTab === "payroll" && (
-            <Payroll
+          {activeTab === "clients" && canOpenTab("clients") && (clientsLoading || clientsError || industriesLoading || industriesError
+            ? <div role={clientsError || industriesError ? "alert" : "status"} className="rounded-xl border border-[#1a3854] p-5 text-sm">
+                {clientsError || industriesError ? "Client information is unavailable." : "Loading clients…"}
+                {(clientsError || industriesError) && <button type="button" onClick={() => { void reloadClients(); void reloadIndustries(); }} className="ml-3 min-h-11 font-semibold underline">Retry</button>}
+              </div>
+            : <Clients clients={clients} setClients={setClients} jobs={jobs} industries={industries} currency={settings.currency} />
+          )}
+          {activeTab === "payroll" && canOpenTab("payroll") && (
+            employeesLoading || payrollLoading || employeesError || payrollError
+            ? <div role={employeesError || payrollError ? "alert" : "status"} className="rounded-xl border border-[#1a3854] p-5 text-sm">
+                {employeesError || payrollError ? "Payroll and timesheet data are unavailable." : "Loading payroll…"}
+                {(employeesError || payrollError) && <button type="button" onClick={() => { void reloadEmployees(); void reloadPayroll(); }} className="ml-3 min-h-11 font-semibold underline">Retry</button>}
+              </div>
+            : <Payroll
               employees={employees}
               setEmployees={setEmployees}
               payrollRecords={payrollRecords}
@@ -413,16 +457,31 @@ export default function App() {
               currency={settings.currency}
             />
           )}
-          {activeTab === "users" && <UserManagement users={users} setUsers={setUsers} />}
-          {activeTab === "files" && <FileRepository files={files} onFilesChanged={reloadFiles} />}
-          {activeTab === "invoices" && (
-            <Invoices jobs={jobs} setJobs={setJobs} employees={employees} clients={clients} settings={settings} />
+          {activeTab === "users" && canOpenTab("users") && (usersLoading || usersError
+            ? <div role={usersError ? "alert" : "status"} className="rounded-xl border border-[#1a3854] p-5 text-sm">
+                {usersError ? "User and role data are unavailable." : "Loading users…"}
+                {usersError && <button type="button" onClick={() => { void reloadUsers(); }} className="ml-3 min-h-11 font-semibold underline">Retry</button>}
+              </div>
+            : <UserManagement users={users} setUsers={setUsers} />
           )}
-          {activeTab === "settings" && (
+          {activeTab === "files" && canOpenTab("files") && (filesLoading || filesError
+            ? <div role={filesError ? "alert" : "status"} className="rounded-xl border border-[#1a3854] p-5 text-sm">
+                {filesError ? "The file repository is unavailable; no empty-state claim is shown." : "Loading files…"}
+                {filesError && <button type="button" onClick={() => { void reloadFiles(); }} className="ml-3 min-h-11 font-semibold underline">Retry</button>}
+              </div>
+            : <FileRepository files={files} onFilesChanged={reloadFiles} />
+          )}
+          {activeTab === "invoices" && canOpenTab("invoices") && (
+            <Invoices jobs={jobs} setJobs={setJobs} employees={employees} clients={clients} settings={settings} jobsLoading={jobsLoading} jobsError={jobsError} onRetryJobs={() => { void reloadJobs(); }} />
+          )}
+          {activeTab === "settings" && canOpenTab("settings") && (
             <Settings settings={settings} setSettings={handleUpdateSettings} industries={industries} setIndustries={setIndustries} workspaceId={activeBusiness!.id} />
           )}
-          {activeTab === "new-request" && (
-            <div className="max-w-4xl mx-auto">
+          {activeTab === "new-request" && canOpenTab("new-request") && (
+            jobsLoading || jobsError || clientsLoading || clientsError ? <div role={jobsError || clientsError ? "alert" : "status"} className="rounded-xl border border-amber-500/30 p-5 text-sm text-slate-200">
+              {jobsError || clientsError ? "Requests cannot be submitted until jobs and clients load successfully." : "Loading jobs and clients before starting a request…"}
+              {(jobsError || clientsError) && <button type="button" onClick={() => { void reloadJobs(); void reloadClients(); }} className="ml-3 min-h-11 font-semibold underline">Retry</button>}
+            </div> : <div className="max-w-4xl mx-auto">
               <JobRequestForm
                 employees={employees}
                 clients={clients}
@@ -446,10 +505,35 @@ export default function App() {
               />
             </div>
           )}
+          {activeTab === "no-access" && <div role="status" className="rounded-xl border border-amber-500/30 p-5 text-sm text-slate-200">No workspace pages are assigned to your account. Contact your workspace administrator.</div>}
         </div>
       </main>
 
-      {isNewClientModalOpen && (
+      {/* Quick access on phones/tablets. Authorisation is identical to Sidebar. */}
+      <nav aria-label="Mobile workspace navigation"
+        className={`lg:hidden fixed inset-x-0 bottom-0 z-30 flex items-stretch justify-around border-t shadow-lg pb-[env(safe-area-inset-bottom)] ${theme === "light" ? "bg-white border-slate-200 text-slate-700" : "bg-[#06101d] border-[#1b3956] text-slate-300"}`}>
+        {[
+          { tab: "dashboard", label: "Overview", Icon: LayoutDashboard },
+          { tab: "jobs", label: "Jobs", Icon: Briefcase },
+          { tab: "new-request", label: "New", Icon: PlusCircle },
+          { tab: "invoices", label: "Invoices", Icon: FileText },
+        ].filter(({ tab }) => canOpenTab(tab)).map(({ tab, label, Icon }) => (
+          <button key={tab} type="button" onClick={() => { setActiveTab(tab); setIsMobileSidebarOpen(false); }}
+            aria-current={activeTab === tab ? "page" : undefined}
+            className={`flex min-h-[62px] min-w-0 flex-1 flex-col items-center justify-center gap-1 px-1 text-[11px] font-bold ${activeTab === tab ? (theme === "light" ? "text-[#0758B8]" : "text-[#74d0ff]") : ""}`}>
+            <Icon className="h-5 w-5" aria-hidden="true" />
+            <span className="truncate">{label}</span>
+          </button>
+        ))}
+        <button type="button" onClick={() => setIsMobileSidebarOpen(true)}
+          aria-label="More navigation options" aria-expanded={isMobileSidebarOpen}
+          className="flex min-h-[62px] min-w-0 flex-1 flex-col items-center justify-center gap-1 px-1 text-[11px] font-bold">
+          <MoreHorizontal className="h-5 w-5" aria-hidden="true" />
+          <span>More</span>
+        </button>
+      </nav>
+
+      {isNewClientModalOpen && canOpenTab("clients") && (
         <NewClientModal
           industries={industries}
           onClose={() => setIsNewClientModalOpen(false)}
@@ -495,20 +579,22 @@ export default function App() {
       {/* Global Keyboard-Driven Command Palette */}
       <CommandPalette
         isOpen={isCommandPaletteOpen}
+        canOpenTab={canOpenTab}
         onClose={() => setIsCommandPaletteOpen(false)}
+        onOpen={() => setIsCommandPaletteOpen(true)}
         jobs={jobs}
         clients={clients}
-        onSelectTab={(tab) => setActiveTab(tab)}
+        onSelectTab={(tab) => { if (canOpenTab(tab)) setActiveTab(tab); }}
         onSelectJob={(job) => {
-          setSelectedJobForModal(job);
+          if (canOpenTab("jobs")) setSelectedJobForModal(job);
         }}
         onSelectClient={() => {
-          setActiveTab("clients");
+          if (canOpenTab("clients")) setActiveTab("clients");
         }}
       />
 
       {/* Direct Job Detail Modal when activated via Command Palette */}
-      {selectedJobForModal && (
+      {selectedJobForModal && canOpenTab("jobs") && (
         <JobDetailModal
           job={selectedJobForModal}
           employees={employees}

@@ -32,20 +32,24 @@ type PaymentSummary = {
   outstandingInvoices: number;
 };
 
-export function Dashboard({ jobs, currency = "USD" }: { jobs: Job[]; currency?: string }) {
-  const [payments, setPayments] = useState<PaymentSummary>({
-    received: 0,
-    count: 0,
-    outstandingInvoices: 0,
-  });
+export function Dashboard({ jobs, currency = "USD", onOpenJob, jobsLoading = false, jobsError = null, onRetryJobs }: { jobs: Job[]; currency?: string; onOpenJob?: (id: string) => void; jobsLoading?: boolean; jobsError?: string | null; onRetryJobs?: () => void }) {
+  const [payments, setPayments] = useState<PaymentSummary | null>(null);
+  const [paymentError, setPaymentError] = useState(false);
+  const [paymentRetry, setPaymentRetry] = useState(0);
 
   useEffect(() => {
+    let current = true;
+    setPaymentError(false);
+    setPayments(null);
     api.get<PaymentSummary>("/payments/summary")
-      .then(setPayments)
+      .then((summary) => { if (current) setPayments(summary); })
       .catch(() => {
-        // The dashboard remains usable if the financial summary is temporarily unavailable.
+        if (current) setPaymentError(true);
       });
-  }, [jobs]);
+    return () => { current = false; };
+  }, [jobs, paymentRetry]);
+
+  const jobDataUnavailable = jobsLoading || Boolean(jobsError);
 
   const activeJobs = jobs.filter(
     (job) => ["request", "estimation", "in-progress", "review", "invoiced"].includes(job.status)
@@ -96,33 +100,48 @@ export function Dashboard({ jobs, currency = "USD" }: { jobs: Job[]; currency?: 
           <p className="text-slate-400 text-sm mt-1">Work requiring attention, invoice exposure and confirmed cash across this workspace.</p>
         </div>
         <div className="text-xs text-slate-400">
-          {jobs.length} total jobs · {payments.count} recorded payments
+          {jobsError ? "Jobs unavailable" : jobsLoading ? "Loading jobs…" : `${jobs.length} total jobs`} · {payments ? `${payments.count} recorded payments` : paymentError ? "Payment summary unavailable" : "Loading payment summary…"}
         </div>
       </div>
+
+      {jobsLoading && <div role="status" className="text-sm text-slate-300">Loading workspace jobs…</div>}
+      {jobsError && (
+        <div role="alert" className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200">
+          Jobs could not be loaded. Job totals and work queues are unavailable.
+          {onRetryJobs && <button type="button" onClick={onRetryJobs} className="ml-3 min-h-11 font-semibold underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2">Retry jobs</button>}
+        </div>
+      )}
+
+      {paymentError && (
+        <div role="status" className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200">
+          Payment information could not be loaded. Amounts are unavailable.
+          <button type="button" onClick={() => setPaymentRetry((n) => n + 1)} className="ml-3 min-h-11 font-semibold underline underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2">Retry</button>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
         <KpiCard
           label="Active Jobs"
-          value={String(activeJobs.length)}
-          helper={`${inProgressJobs.length} currently in progress`}
+          value={jobDataUnavailable ? jobsLoading ? "Loading…" : "Unavailable" : String(activeJobs.length)}
+          helper={jobDataUnavailable ? "Verified job data required" : `${inProgressJobs.length} currently in progress`}
           icon={<Activity className="w-5 h-5" />}
         />
         <KpiCard
-          label="Due / Overdue"
-          value={String(overdueJobs.length)}
-          helper={overdueJobs.length ? "Needs scheduling attention" : "No overdue work"}
+          label="Overdue Jobs"
+          value={jobDataUnavailable ? jobsLoading ? "Loading…" : "Unavailable" : String(overdueJobs.length)}
+          helper={jobDataUnavailable ? "Verified job data required" : overdueJobs.length ? "Needs scheduling attention" : "No overdue work"}
           icon={<CalendarClock className="w-5 h-5" />}
           emphasis={overdueJobs.length > 0 ? "warning" : undefined}
         />
         <KpiCard
           label="Outstanding Invoices"
-          value={formatMoney(payments.outstandingInvoices, currency)}
-          helper={`${pendingInvoicedJobs.length} invoice${pendingInvoicedJobs.length === 1 ? "" : "s"} awaiting settlement`}
+          value={payments ? formatMoney(payments.outstandingInvoices, currency) : paymentError ? "Unavailable" : "Loading…"}
+          helper={jobDataUnavailable ? "Job counts unavailable" : `${pendingInvoicedJobs.length} invoice${pendingInvoicedJobs.length === 1 ? "" : "s"} awaiting settlement`}
           icon={<FileText className="w-5 h-5" />}
         />
         <KpiCard
           label="Cash Collected"
-          value={formatMoney(payments.received, currency)}
+          value={payments ? formatMoney(payments.received, currency) : paymentError ? "Unavailable" : "Loading…"}
           helper="Confirmed payment ledger only"
           icon={<DollarSign className="w-5 h-5" />}
           emphasis="positive"
@@ -138,14 +157,16 @@ export function Dashboard({ jobs, currency = "USD" }: { jobs: Job[]; currency?: 
             </h3>
             <p className="text-xs text-slate-400 mt-1">Overdue, unassigned and high-priority work rises to the top.</p>
           </div>
-          <span className="text-xs text-slate-500">{attentionJobs.length} shown</span>
+          <span className="text-xs text-slate-400">{jobDataUnavailable ? "Awaiting job data" : `${attentionJobs.length} shown`}</span>
         </div>
-        {attentionJobs.length ? (
+        {jobDataUnavailable ? (
+          <div className="p-6 text-sm text-slate-300">Work queue unavailable until jobs load successfully.</div>
+        ) : attentionJobs.length ? (
           <div className="divide-y divide-[#18324b]">
             {attentionJobs.map(({ job, overdue, unassigned, highPriority }) => (
               <div key={job.id} className="p-4 flex flex-col md:flex-row md:items-center justify-between gap-3 hover:bg-white/[0.018]">
                 <div className="min-w-0">
-                  <div className="font-semibold text-slate-100 truncate">{job.title}</div>
+                  {onOpenJob ? <button type="button" onClick={() => onOpenJob(job.id)} className="font-semibold text-sky-300 text-left hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2">{job.title}</button> : <div className="font-semibold text-slate-100 truncate">{job.title}</div>}
                   <div className="text-xs text-slate-400 mt-1">{job.client} · {job.status.replace("-", " ")}</div>
                 </div>
                 <div className="flex flex-wrap gap-2">
@@ -166,7 +187,7 @@ export function Dashboard({ jobs, currency = "USD" }: { jobs: Job[]; currency?: 
         )}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+      {!jobDataUnavailable && <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
         <div className="lg:col-span-7 bg-[#091728] p-5 rounded-2xl border border-[#1a3854] shadow-xs">
           <div className="border-b border-[#18324b] pb-4 mb-4">
             <h3 className="text-sm font-bold text-white flex items-center gap-2">
@@ -203,7 +224,7 @@ export function Dashboard({ jobs, currency = "USD" }: { jobs: Job[]; currency?: 
             </ResponsiveContainer>
           </div>
         </div>
-      </div>
+      </div>}
 
       <div className="bg-[#091728] rounded-2xl border border-[#1a3854] overflow-hidden">
         <div className="p-5 border-b border-[#18324b] flex items-center justify-between">
@@ -214,7 +235,7 @@ export function Dashboard({ jobs, currency = "USD" }: { jobs: Job[]; currency?: 
           <span className="text-[11px] font-semibold text-slate-400">Latest workspace events</span>
         </div>
         <div className="divide-y divide-[#18324b]">
-          {recentActivity.length ? recentActivity.map((activity) => (
+          {jobDataUnavailable ? (<div className="p-6 text-sm text-slate-300">Activity unavailable until jobs load successfully.</div>) : recentActivity.length ? recentActivity.map((activity) => (
             <div key={activity.id} className="p-4 flex items-center justify-between gap-4 hover:bg-white/[0.018]">
               <div className="min-w-0">
                 <p className="text-sm font-semibold text-slate-200 truncate">

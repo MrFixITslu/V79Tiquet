@@ -5,9 +5,11 @@ import { Job, Client } from "../types";
 interface CommandPaletteProps {
   isOpen: boolean;
   onClose: () => void;
+  onOpen: () => void;
   jobs: Job[];
   clients: Client[];
   onSelectTab: (tab: string) => void;
+  canOpenTab: (tab: string) => boolean;
   onSelectJob: (job: Job) => void;
   onSelectClient: (client: Client) => void;
 }
@@ -15,9 +17,11 @@ interface CommandPaletteProps {
 export function CommandPalette({
   isOpen,
   onClose,
+  onOpen,
   jobs,
   clients,
   onSelectTab,
+  canOpenTab,
   onSelectJob,
   onSelectClient,
 }: CommandPaletteProps) {
@@ -32,6 +36,7 @@ export function CommandPalette({
         else {
           setQuery("");
           setSelectedIndex(0);
+          onOpen();
         }
       }
       if (e.key === "Escape" && isOpen) {
@@ -40,7 +45,7 @@ export function CommandPalette({
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isOpen, onClose]);
+  }, [isOpen, onClose, onOpen]);
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -53,7 +58,7 @@ export function CommandPalette({
         { type: "nav", id: "clients", title: "View Clients", subtitle: "Directory of client accounts", icon: User, action: () => onSelectTab("clients") },
         { type: "nav", id: "invoices", title: "View Invoices", subtitle: "Billing & invoice management", icon: FileText, action: () => onSelectTab("invoices") },
         { type: "nav", id: "settings", title: "Workspace Settings", subtitle: "Branding, email templates, & plans", icon: Settings, action: () => onSelectTab("settings") },
-      ];
+      ].filter((item) => canOpenTab(item.id));
     }
 
     const items: Array<{
@@ -68,10 +73,11 @@ export function CommandPalette({
     // Filter Jobs
     jobs
       .filter(
-        (j) =>
+        (j) => canOpenTab("jobs") && (
           j.title.toLowerCase().includes(q) ||
           j.client.toLowerCase().includes(q) ||
           j.status.toLowerCase().includes(q)
+        )
       )
       .slice(0, 5)
       .forEach((j) => {
@@ -92,10 +98,11 @@ export function CommandPalette({
     // Filter Clients
     clients
       .filter(
-        (c) =>
+        (c) => canOpenTab("clients") && (
           c.name.toLowerCase().includes(q) ||
           (c.company && c.company.toLowerCase().includes(q)) ||
           c.email.toLowerCase().includes(q)
+        )
       )
       .slice(0, 4)
       .forEach((c) => {
@@ -125,7 +132,7 @@ export function CommandPalette({
     ];
 
     navs
-      .filter((n) => n.title.toLowerCase().includes(q) || n.subtitle.toLowerCase().includes(q))
+      .filter((n) => canOpenTab(n.id) && (n.title.toLowerCase().includes(q) || n.subtitle.toLowerCase().includes(q)))
       .forEach((n) => {
         items.push({
           type: "nav",
@@ -141,7 +148,7 @@ export function CommandPalette({
       });
 
     return items;
-  }, [query, jobs, clients, onSelectTab, onSelectJob, onSelectClient, onClose]);
+  }, [query, jobs, clients, canOpenTab, onSelectTab, onSelectJob, onSelectClient, onClose]);
 
   useEffect(() => {
     setSelectedIndex(0);
@@ -163,7 +170,7 @@ export function CommandPalette({
   if (!isOpen) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center pt-20 p-4 bg-slate-950/60 backdrop-blur-xs animate-in fade-in duration-150">
+    <div role="dialog" aria-modal="true" aria-label="Search Tiquet workspace" className="fixed inset-0 z-50 flex items-start justify-center pt-20 p-4 bg-slate-950/60 backdrop-blur-xs animate-in fade-in duration-150">
       <div
         className="w-full max-w-2xl bg-white rounded-2xl shadow-2xl border border-slate-200 overflow-hidden flex flex-col animate-in zoom-in-95 duration-150"
         onClick={(e) => e.stopPropagation()}
@@ -173,6 +180,7 @@ export function CommandPalette({
           <Search className="w-5 h-5 text-slate-400 shrink-0" />
           <input
             type="text"
+            aria-label="Search authorised workspace pages, jobs and clients"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={handleKeyDown}
@@ -180,9 +188,7 @@ export function CommandPalette({
             className="w-full px-3 text-sm bg-transparent border-none outline-none text-slate-800 placeholder-slate-400 font-medium"
             autoFocus
           />
-          <kbd className="hidden sm:inline-block px-2 py-0.5 text-[10px] font-mono font-semibold text-slate-500 bg-slate-200/80 rounded border border-slate-300">
-            ESC
-          </kbd>
+          <button type="button" onClick={onClose} aria-label="Close search" className="min-h-11 min-w-11 rounded-lg flex items-center justify-center text-slate-400 hover:text-slate-100 focus-visible:outline focus-visible:outline-2"><X className="w-5 h-5" /></button>
         </div>
 
         {/* Results List */}
@@ -192,11 +198,12 @@ export function CommandPalette({
               const isSelected = idx === selectedIndex;
               const Icon = item.icon;
               return (
-                <div
+                <button
+                  type="button"
                   key={`${item.type}-${item.id}`}
                   onClick={() => item.action()}
                   onMouseEnter={() => setSelectedIndex(idx)}
-                  className={`flex items-center justify-between px-3 py-2.5 rounded-xl cursor-pointer transition-all ${
+                  className={`w-full min-h-11 text-left flex items-center justify-between px-3 py-2.5 rounded-xl cursor-pointer transition-all focus-visible:outline focus-visible:outline-2 ${
                     isSelected ? "bg-indigo-50 text-indigo-900 font-semibold" : "hover:bg-slate-50 text-slate-700"
                   }`}
                 >
@@ -209,8 +216,8 @@ export function CommandPalette({
                       <Icon className="w-4 h-4" />
                     </div>
                     <div>
-                      <p className="text-xs font-bold leading-tight">{item.title}</p>
-                      <p className="text-[11px] text-slate-400 font-normal mt-0.5 leading-none">{item.subtitle}</p>
+                      <p className="text-sm font-semibold leading-tight">{item.title}</p>
+                      <p className="text-xs text-slate-400 font-normal mt-1 leading-tight">{item.subtitle}</p>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
@@ -219,11 +226,11 @@ export function CommandPalette({
                     </span>
                     {isSelected && <ArrowRight className="w-3.5 h-3.5 text-indigo-600" />}
                   </div>
-                </div>
+                </button>
               );
             })
           ) : (
-            <div className="py-10 text-center text-slate-400 text-xs">
+            <div className="py-10 text-center text-slate-400 text-sm">
               No matching jobs, clients, or workspace actions found for "{query}".
             </div>
           )}
@@ -232,7 +239,7 @@ export function CommandPalette({
         {/* Footer info */}
         <div className="px-4 py-2 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-400">
           <span>Navigate with ↑ and ↓, press Enter to open</span>
-          <span>Shortcut: ⌘K</span>
+          <span>Shortcut: Ctrl/⌘ K</span>
         </div>
       </div>
     </div>

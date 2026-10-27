@@ -3,7 +3,7 @@ import { isTokenFingerprintRevoked } from "./tokenRevocation.js";
 
 // Authenticate each staff WebSocket beyond its initial JWT/job check.
 // Customer portal links follow separate secureToken access rules.
-export async function authorizeTiquetStaffSocket({ decoded, db, checkHubSubscription }) {
+export async function authorizeTiquetStaffSocket({ decoded, db, checkHubSubscription, checkHubSession = null }) {
   const deny = { allowed: false };
   if (!decoded?.id || !decoded?.account_id ||
       !Number.isFinite(Number(decoded.exp)) || Number(decoded.exp) <= Date.now()/1000) return deny;
@@ -34,9 +34,16 @@ export async function authorizeTiquetStaffSocket({ decoded, db, checkHubSubscrip
       };
       if (!(await checkHubSubscription(hubIdentity))) return deny;
     }
+    let hubSessionId = null;
+    if (checkHubSession) {
+      if (!hubIdentity || !/^[a-f0-9]{64}$/.test(String(decoded.hub_session_id || ""))) return deny;
+      if (!(await checkHubSession({ ...hubIdentity, hubSessionId: decoded.hub_session_id }))) return deny;
+      hubSessionId = decoded.hub_session_id;
+    }
     return {
       allowed: true,
       hubIdentity,
+      hubSessionId,
       // Store immutable signed-session scope, not bearer token or raw credentials.
       sessionIdentity: { userId: String(decoded.id), accountId: String(decoded.account_id) },
       jwtExpiresAt: Number(decoded.exp) * 1000,
@@ -44,7 +51,7 @@ export async function authorizeTiquetStaffSocket({ decoded, db, checkHubSubscrip
   } catch { return deny; }
 }
 
-export async function revalidateTiquetStaffSocket(socket, checkHubSubscription, now = Date.now(), db = null) {
+export async function revalidateTiquetStaffSocket(socket, checkHubSubscription, now = Date.now(), db = null, checkHubSession = null) {
   if (socket.role !== "staff") return true;
   if (!Number.isFinite(socket.jwtExpiresAt) || now >= socket.jwtExpiresAt) return false;
 
@@ -73,7 +80,12 @@ export async function revalidateTiquetStaffSocket(socket, checkHubSubscription, 
       if (String(account.hub_organization_id || "") !== String(socket.hubIdentity.organizationId)
         || String(user.hub_user_id || "") !== String(socket.hubIdentity.scopedUserId)) return false;
       if (!checkHubSubscription) return false;
-      return await checkHubSubscription(socket.hubIdentity) === true;
+      if (!(await checkHubSubscription(socket.hubIdentity))) return false;
+      if (checkHubSession) {
+        if (!/^[a-f0-9]{64}$/.test(String(socket.hubSessionId || ""))) return false;
+        if (!(await checkHubSession({ ...socket.hubIdentity, hubSessionId: socket.hubSessionId }))) return false;
+      }
+      return true;
     }
     // A legacy (non-Hub-linked) staff session is governed by local state.
     // Customer beta still requires Hub-managed login only.

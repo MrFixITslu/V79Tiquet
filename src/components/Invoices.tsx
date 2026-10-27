@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Job, Employee, Client, BusinessSettings, PaymentRecord } from "../types";
 import {
   FileText,
@@ -27,36 +27,51 @@ export function Invoices({
   employees,
   clients,
   settings,
+  jobsLoading = false,
+  jobsError = null,
+  onRetryJobs,
 }: {
   jobs: Job[];
   setJobs: React.Dispatch<React.SetStateAction<Job[]>>;
   employees: Employee[];
   clients: Client[];
   settings: BusinessSettings;
+  jobsLoading?: boolean;
+  jobsError?: string | null;
+  onRetryJobs?: () => void;
 }) {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
-  const [payments, setPayments] = useState<PaymentRecord[]>([]);
+  const [payments, setPayments] = useState<PaymentRecord[] | null>(null);
+  const [paymentLoading, setPaymentLoading] = useState(true);
+  const paymentRequest = useRef(0);
   const [paymentJob, setPaymentJob] = useState<Job | null>(null);
   const [paymentError, setPaymentError] = useState<string | null>(null);
   const currency = settings.currency || "USD";
 
   const loadPayments = async () => {
+    const request = ++paymentRequest.current;
+    setPaymentLoading(true);
+    setPaymentError(null);
+    setPayments(null); // Never display previous or missing ledger data as a real zero.
     try {
-      setPayments(await api.get<PaymentRecord[]>("/payments"));
-      setPaymentError(null);
-    } catch (error: any) {
-      setPaymentError(error.message || "Could not load recorded payments.");
+      const response = await api.get<PaymentRecord[]>("/payments");
+      if (request === paymentRequest.current) setPayments(response);
+    } catch {
+      if (request === paymentRequest.current) setPaymentError("Recorded payments could not be loaded.");
+    } finally {
+      if (request === paymentRequest.current) setPaymentLoading(false);
     }
   };
 
   useEffect(() => {
-    loadPayments();
+    void loadPayments();
+    return () => { paymentRequest.current += 1; };
   }, []);
 
   const paidByJob = useMemo(() => {
     const totals = new Map<string, number>();
-    for (const payment of payments) {
+    for (const payment of payments ?? []) {
       if (payment.status !== "recorded") continue;
       totals.set(payment.jobId, (totals.get(payment.jobId) || 0) + Number(payment.amount || 0));
     }
@@ -70,7 +85,7 @@ export function Invoices({
         job.client.toLowerCase().includes(searchQuery.toLowerCase()))
   );
 
-  const totalReceived = payments
+  const totalReceived = (payments ?? [])
     .filter((payment) => payment.status === "recorded")
     .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
 
@@ -98,28 +113,37 @@ export function Invoices({
         </p>
       </div>
 
+      {jobsLoading && <p role="status" className="text-sm text-slate-300">Loading invoice jobs…</p>}
+      {jobsError && (
+        <div role="alert" className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-200">
+          Invoice jobs are unavailable. Invoice counts and payment entry are paused.
+          {onRetryJobs && <button type="button" onClick={onRetryJobs} className="ml-3 min-h-11 px-2 font-semibold underline">Retry jobs</button>}
+        </div>
+      )}
+      {paymentLoading && <p role="status" className="text-sm text-slate-400">Loading the payment ledger…</p>}
       {paymentError && (
-        <div className="rounded-xl border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
-          {paymentError}
+        <div role="alert" className="flex flex-wrap items-center gap-3 rounded-xl border border-amber-400/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+          <span>{paymentError} Amounts and payment entry are unavailable until the ledger loads.</span>
+          <button type="button" onClick={() => { void loadPayments(); }} className="min-h-11 rounded-lg px-3 font-semibold underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2">Retry</button>
         </div>
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
         <MetricCard
           label="Cash Received"
-          value={formatMoney(totalReceived, currency)}
-          helper={`${payments.filter((payment) => payment.status === "recorded").length} recorded payments`}
+          value={payments ? formatMoney(totalReceived, currency) : paymentLoading ? "Loading…" : "Unavailable"}
+          helper={payments ? `${payments.filter((payment) => payment.status === "recorded").length} recorded payments` : "Verified ledger required"}
           icon={<CheckCircle2 className="w-5 h-5" />}
         />
         <MetricCard
           label="Outstanding"
-          value={formatMoney(totalOutstanding, currency)}
-          helper="Invoiced and completed work"
+          value={jobsError ? "Unavailable" : jobsLoading ? "Loading…" : payments ? formatMoney(totalOutstanding, currency) : paymentLoading ? "Loading…" : "Unavailable"}
+          helper={jobsError || jobsLoading ? "Verified jobs required" : payments ? "Invoiced and completed work" : "Verified ledger required"}
           icon={<Clock className="w-5 h-5" />}
         />
         <MetricCard
           label="Open Invoices"
-          value={jobs.filter((job) => job.status === "invoiced").length.toString()}
+          value={jobsError ? "Unavailable" : jobsLoading ? "Loading…" : jobs.filter((job) => job.status === "invoiced").length.toString()}
           helper="Awaiting settlement"
           icon={<FileText className="w-5 h-5" />}
         />
@@ -138,7 +162,45 @@ export function Invoices({
         </div>
       </div>
 
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+      {!jobsError && !jobsLoading && (
+        <section aria-label="Invoices on mobile" className="md:hidden space-y-3">
+          <p className="text-xs font-medium text-slate-500">{invoiceableJobs.length} matching invoices</p>
+          {invoiceableJobs.map((job) => {
+            const received = paidByJob.get(job.id) || 0;
+            const outstanding = Math.max(0, Number(job.amount || 0) - received);
+            return (
+              <article key={job.id} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h3 className="font-bold text-slate-900">{job.title}</h3>
+                    <p className="mt-1 text-sm text-slate-500">{job.client}</p>
+                  </div>
+                  <span className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-bold capitalize ${job.status === "paid" ? "bg-emerald-100 text-emerald-800" : "bg-blue-100 text-blue-800"}`}>{job.status}</span>
+                </div>
+                <dl className="mt-4 grid grid-cols-2 gap-3 border-t border-slate-200 pt-3">
+                  <div><dt className="text-xs text-slate-500">Invoice value</dt><dd className="mt-1 text-sm font-bold text-slate-900">{formatMoney(job.amount || 0, currency)}</dd></div>
+                  <div><dt className="text-xs text-slate-500">Cash received</dt><dd className="mt-1 text-sm font-bold text-slate-900">{payments ? formatMoney(received, currency) : paymentLoading ? "Loading…" : "Unavailable"}</dd></div>
+                  <div className="col-span-2"><dt className="text-xs text-slate-500">Outstanding balance</dt><dd className="mt-1 font-bold text-slate-900">{payments ? formatMoney(outstanding, currency) : paymentLoading ? "Loading…" : "Unavailable"}</dd></div>
+                </dl>
+                <div className="mt-4 flex flex-col gap-2">
+                  <button type="button" onClick={() => setSelectedJobId(job.id)}
+                    className="w-full min-h-11 rounded-xl border border-[#0758B8] px-4 text-sm font-bold text-[#0758B8] hover:bg-blue-50">View invoice</button>
+                  {payments !== null && outstanding > 0.005 && (
+                    <button type="button" onClick={() => setPaymentJob(job)}
+                      className="w-full min-h-11 rounded-xl bg-[#0758B8] px-4 text-sm font-bold text-white hover:bg-[#164783]">Record payment</button>
+                  )}
+                </div>
+              </article>
+            );
+          })}
+          {invoiceableJobs.length === 0 && (
+            <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-500">
+              No invoices match this search.
+            </div>
+          )}
+        </section>
+      )}
+      {!jobsError && !jobsLoading && <div className="hidden md:block bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse min-w-[820px]">
             <thead>
@@ -162,8 +224,8 @@ export function Invoices({
                       <p className="text-xs text-slate-500 mt-0.5">{job.client}</p>
                     </td>
                     <td className="px-5 py-4 font-semibold text-slate-900">{formatMoney(job.amount || 0, currency)}</td>
-                    <td className="px-5 py-4 font-semibold text-emerald-600">{formatMoney(received, currency)}</td>
-                    <td className="px-5 py-4 font-semibold text-slate-900">{formatMoney(outstanding, currency)}</td>
+                    <td className="px-5 py-4 font-semibold text-emerald-600">{payments ? formatMoney(received, currency) : paymentLoading ? "Loading…" : "Unavailable"}</td>
+                    <td className="px-5 py-4 font-semibold text-slate-900">{payments ? formatMoney(outstanding, currency) : paymentLoading ? "Loading…" : "Unavailable"}</td>
                     <td className="px-5 py-4">
                       <span className={`text-[11px] font-bold uppercase tracking-wide px-2.5 py-1 rounded-full ${
                         job.status === "paid"
@@ -177,7 +239,7 @@ export function Invoices({
                     </td>
                     <td className="px-5 py-4 text-right">
                       <div className="flex justify-end gap-2">
-                        {outstanding > 0.005 && (
+                        {payments !== null && outstanding > 0.005 && (
                           <button
                             onClick={() => setPaymentJob(job)}
                             className="px-3 py-2 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors flex items-center gap-2 text-xs font-bold"
@@ -209,9 +271,9 @@ export function Invoices({
             </tbody>
           </table>
         </div>
-      </div>
+      </div>}
 
-      {paymentJob && (
+      {paymentJob && !jobsError && !jobsLoading && payments !== null && (
         <RecordPaymentModal
           job={paymentJob}
           currency={currency}
