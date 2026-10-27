@@ -399,7 +399,10 @@ export default function App() {
         )}
 
         <div className="flex-1 overflow-auto p-4 sm:p-5 xl:p-6 bg-[#07111f]">
-          {activeTab === "dashboard" && <Dashboard jobs={jobs} currency={settings.currency} />}
+          {activeTab === "dashboard" && <Dashboard jobs={jobs} currency={settings.currency} onOpenJob={canOpenTab("jobs") ? (id) => {
+            window.history.replaceState(window.history.state, "", tiquetNavigationPath(window.location.href, "jobs", id));
+            setActiveTab("jobs");
+          } : undefined} />}
           {activeTab === "jobs" && (
             <JobBoard jobs={jobs} setJobs={setJobs} employees={employees} clients={clients} settings={settings} />
           )}
