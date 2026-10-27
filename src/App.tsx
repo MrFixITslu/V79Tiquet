@@ -350,7 +350,7 @@ export default function App() {
               <button
                 id="btn-quick-actions"
                 onClick={() => setIsQuickActionsOpen(!isQuickActionsOpen)}
-                className="flex min-h-10 min-w-10 items-center justify-center gap-2 bg-gradient-to-r from-[#FF7A00] to-[#ff9638] hover:from-[#ff8b21] hover:to-[#ffa14d] text-white px-2.5 sm:px-3.5 py-1.5 rounded-xl text-[10px] font-black transition-all shadow-[0_8px_28px_rgba(255,122,0,.16)] active:scale-[0.98] cursor-pointer"
+                className="flex min-h-10 min-w-10 items-center justify-center gap-2 bg-gradient-to-r from-[#0758B8] to-[#009FAD] hover:from-[#164783] hover:to-[#007b85] text-white px-3 sm:px-4 py-2 rounded-xl text-sm font-semibold transition-all shadow-[0_8px_28px_rgba(255,122,0,.16)] active:scale-[0.98] cursor-pointer"
               >
                 <Zap className="w-3.5 h-3.5 text-white" />
                 <span className="hidden sm:inline">Quick Actions</span>
