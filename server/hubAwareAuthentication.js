@@ -3,7 +3,7 @@ import { isSignedSessionRevoked } from "./tokenRevocation.js";
 
 // The same production Tiquet authentication middleware, dependency-injected
 // for staging JWT and signed entitlement integration testing.
-export function createTiquetAuthentication({ jwt, jwtSecret, db, checkHubSubscription = null }) {
+export function createTiquetAuthentication({ jwt, jwtSecret, db, checkHubSubscription = null, checkHubSession = null }) {
   return function authenticateToken(req, res, next) {
     const authHeader = req.headers.authorization || "";
     const bearer = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : null;
@@ -72,6 +72,22 @@ export function createTiquetAuthentication({ jwt, jwtSecret, db, checkHubSubscri
             if (!allowed) return res.status(403).json({
               error: "V79 Hub subscription is inactive or unavailable.",
               code: "HUB_ENTITLEMENT_REVOKED",
+            });
+          }
+        }
+        if (checkHubSession) {
+          // A signed entitlement only proves organization access, not that the
+          // exact Hub browser session which minted this JWT is still active.
+          if (!/^[a-f0-9]{64}$/.test(String(user.hub_session_id || "")) ||
+              !account.hub_organization_id || !liveUser.hub_user_id ||
+              !(await checkHubSession({
+                hubSessionId: user.hub_session_id,
+                organizationId: account.hub_organization_id,
+                scopedUserId: liveUser.hub_user_id,
+              }))) {
+            return res.status(401).json({
+              error: "Hub session ended or status unavailable.",
+              code: "HUB_SESSION_INACTIVE",
             });
           }
         }
