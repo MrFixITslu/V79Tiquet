@@ -93,8 +93,21 @@ export default function App() {
   }, [currentUser, canAccess]);
 
   useEffect(() => {
-    if (currentUser && !canOpenTab(activeTab)) setActiveTab("dashboard");
+    if (!currentUser || canOpenTab(activeTab)) return;
+    const next = ["dashboard", "jobs", "clients", "invoices", "new-request", "files", "payroll"]
+      .find((tab) => canOpenTab(tab)) || "no-access";
+    if (next !== activeTab) setActiveTab(next);
   }, [activeTab, currentUser, canOpenTab]);
+
+  useEffect(() => {
+    if (!authenticated || portalRoute.matched || resetPasswordRoute.matched) return;
+    const names: Record<string, string> = {
+      dashboard: "Overview", jobs: "Jobs", clients: "Clients", invoices: "Invoices",
+      "new-request": "New Request", files: "Files", payroll: "Payroll",
+      users: "Users & Roles", settings: "Settings",
+    };
+    document.title = `${names[activeTab] || "Workspace"} | Tiquet | Vision79`;
+  }, [activeTab, authenticated, portalRoute.matched, resetPasswordRoute.matched]);
 
   // On load, if a session token already exists (page refresh, not a fresh
   // login), restore the session instead of bouncing back to the login screen.
@@ -143,7 +156,7 @@ export default function App() {
   const canReadClients = authenticated && (
     canAccess("clients") || canAccess("jobs") || canAccess("new-request")
   );
-  const { items: jobs, setItems: setJobs } = useSyncedCollection<Job>("/jobs", canReadJobs);
+  const { items: jobs, setItems: setJobs, loading: jobsLoading, error: jobsError, reload: reloadJobs } = useSyncedCollection<Job>("/jobs", canReadJobs);
   const { items: clients, setItems: setClients } = useSyncedCollection<Client>("/clients", canReadClients);
 
   // Surfaces whether the welcome email on a newly-created client actually
@@ -323,12 +336,9 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-4">
-            <div className="hidden sm:flex items-center gap-1.5 text-[9px] text-emerald-400 font-bold uppercase tracking-wider bg-emerald-500/10 px-3 py-1.5 rounded-full border border-emerald-500/20">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              Connected
-            </div>
+            <div className="hidden sm:flex items-center text-xs text-slate-300 px-2" aria-label="Current workspace">Tiquet workspace</div>
 
-            <div className="relative">
+            {(canOpenTab("clients") || canOpenTab("payroll")) && <div className="relative">
               <button
                 id="btn-quick-actions"
                 onClick={() => setIsQuickActionsOpen(!isQuickActionsOpen)}
@@ -345,24 +355,24 @@ export default function App() {
                     <p className="text-[9px] font-black text-slate-600 uppercase tracking-wider">Workspace Shortcuts</p>
                   </div>
 
-                  <button
+                  {canOpenTab("clients") && <button
                     onClick={() => { setIsNewClientModalOpen(true); setIsQuickActionsOpen(false); }}
                     className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-white/[0.04] text-left text-[10px] font-bold text-slate-300 transition-colors cursor-pointer"
                   >
                     <UserPlus className="w-4 h-4 text-[#55c7ff]" />
                     New Client
-                  </button>
+                  </button>}
 
-                  <button
+                  {canOpenTab("payroll") && <button
                     onClick={() => { setIsLogTimeModalOpen(true); setIsQuickActionsOpen(false); }}
                     className="w-full flex items-center gap-3 px-4 py-2.5 hover:bg-white/[0.04] text-left text-[10px] font-bold text-slate-300 transition-colors cursor-pointer"
                   >
                     <Clock className="w-4 h-4 text-emerald-500" />
                     Log Time / Time Card
-                  </button>
+                  </button>}
                 </div>
               )}
-            </div>
+            </div>}
 
             <div className="flex items-center gap-2 sm:gap-3 border-l border-[#17324d] pl-2 sm:pl-3">
               {currentUser!.photoUrl ? (
@@ -399,15 +409,15 @@ export default function App() {
         )}
 
         <div className="flex-1 overflow-auto p-4 sm:p-5 xl:p-6 bg-[#07111f]">
-          {activeTab === "dashboard" && <Dashboard jobs={jobs} currency={settings.currency} onOpenJob={canOpenTab("jobs") ? (id) => {
+          {activeTab === "dashboard" && canOpenTab("dashboard") && <Dashboard jobs={jobs} jobsLoading={jobsLoading} jobsError={jobsError} onRetryJobs={() => { void reloadJobs(); }} currency={settings.currency} onOpenJob={canOpenTab("jobs") ? (id) => {
             window.history.replaceState(window.history.state, "", tiquetNavigationPath(window.location.href, "jobs", id));
             setActiveTab("jobs");
           } : undefined} />}
-          {activeTab === "jobs" && (
+          {activeTab === "jobs" && canOpenTab("jobs") && (
             <JobBoard jobs={jobs} setJobs={setJobs} employees={employees} clients={clients} settings={settings} />
           )}
-          {activeTab === "clients" && <Clients clients={clients} setClients={setClients} jobs={jobs} industries={industries} currency={settings.currency} />}
-          {activeTab === "payroll" && (
+          {activeTab === "clients" && canOpenTab("clients") && <Clients clients={clients} setClients={setClients} jobs={jobs} industries={industries} currency={settings.currency} />}
+          {activeTab === "payroll" && canOpenTab("payroll") && (
             <Payroll
               employees={employees}
               setEmployees={setEmployees}
@@ -416,15 +426,15 @@ export default function App() {
               currency={settings.currency}
             />
           )}
-          {activeTab === "users" && <UserManagement users={users} setUsers={setUsers} />}
-          {activeTab === "files" && <FileRepository files={files} onFilesChanged={reloadFiles} />}
-          {activeTab === "invoices" && (
+          {activeTab === "users" && canOpenTab("users") && <UserManagement users={users} setUsers={setUsers} />}
+          {activeTab === "files" && canOpenTab("files") && <FileRepository files={files} onFilesChanged={reloadFiles} />}
+          {activeTab === "invoices" && canOpenTab("invoices") && (
             <Invoices jobs={jobs} setJobs={setJobs} employees={employees} clients={clients} settings={settings} />
           )}
-          {activeTab === "settings" && (
+          {activeTab === "settings" && canOpenTab("settings") && (
             <Settings settings={settings} setSettings={handleUpdateSettings} industries={industries} setIndustries={setIndustries} workspaceId={activeBusiness!.id} />
           )}
-          {activeTab === "new-request" && (
+          {activeTab === "new-request" && canOpenTab("new-request") && (
             <div className="max-w-4xl mx-auto">
               <JobRequestForm
                 employees={employees}
@@ -449,10 +459,11 @@ export default function App() {
               />
             </div>
           )}
+          {activeTab === "no-access" && <div role="status" className="rounded-xl border border-amber-500/30 p-5 text-sm text-slate-200">No workspace pages are assigned to your account. Contact your workspace administrator.</div>}
         </div>
       </main>
 
-      {isNewClientModalOpen && (
+      {isNewClientModalOpen && canOpenTab("clients") && (
         <NewClientModal
           industries={industries}
           onClose={() => setIsNewClientModalOpen(false)}
@@ -498,20 +509,21 @@ export default function App() {
       {/* Global Keyboard-Driven Command Palette */}
       <CommandPalette
         isOpen={isCommandPaletteOpen}
+        canOpenTab={canOpenTab}
         onClose={() => setIsCommandPaletteOpen(false)}
         jobs={jobs}
         clients={clients}
-        onSelectTab={(tab) => setActiveTab(tab)}
+        onSelectTab={(tab) => { if (canOpenTab(tab)) setActiveTab(tab); }}
         onSelectJob={(job) => {
-          setSelectedJobForModal(job);
+          if (canOpenTab("jobs")) setSelectedJobForModal(job);
         }}
         onSelectClient={() => {
-          setActiveTab("clients");
+          if (canOpenTab("clients")) setActiveTab("clients");
         }}
       />
 
       {/* Direct Job Detail Modal when activated via Command Palette */}
-      {selectedJobForModal && (
+      {selectedJobForModal && canOpenTab("jobs") && (
         <JobDetailModal
           job={selectedJobForModal}
           employees={employees}
