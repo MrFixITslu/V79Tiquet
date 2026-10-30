@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
 import jwt from "jsonwebtoken";
+import { createServer } from "node:http";
 import { createHubSessionStatusChecker } from "../server/hubSessionStatus.js";
 import { createTiquetAuthentication } from "../server/hubAwareAuthentication.js";
 import { authorizeTiquetStaffSocket, revalidateTiquetStaffSocket } from "../server/tiquetSocketAccess.js";
@@ -40,6 +41,34 @@ test("malformed, unauthorized, unreachable and indeterminate Hub sessions are de
   const response=createHubSessionStatusChecker({hubUrl:"http://127.0.0.1:31337",secret,transport:async()=>({ok:true,json:async()=>({active:"true"})})});
   assert.equal(await response(identity),false);
   assert.throws(()=>createHubSessionStatusChecker({hubUrl:"",secret}));
+});
+
+test("signed Hub status request refuses a 307 redirect without forwarding signature or body", async()=>{
+  let redirected=0;
+  let forwarded=0;
+  const server=createServer((req,res)=>{
+    if(req.url==="/api/platform/session/status"){
+      redirected++;
+      res.writeHead(307,{location:"/leak"});
+      res.end();
+      return;
+    }
+    forwarded++;
+    res.writeHead(200,{"content-type":"application/json"});
+    res.end(JSON.stringify({active:true}));
+  });
+  server.listen(0,"127.0.0.1");
+  await new Promise(resolve=>server.once("listening",resolve));
+  try {
+    const check=createHubSessionStatusChecker({
+      hubUrl:"http://127.0.0.1:"+server.address().port,secret,
+    });
+    assert.equal(await check(identity),false);
+    assert.equal(redirected,1);
+    assert.equal(forwarded,0,"signed request must never follow a redirect");
+  } finally {
+    await new Promise(resolve=>server.close(resolve));
+  }
 });
 
 function fakeDb(){
