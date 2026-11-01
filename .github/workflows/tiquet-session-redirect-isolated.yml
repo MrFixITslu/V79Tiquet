@@ -1,0 +1,35 @@
+name: Tiquet signed Hub status redirect regression (isolated)
+
+on:
+  pull_request:
+    branches: [design/vision79-tiquet-usability]
+    paths:
+      - "server/hubSessionStatus.js"
+      - "tests/hubSessionStatus.test.js"
+      - ".github/workflows/tiquet-session-redirect-isolated.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  signed-session-redirect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      NODE_ENV: test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - name: Install isolated test dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Signed session and 307 forwarding regression
+        run: |
+          node --check server/hubSessionStatus.js
+          node --test tests/hubSessionStatus.test.js
+
+# No Docker image publication, server access, deployment or production flags.
