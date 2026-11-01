@@ -58,6 +58,6 @@ test("file deletion route uses exact boundary check, not string prefix",()=>{
   assert.match(code,/resolveOwnedJobFile\(folder, filename\)/);
   assert.match(code,/fs\.lstatSync\(filePath\)\.isFile\(\)/);
   assert.doesNotMatch(code,/filePath\.startsWith\(folder\)/);
-  assert.match(source,/resolveJobFolder\\(UPLOADS_ROOT, accountId, clientName, jobId\\)/);
+  assert.ok(source.includes("return resolveJobFolder(UPLOADS_ROOT, accountId, clientName, jobId);"));
   assert.match(source,/Invalid job ID/);
 });
