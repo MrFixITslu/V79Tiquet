@@ -71,6 +71,34 @@ test("signed Hub status request refuses a 307 redirect without forwarding signat
   }
 });
 
+test("signed Hub status blocks cross-origin 308 redirects without forwarding HMAC",async()=>{
+  let received=0, leaked=0;
+  const receiver=createServer((req,res)=>{
+    leaked++;
+    res.writeHead(200,{"content-type":"application/json"});
+    res.end(JSON.stringify({active:true}));
+  });
+  receiver.listen(0,"127.0.0.1");
+  await new Promise(resolve=>receiver.once("listening",resolve));
+  const hub=createServer((req,res)=>{
+    received++;
+    res.writeHead(308,{location:"http://127.0.0.1:"+receiver.address().port+"/leak"});
+    res.end();
+  });
+  hub.listen(0,"127.0.0.1");
+  await new Promise(resolve=>hub.once("listening",resolve));
+  try {
+    const check=createHubSessionStatusChecker({
+      hubUrl:"http://127.0.0.1:"+hub.address().port,secret
+    });
+    assert.equal(await check(identity),false);
+    assert.equal(received,1);
+    assert.equal(leaked,0,"signed POST and HMAC must never reach another origin");
+  } finally {
+    await Promise.all([hub,receiver].map(s=>new Promise(resolve=>s.close(resolve))));
+  }
+});
+
 function fakeDb(){
   return {prepare(sql){return {async get(...params){
     if(sql.includes("FROM users"))return params[0]==="local-a" && params[1]==="account-a"?{id:"local-a",hub_user_id:identity.scopedUserId}:null;
