@@ -10,7 +10,7 @@ import { revalidateTiquetPortalSocket } from "./tiquetPortalSocketAccess.js";
 import { isStalledSocketRevalidation } from "./tiquetSocketHeartbeatGuard.js";
 import { createHubEntitlementChecker } from "./hubEntitlementRevalidation.js";
 import { createHubSessionStatusChecker } from "./hubSessionStatus.js";
-import { resolveOwnedJobFile } from "./jobFileBoundary.js";
+import { resolveOwnedJobFile, resolveJobFolder } from "./jobFileBoundary.js";
 import 'dotenv/config';
 import express from "express";
 import cors from "cors";
@@ -386,7 +386,7 @@ const sanitizeForPath = str => (str || 'unknown').replace(/[^a-zA-Z0-9_\-. ]/g, 
  * Pattern: uploads/<AccountId>/<ClientName>/<JobId>/
  */
 const getJobFolder = (accountId, clientName, jobId) => {
-  return path.join(UPLOADS_ROOT, sanitizeForPath(accountId), sanitizeForPath(clientName), jobId);
+  return resolveJobFolder(UPLOADS_ROOT, accountId, clientName, jobId);
 };
 
 /**
@@ -1433,6 +1433,12 @@ app.post("/api/jobs", authenticateToken, requireAnyPagePermission("jobs", "new-r
     stageAssignments,
     timeLogs
   } = req.body;
+  // Keep caller-provided import IDs compatible, but never allow path
+  // separators, traversal segments or control characters into job IDs.
+  if(reqId !== undefined && (typeof reqId !== "string" ||
+      !/^[A-Za-z0-9][A-Za-z0-9._-]{0,59}$/.test(reqId))) {
+    return badRequest(res, "Invalid job ID");
+  }
   const id = reqId || uuidv4();
   const portalCredential = createPortalCredential();
   const secureToken = portalCredential.token;
