@@ -10,6 +10,7 @@ import { revalidateTiquetPortalSocket } from "./tiquetPortalSocketAccess.js";
 import { isStalledSocketRevalidation } from "./tiquetSocketHeartbeatGuard.js";
 import { createHubEntitlementChecker } from "./hubEntitlementRevalidation.js";
 import { createHubSessionStatusChecker } from "./hubSessionStatus.js";
+import { resolveOwnedJobFile } from "./jobFileBoundary.js";
 import 'dotenv/config';
 import express from "express";
 import cors from "cors";
@@ -3448,14 +3449,17 @@ app.delete("/api/jobs/:id/files/:filename", authenticateToken, requireAnyPagePer
       error: 'Job not found'
     });
     const folder = getJobFolder(req.accountId, job.client, jobId);
-    const filePath = path.join(folder, filename);
-
-    // Security: ensure file is inside the job folder (prevent path traversal)
-    if (!filePath.startsWith(folder)) return res.status(403).json({
+    const filePath = resolveOwnedJobFile(folder, filename);
+    if (!filePath) return res.status(403).json({
       error: 'Forbidden'
     });
     if (!fs.existsSync(filePath)) return res.status(404).json({
       error: 'File not found'
+    });
+    // Refuse directory or symlink targets; delete only a regular file in
+    // this exact job directory, not a similarly prefixed sibling job.
+    if (!fs.lstatSync(filePath).isFile()) return res.status(403).json({
+      error: 'Forbidden'
     });
     fs.unlinkSync(filePath);
     appendProjectLog(req.accountId, job.client, jobId, {
