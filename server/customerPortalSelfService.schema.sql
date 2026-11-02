@@ -13,6 +13,8 @@ CREATE TABLE IF NOT EXISTS customer_portal_identities (
   login_expires_at TIMESTAMPTZ,
   login_sent_at TIMESTAMPTZ,
   verified_at TIMESTAMPTZ,
+  service_consent_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  service_consent_version TEXT NOT NULL DEFAULT '2026-11-service-v1',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   UNIQUE(account_id,email)
 );

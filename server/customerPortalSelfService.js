@@ -107,7 +107,8 @@ export function createCustomerPortalRouter({
           FROM accounts a WHERE a.id=$5 AND a.status='active'
         ON CONFLICT (account_id, email) DO UPDATE SET
           token_hash=EXCLUDED.token_hash, token_expires_at=EXCLUDED.token_expires_at,
-          token_sent_at=now(), full_name=EXCLUDED.full_name
+          token_sent_at=now(), full_name=EXCLUDED.full_name,
+          service_consent_at=now(), service_consent_version=EXCLUDED.service_consent_version
         WHERE customer_portal_identities.verified_at IS NULL
           AND customer_portal_identities.token_sent_at < now() - interval '10 minutes'
         RETURNING id`,

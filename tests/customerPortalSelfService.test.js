@@ -99,6 +99,11 @@ test('P4 customer-only portal isolated PostgreSQL request/verification/replay/te
     assert.equal(realClients.rowCount, 1);
     assert.equal(realClients.rows[0].account_id, 'test-tenant-A');
     assert.equal(realClients.rows[0].email, 'client@example.test');
+    const privacy = await pool.query("SELECT service_consent_at,service_consent_version FROM customer_portal_identities WHERE email='client@example.test'");
+    assert.ok(privacy.rows[0]?.service_consent_at);
+    assert.equal(privacy.rows[0].service_consent_version, '2026-11-service-v1');
+    const marketingConsent = await pool.query('SELECT newsletteroptin FROM clients WHERE id=$1', [realClients.rows[0].id]);
+    assert.equal(marketingConsent.rows[0].newsletteroptin, 0, 'service consent is not marketing consent');
     r = await req('/api/customer/verify', 'POST', { token: verif });
     assert.equal(r.status, 400, 'verification replay denied');
     r = await req('/api/customer/register', 'POST',
