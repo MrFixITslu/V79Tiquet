@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash, createHmac } from "node:crypto";
+import { createServer } from "node:http";
 import jwt from "jsonwebtoken";
 import { createHubSessionStatusChecker } from "../server/hubSessionStatus.js";
 import { createTiquetAuthentication } from "../server/hubAwareAuthentication.js";
@@ -40,6 +41,27 @@ test("malformed, unauthorized, unreachable and indeterminate Hub sessions are de
   const response=createHubSessionStatusChecker({hubUrl:"http://127.0.0.1:31337",secret,transport:async()=>({ok:true,json:async()=>({active:"true"})})});
   assert.equal(await response(identity),false);
   assert.throws(()=>createHubSessionStatusChecker({hubUrl:"",secret}));
+});
+
+
+test("signed Hub session checks reject redirects without leaking signed requests", async () => {
+  let forwarded=0;
+  const target=createServer((_req,res)=>{forwarded++;res.end("unexpected");});
+  await new Promise(resolve=>target.listen(0,"127.0.0.1",resolve));
+  const redirect=createServer((_req,res)=>{
+    res.writeHead(307,{location:"http://127.0.0.1:"+target.address().port+"/capture"});
+    res.end();
+  });
+  await new Promise(resolve=>redirect.listen(0,"127.0.0.1",resolve));
+  try {
+    const check=createHubSessionStatusChecker({
+      hubUrl:"http://127.0.0.1:"+redirect.address().port,secret
+    });
+    assert.equal(await check(identity),false);
+    assert.equal(forwarded,0,"Hub signed HMAC header and body must not follow 307");
+  } finally {
+    await Promise.all([redirect,target].map(s=>new Promise(resolve=>s.close(resolve))));
+  }
 });
 
 function fakeDb(){

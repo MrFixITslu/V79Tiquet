@@ -20,7 +20,7 @@ export function createHubSessionStatusChecker({ hubUrl, secret, now = Date.now, 
     const signature = createHmac("sha256", secret).update(canonical).digest("hex");
     try {
       const response = await transport(url, {
-        method:"POST", body,
+        method:"POST", body, redirect:"error",
         headers: {
           "content-type":"application/json",
           "x-v79-service-id":"v79-tiquet",

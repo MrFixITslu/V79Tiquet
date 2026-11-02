@@ -1,0 +1,27 @@
+name: Tiquet job file boundary security (isolated, no deploy)
+on:
+  push:
+    branches:
+      - security/tiquet-job-file-delete-boundary-20261101
+  pull_request:
+    paths:
+      - "server/jobFileBoundary.js"
+      - "server/index.js"
+      - "tests/jobFileBoundary.test.js"
+      - ".github/workflows/tiquet-job-file-boundary.yml"
+permissions:
+  contents: read
+jobs:
+  boundary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Verify exact job file containment
+        run: |
+          node --check server/jobFileBoundary.js
+          node --check server/index.js
+          node --test tests/jobFileBoundary.test.js
