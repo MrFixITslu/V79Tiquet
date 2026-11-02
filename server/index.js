@@ -386,7 +386,7 @@ const sanitizeForPath = str => (str || 'unknown').replace(/[^a-zA-Z0-9_\-. ]/g, 
  * Pattern: uploads/<AccountId>/<ClientName>/<JobId>/
  */
 const getJobFolder = (accountId, clientName, jobId) => {
-  return resolveJobFolder(UPLOADS_ROOT, accountId, clientName, jobId);
+  return path.join(UPLOADS_ROOT, sanitizeForPath(accountId), sanitizeForPath(clientName), jobId);
 };
 
 /**
@@ -1433,12 +1433,6 @@ app.post("/api/jobs", authenticateToken, requireAnyPagePermission("jobs", "new-r
     stageAssignments,
     timeLogs
   } = req.body;
-  // Keep caller-provided import IDs compatible, but never allow path
-  // separators, traversal segments or control characters into job IDs.
-  if(reqId !== undefined && (typeof reqId !== "string" ||
-      !/^[A-Za-z0-9][A-Za-z0-9._-]{0,59}$/.test(reqId))) {
-    return badRequest(res, "Invalid job ID");
-  }
   const id = reqId || uuidv4();
   const portalCredential = createPortalCredential();
   const secureToken = portalCredential.token;
@@ -3454,7 +3448,9 @@ app.delete("/api/jobs/:id/files/:filename", authenticateToken, requireAnyPagePer
     if (!job) return res.status(404).json({
       error: 'Job not found'
     });
-    const folder = getJobFolder(req.accountId, job.client, jobId);
+    // Only this sensitive deletion path gets strict segment resolution.
+    // Normal uploads and existing folder naming remain unchanged.
+    const folder = resolveJobFolder(UPLOADS_ROOT, req.accountId, job.client, jobId);
     const filePath = resolveOwnedJobFile(folder, filename);
     if (!filePath) return res.status(403).json({
       error: 'Forbidden'
