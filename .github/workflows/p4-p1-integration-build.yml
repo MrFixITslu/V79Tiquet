@@ -1,0 +1,37 @@
+name: P4 on deployed P1 full source integration (no deploy)
+on:
+  push:
+    branches:
+      - release/p4-selfservice-on-p1-live-20261102
+  pull_request:
+    branches:
+      - release/tiquet-p1-session-file-security-20261102
+permissions:
+  contents: read
+jobs:
+  merged-source-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install pinned dependencies
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Source static and client type safety
+        run: npm run lint
+      - name: Production client build
+        run: npm run build
+      - name: P1/P4 safe syntax
+        run: |
+          node --check server/index.js
+          node --check server/customerPortalSelfService.js
+          node --check server/hubSessionStatus.js
+      - name: Contract tests without providers or customer data
+        run: npm test
+      - name: Explicitly non-deploying
+        run: echo "NO_REGISTRATION_ON_NO_DB_MIGRATION_NO_PUBLISH_NO_DEPLOY"
