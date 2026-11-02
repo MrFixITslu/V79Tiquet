@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 
 type Customer = { name: string; email: string };
 type Ticket = { id: string; title: string; status: string; createdAt?: string; createdat?: string; description?: string };
+type CustomerMessage = { id: string; sender: string; content: string; timestamp: string };
 type Tab = 'register' | 'sign-in';
 
 async function customerApi<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -19,6 +20,9 @@ export function CustomerSelfService() {
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [tickets, setTickets] = useState<Ticket[]>([]);
   const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null);
+  const [messages, setMessages] = useState<CustomerMessage[]>([]);
+  const [messageDraft, setMessageDraft] = useState('');
+  const messageRetryKey = useRef<string | null>(null);
   const [tab, setTab] = useState<Tab>('register');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -110,15 +114,39 @@ export function CustomerSelfService() {
 
   async function viewTicket(id: string) {
     await perform(async () => {
-      const result = await customerApi<{ticket: Ticket}>('/tickets/' + encodeURIComponent(id));
-      setSelectedTicket(result.ticket);
+      const [details, conversation] = await Promise.all([
+        customerApi<{ticket: Ticket}>('/tickets/' + encodeURIComponent(id)),
+        customerApi<{messages: CustomerMessage[]}>('/tickets/' + encodeURIComponent(id) + '/messages')
+      ]);
+      setSelectedTicket(details.ticket);
+      setMessages(conversation.messages || []);
+      setMessageDraft('');
+      messageRetryKey.current = null;
+    });
+  }
+
+  async function submitMessage(event: React.FormEvent) {
+    event.preventDefault();
+    if (!selectedTicket) return;
+    if (!messageRetryKey.current) messageRetryKey.current = crypto.randomUUID();
+    await perform(async () => {
+      const result = await customerApi<{message: CustomerMessage}>(
+        '/tickets/' + encodeURIComponent(selectedTicket.id) + '/messages', {
+          method: 'POST', headers: { 'Idempotency-Key': messageRetryKey.current! },
+          body: JSON.stringify({ content: messageDraft })
+        });
+      setMessages((previous) => previous.some((m) => m.id === result.message.id)
+        ? previous : [...previous, result.message]);
+      setMessageDraft(''); messageRetryKey.current = null;
+      setNotice('Message added to your service request.');
     });
   }
 
   async function logout() {
     await perform(async () => {
       await customerApi('/logout', { method: 'POST', body: '{}' });
-      setCustomer(null); setTickets([]); setSelectedTicket(null); setNotice('Signed out.');
+      setCustomer(null); setTickets([]); setSelectedTicket(null); setMessages([]);
+      setMessageDraft(''); messageRetryKey.current=null; setNotice('Signed out.');
     });
   }
 
@@ -182,6 +210,34 @@ export function CustomerSelfService() {
                     <dd className="mt-1 whitespace-pre-wrap text-slate-600">{selectedTicket.description || 'No description provided.'}</dd></div>
                 </dl>
                 <p className="mt-3 text-xs text-slate-500">Status is supplied by the service team. Scheduling and payment are not confirmed here.</p>
+                <div className="mt-5 border-t border-teal-200 pt-4">
+                  <h4 className="mb-3 text-sm font-semibold">Service conversation</h4>
+                  {!messages.length && <p className="mb-3 text-sm text-slate-500">No messages yet. Use this form to ask the service team a question.</p>}
+                  <ul className="mb-4 max-h-64 space-y-3 overflow-auto">
+                    {messages.map((message) => (
+                      <li key={message.id} className="rounded-md border border-slate-200 bg-white p-3">
+                        <div className="mb-1 flex flex-wrap justify-between gap-2 text-xs">
+                          <strong className="font-semibold text-slate-700">{message.sender}</strong>
+                          <span className="text-slate-500">{new Date(message.timestamp).toLocaleString()}</span>
+                        </div>
+                        <p className="whitespace-pre-wrap break-words text-sm text-slate-700">{message.content}</p>
+                      </li>
+                    ))}
+                  </ul>
+                  <form onSubmit={submitMessage} className="space-y-3">
+                    <label className="block text-sm font-semibold">Write a message
+                      <textarea rows={3} required maxLength={2000} minLength={3}
+                        value={messageDraft}
+                        onChange={(e) => {setMessageDraft(e.target.value);messageRetryKey.current=null;}}
+                        className="mt-2 w-full rounded-md border border-slate-300 bg-white px-3 py-2 font-normal"
+                        placeholder="Ask a question about this service request" />
+                    </label>
+                    <button type="submit" disabled={working}
+                      className="rounded-md bg-teal-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
+                      Send message
+                    </button>
+                  </form>
+                </div>
               </div>}
             </section>
           </div>

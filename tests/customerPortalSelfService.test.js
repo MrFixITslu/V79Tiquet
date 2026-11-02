@@ -135,6 +135,27 @@ test('P4 customer-only portal isolated PostgreSQL request/verification/replay/te
     assert.equal(dbTicket.rows[0].account_id, 'test-tenant-A');
     assert.equal(dbTicket.rows[0].clientid, realClients.rows[0].id);
     assert.equal(dbTicket.rows[0].amount, null);
+    r = await req('/api/customer/tickets/'+ticketId+'/messages', 'GET', undefined, customerCookie);
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body.messages, []);
+    const messageKey = 'synthetic-message-idempotency-001';
+    const sent = { content: 'Please contact me before visiting.', sender: 'Admin',
+      accountId: 'test-tenant-B', jobId: 'attacker-selected' };
+    r = await req('/api/customer/tickets/'+ticketId+'/messages', 'POST', sent,
+      customerCookie, TEST_ORIGIN, messageKey);
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    assert.equal(r.body.message.sender, 'Client', 'client cannot forge staff sender');
+    const recordedMessageId = r.body.message.id;
+    r = await req('/api/customer/tickets/'+ticketId+'/messages', 'POST', sent,
+      customerCookie, TEST_ORIGIN, messageKey);
+    assert.equal(r.status, 201);
+    assert.equal(r.body.message.id, recordedMessageId, 'retry is idempotent');
+    r = await req('/api/customer/tickets/'+ticketId+'/messages', 'POST',
+      { content: 'Changed message!' }, customerCookie, TEST_ORIGIN, messageKey);
+    assert.equal(r.status, 409, 'same message idempotency key cannot change content');
+    r = await req('/api/customer/tickets/'+ticketId+'/messages', 'GET', undefined, customerCookie);
+    assert.equal(r.status, 200);
+    assert.equal(r.body.messages.length, 1);
     // A second customer within the SAME tenant must remain invisible.
     const secondClientId = crypto.randomUUID(), secondJobId = crypto.randomUUID();
     await pool.query(
@@ -148,6 +169,11 @@ test('P4 customer-only portal isolated PostgreSQL request/verification/replay/te
     assert.equal(r.body.tickets.length, 1, 'same-tenant different-client ticket hidden');
     r = await req('/api/customer/tickets/'+secondJobId, 'GET', undefined, customerCookie);
     assert.equal(r.status, 404, 'direct object reference to other client denied');
+    r = await req('/api/customer/tickets/'+secondJobId+'/messages', 'GET', undefined, customerCookie);
+    assert.equal(r.status, 404, 'other client messages not readable');
+    r = await req('/api/customer/tickets/'+secondJobId+'/messages', 'POST',
+      { content: 'Unauthorized comment' }, customerCookie, TEST_ORIGIN, 'another-client-message-key-0001');
+    assert.equal(r.status, 404, 'other client messages not writable');
     r = await req('/api/tenant-B/tickets/'+ticketId, 'GET', undefined, customerCookie);
     assert.equal(r.status, 401);
     r = await req('/api/customer/tickets/'+crypto.randomUUID(), 'GET', undefined, customerCookie);

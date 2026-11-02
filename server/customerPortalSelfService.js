@@ -319,6 +319,67 @@ export function createCustomerPortalRouter({
       return res.status(503).json({ error: 'Tickets temporarily unavailable' });
     }
   });
+  // Customer chat reuses job_messages already displayed by the legacy job portal.
+  // Staff-private agent_reply_drafts are never queried or written here.
+  router.get('/tickets/:id/messages', requireCustomer, async (req, res) => {
+    const owner = req.customerPortal;
+    if (!/^[a-f0-9-]{36}$/i.test(req.params.id)) return res.status(404).json({ error: 'Ticket not found' });
+    try {
+      const found = await db.query(
+        'SELECT id FROM jobs WHERE id=$1 AND account_id=$2 AND clientid=$3',
+        [req.params.id, owner.account_id, owner.client_id]
+      );
+      if (!found.rowCount) return res.status(404).json({ error: 'Ticket not found' });
+      const result = await db.query(
+        `SELECT m.id,m.sender,m.content,m.timestamp FROM job_messages m
+         JOIN jobs j ON j.id=m.job_id AND j.account_id=m.account_id
+         WHERE j.id=$1 AND j.account_id=$2 AND j.clientid=$3
+         ORDER BY m.timestamp ASC LIMIT 100`,
+        [req.params.id, owner.account_id, owner.client_id]
+      );
+      return res.json({ messages: result.rows });
+    } catch {
+      log('customer-portal-message-read-error');
+      return res.status(503).json({ error: 'Messages temporarily unavailable' });
+    }
+  });
+  router.post('/tickets/:id/messages', ticketLimiter, requireCustomer, async (req, res) => {
+    const owner = req.customerPortal;
+    if (!/^[a-f0-9-]{36}$/i.test(req.params.id)) return res.status(404).json({ error: 'Ticket not found' });
+    const content = safeTicketText(req.body?.content, 2000);
+    const key = req.get('idempotency-key');
+    if (!content || !IDEMPOTENCY_PATTERN.test(key || '')) {
+      return res.status(400).json({ error: 'Message and idempotency key required' });
+    }
+    // Deterministic message ID ensures retries cannot produce duplicate customer messages.
+    const digest = portalHash('customer-message:' + owner.id + ':' + req.params.id + ':' + key);
+    const messageId = 'custmsg-' + digest.slice(0, 40);
+    try {
+      await db.query(
+        `INSERT INTO job_messages (id,job_id,sender,content,timestamp,account_id)
+         SELECT $1,j.id,'Client',$2,$3,j.account_id FROM jobs j
+         WHERE j.id=$4 AND j.account_id=$5 AND j.clientid=$6
+         ON CONFLICT (id) DO NOTHING`,
+        [messageId, content, new Date().toISOString(), req.params.id, owner.account_id, owner.client_id]
+      );
+      const found = await db.query(
+        `SELECT m.id,m.sender,m.content,m.timestamp FROM job_messages m
+         JOIN jobs j ON j.id=m.job_id AND j.account_id=m.account_id
+         WHERE m.id=$1 AND j.id=$2 AND j.account_id=$3 AND j.clientid=$4`,
+        [messageId, req.params.id, owner.account_id, owner.client_id]
+      );
+      const message = found.rows[0];
+      if (!message) return res.status(404).json({ error: 'Ticket not found' });
+      if (message.content !== content) {
+        return res.status(409).json({ error: 'Message idempotency key already used' });
+      }
+      return res.status(201).json({ message });
+    } catch {
+      log('customer-portal-message-write-error');
+      return res.status(503).json({ error: 'Message temporarily unavailable' });
+    }
+  });
+
   router.post('/tickets', ticketLimiter, requireCustomer, async (req, res) => {
     const title = safeTicketText(req.body?.title, 140);
     const description = safeTicketText(req.body?.description, 4000);

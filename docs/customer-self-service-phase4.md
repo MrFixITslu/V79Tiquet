@@ -4,8 +4,8 @@
 - Customer signs up with name, email and explicit service-email consent.
 - One-time 30-minute email verification establishes a **customer-only** HttpOnly session.
 - Returning customers request a new 15-minute passwordless email sign-in link.
-- Customer may view only their own client-bound tickets and submit service requests.
-- New service requests remain `request`, never paid or scheduled.
+- Customer may view only their own client-bound tickets, submit service requests, see customer-visible job messages and send replay-safe service messages. Staff-private agent drafts are never exposed.
+- New service requests remain `request`, never paid or scheduled. Messages never change prices, staff roles or appointments.
 - Existing staff Hub MFA, staff roles, staff cookies, job-token portal, WiPay, and current client workflows are unchanged.
 - New SPA route: `/customer`; emailed links: `/customer/verify?token=...`, `/customer/login?token=...`.
 
@@ -20,9 +20,8 @@ This feature is completely OFF by default:
 ## Independent synthetic validation completed
 - Build: `npm run build` PASS.
 - Types: `npx tsc --noEmit` PASS.
-- Synthetic PostgreSQL 16 with actual baseline `server/schema.sql` + candidate migration, UNIX socket and `listen_addresses=''`:
-  `scripts/phase4-customer-portal-full-schema-test.sh` PASS.
-- Happy paths: create account, verify email, new ticket, duplicate ticket idempotency, returning user login, logout.
+- Synthetic PostgreSQL 16 with actual baseline `server/schema.sql` + candidate migration, UNIX socket and `listen_addresses=''`: PASS. The Acer-only operator harness is retained privately at `~/V79-Recovery-Checkpoints/phase4-customer-portal-full-schema-test-20261101.sh`, not shipped as a nonportable repo script. Portable GitHub Actions PostgreSQL workflow runs the same code/security contract.
+- Happy paths: create account, verify email, new ticket and ticket details, customer-visible conversation read/write, duplicate ticket/message idempotency, returning user login, logout.
 - Negative paths: wrong origin, no customer session, staff cookie not accepted, expired/replayed link contract, no business-id acceptance, direct other-client ticket 404, tenant-B cookie cannot read tenant-A, forged status/amount ignored.
 - All tests isolated; no live customers, payments, email, DB mutations or new Docker containers.
 
