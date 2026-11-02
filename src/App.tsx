@@ -13,6 +13,7 @@ import { Settings } from "./components/Settings";
 import { AuthGate } from "./components/AuthGate";
 import { ResetPasswordPage } from "./components/ResetPasswordPage";
 import { ClientPortal } from "./components/ClientPortal";
+import { CustomerSelfService } from "./components/CustomerSelfService";
 import { CommandPalette } from "./components/CommandPalette";
 import { JobDetailModal } from "./components/JobDetailModal";
 import { Job, Employee, PayrollRecord, AppUser, Client, BusinessSettings, AuthenticatedUser, Business, Industry, PagePermission } from "./types";
@@ -232,6 +233,13 @@ export default function App() {
       window.alert("Your Tiquet session could not be fully signed out. Close this tab and contact support before using a shared device.");
     });
   };
+
+  // Independent customer-only identity. Never reuse staff Hub sessions.
+  if (window.location.pathname === "/customer" || window.location.pathname.startsWith("/customer/")) {
+    return import.meta.env.VITE_CUSTOMER_PORTAL_ENABLED === "1"
+      ? <CustomerSelfService />
+      : <main className="min-h-screen bg-slate-50 p-10 text-slate-900"><h1 className="text-2xl font-semibold">Customer portal is not available yet</h1><p className="mt-3">Please contact V79 Digital directly for assistance.</p></main>;
+  }
 
   if (portalRoute.matched && portalRoute.token) {
     return <ClientPortal token={portalRoute.token} />;

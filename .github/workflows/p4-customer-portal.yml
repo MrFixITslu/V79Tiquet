@@ -1,0 +1,69 @@
+name: P4 Customer Portal - isolated PostgreSQL security
+
+on:
+  pull_request:
+    paths:
+      - "server/customerPortalSelfService*"
+      - "src/components/CustomerSelfService.tsx"
+      - "src/vite-env.d.ts"
+      - "src/App.tsx"
+      - "tests/customerPortalSelfService.test.js"
+      - ".github/workflows/p4-customer-portal.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-pg16:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: portal_ci
+          POSTGRES_PASSWORD: synthetic-only
+          POSTGRES_DB: portal_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U portal_ci -d portal_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      PGHOST: 127.0.0.1
+      PGPORT: "5432"
+      PGUSER: portal_ci
+      PGPASSWORD: synthetic-only
+      PGDATABASE: portal_test
+      V79_PORTAL_TEST_DATABASE_URL: postgresql://portal_ci:synthetic-only@127.0.0.1:5432/portal_test
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - name: Prepare isolated PostgreSQL client
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client
+      - name: Install locked JavaScript dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Apply exact Tiquet schema and additive candidate to disposable database
+        run: |
+          psql -v ON_ERROR_STOP=1 -f server/schema.sql >/dev/null
+          psql -v ON_ERROR_STOP=1 -f server/customerPortalSelfService.schema.sql >/dev/null
+      - name: Test customer-only access, replay, expiry, tenant and client isolation
+        run: node --test tests/customerPortalSelfService.test.js
+      - name: Type and production frontend build
+        run: |
+          npx tsc --noEmit
+          VITE_CUSTOMER_PORTAL_ENABLED=1 npm run build
+      - name: Verify production remains disabled without explicit activation
+        run: |
+          grep -F 'process.env.V79_CUSTOMER_PORTAL_ENABLED === "1"' server/index.js
+          grep -F 'import.meta.env.VITE_CUSTOMER_PORTAL_ENABLED === "1"' src/App.tsx

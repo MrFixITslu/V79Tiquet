@@ -7,6 +7,7 @@ import { readPrivateMachineSecret } from "./sentinelMachineSecretFile.js";
 import { createAgentReplyDraft, listAgentReplyDrafts } from "./agentReplyDrafts.js";
 import { authorizeTiquetStaffSocket, revalidateTiquetStaffSocket } from "./tiquetSocketAccess.js";
 import { revalidateTiquetPortalSocket } from "./tiquetPortalSocketAccess.js";
+import { createCustomerPortalRouter } from "./customerPortalSelfService.js";
 import { isStalledSocketRevalidation } from "./tiquetSocketHeartbeatGuard.js";
 import { createHubEntitlementChecker } from "./hubEntitlementRevalidation.js";
 import 'dotenv/config';
@@ -465,6 +466,21 @@ const portalActionLimiter = rateLimit({
 app.use("/api/auth", authLimiter);
 app.use("/api/portal", portalLimiter);
 app.use("/api/", apiLimiter);
+
+// Customer self-service is separate from staff Hub MFA and job-token portal.
+// Disabled by default; its additive schema must be approved/migrated explicitly.
+if (process.env.V79_CUSTOMER_PORTAL_ENABLED === "1") {
+  app.use("/api/customer", createCustomerPortalRouter({
+    db,
+    sendEmail: sendTemplated,
+    accountId: process.env.V79_CUSTOMER_PORTAL_ACCOUNT_ID,
+    publicUrl: process.env.V79_CUSTOMER_PORTAL_PUBLIC_URL,
+    production: isProduction,
+    log: (event) => logger.warn(event)
+  }));
+} else {
+  app.use("/api/customer", (_req, res) => res.status(404).json({ error: "Not found" }));
+}
 
 const HUB_SESSION_TTL_MS = 30 * 60 * 1000;
 const LEGACY_AUTH_ENABLED = process.env.V79_ALLOW_LEGACY_AUTH === "1";
