@@ -18,6 +18,7 @@ async function customerApi<T>(path: string, options: RequestInit = {}): Promise<
 export function CustomerSelfService() {
   const [customer, setCustomer] = useState<Customer | null>(null);
   const [tickets, setTickets] = useState<Ticket[]>([]);
+  const [selectedTicket, setSelectedTicket] = useState<Ticket | null>(null);
   const [tab, setTab] = useState<Tab>('register');
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -107,10 +108,17 @@ export function CustomerSelfService() {
     });
   }
 
+  async function viewTicket(id: string) {
+    await perform(async () => {
+      const result = await customerApi<{ticket: Ticket}>('/tickets/' + encodeURIComponent(id));
+      setSelectedTicket(result.ticket);
+    });
+  }
+
   async function logout() {
     await perform(async () => {
       await customerApi('/logout', { method: 'POST', body: '{}' });
-      setCustomer(null); setTickets([]); setNotice('Signed out.');
+      setCustomer(null); setTickets([]); setSelectedTicket(null); setNotice('Signed out.');
     });
   }
 
@@ -154,9 +162,27 @@ export function CustomerSelfService() {
                       <strong className="text-sm">{ticket.title}</strong>
                       <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-medium">{ticket.status}</span>
                     </div>
-                    <p className="mt-2 text-xs text-slate-500">Request {ticket.id.slice(0, 8)}</p>
+                    <div className="mt-3 flex items-center justify-between gap-2">
+                      <p className="text-xs text-slate-500">Request {ticket.id.slice(0, 8)}</p>
+                      <button type="button" onClick={() => viewTicket(ticket.id)} disabled={working}
+                        className="rounded-md border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60">
+                        View details
+                      </button>
+                    </div>
                   </li>
                 ))}</ul>}
+              {selectedTicket && <div className="mt-6 rounded-lg border border-teal-200 bg-teal-50/50 p-4" aria-label="Selected request details">
+                <h3 className="mb-3 text-base font-semibold">{selectedTicket.title}</h3>
+                <dl className="space-y-2 text-sm">
+                  <div><dt className="inline font-semibold text-slate-700">Current status: </dt>
+                    <dd className="inline">{selectedTicket.status}</dd></div>
+                  <div><dt className="inline font-semibold text-slate-700">Request ID: </dt>
+                    <dd className="inline break-all">{selectedTicket.id.slice(0, 8)}</dd></div>
+                  <div><dt className="font-semibold text-slate-700">Description</dt>
+                    <dd className="mt-1 whitespace-pre-wrap text-slate-600">{selectedTicket.description || 'No description provided.'}</dd></div>
+                </dl>
+                <p className="mt-3 text-xs text-slate-500">Status is supplied by the service team. Scheduling and payment are not confirmed here.</p>
+              </div>}
             </section>
           </div>
         ) : flowToken && (isVerify || isLogin) ? (
