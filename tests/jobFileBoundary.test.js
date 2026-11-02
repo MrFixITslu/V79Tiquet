@@ -58,6 +58,6 @@ test("file deletion route uses exact boundary check, not string prefix",()=>{
   assert.match(code,/resolveOwnedJobFile\(folder, filename\)/);
   assert.match(code,/fs\.lstatSync\(filePath\)\.isFile\(\)/);
   assert.doesNotMatch(code,/filePath\.startsWith\(folder\)/);
-  assert.ok(source.includes("return resolveJobFolder(UPLOADS_ROOT, accountId, clientName, jobId);"));
-  assert.match(source,/Invalid job ID/);
+  assert.ok(source.includes("return path.join(UPLOADS_ROOT, sanitizeForPath(accountId), sanitizeForPath(clientName), jobId);"),"legacy nondeletion folder mapping remains unchanged");
+  assert.match(code,/resolveJobFolder\(UPLOADS_ROOT, req.accountId, job.client, jobId\)/,"deletion strict folder only");
 });
