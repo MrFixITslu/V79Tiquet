@@ -1,6 +1,7 @@
 import { createTiquetAuthentication } from "./hubAwareAuthentication.js";
 import { revokeSignedRequestTokens, isSignedSessionRevoked, tokenFingerprint } from "./tokenRevocation.js";
 import { createSentinelIngestRouter, sentinelConfigFromEnv, SENTINEL_PATH } from "./sentinelIngress.js";
+import { createHubHelpRouter, HUB_HELP_PATH } from "./hubHelpSupport.js";
 import { createSentinelHubServiceChecker } from "./sentinelHubServiceChecker.js";
 import { createSentinelNocApproverChecker } from "./sentinelNocApproverChecker.js";
 import { readPrivateMachineSecret } from "./sentinelMachineSecretFile.js";
@@ -594,6 +595,7 @@ app.use(SENTINEL_PATH, createSentinelIngestRouter({
   authorizeApprover:sentinelNocApproverChecker
 }));
 app.use("/api/platform", platformRoutes);
+app.use(HUB_HELP_PATH, createHubHelpRouter({db}));
 
 // --- AUTHENTICATION ROUTES ---
 if (LEGACY_AUTH_ENABLED) {
