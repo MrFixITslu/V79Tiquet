@@ -3487,10 +3487,40 @@ const getSettingsForPortal = async accountId => {
   return (await db.prepare("SELECT * FROM settings WHERE account_id = ? LIMIT 1").get(accountId)) || {};
 };
 
+// Hub App Help tickets carry an internal staff description and tenant IDs.
+// A bearer-link customer can only read the verified public support summary.
+function isHubHelpPortalJob(job) {
+  return typeof job?.intakeEventId === "string" && /^hub-help:[a-f0-9]{64}$/.test(job.intakeEventId);
+}
+
 app.get("/api/portal/:token", async (req, res) => {
   try {
     const job = await getActivePortalJob(req.params.token);
     if (!job) return res.status(404).json({ error: "Invalid or expired link" });
+    if (isHubHelpPortalJob(job)) {
+      const summaryText = String(job.description || "").split("\n\n").at(-1).slice(0, 18000);
+      const rows = await getJobMessages(job.id);
+      const messages = rows.filter(row => row.sender === "Client" || row.sender === "V79 Customer Care")
+        .slice(-100).map(row => ({
+          id: row.id, sender: row.sender === "Client" ? "Client" : "Support",
+          content: String(row.content || "").slice(0, 2000), timestamp: row.timestamp
+        }));
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("Referrer-Policy", "no-referrer");
+      return res.json({
+        job: {
+          id: job.id, title: job.title, client: job.client, status: job.status,
+          priority: job.priority, createdAt: job.createdAt, dueDate: null,
+          description: summaryText, amount: 0, depositPaid: 0,
+          quoteApproved: false, activityLog: [], messages, lineItems: [],
+          deliverables: [], timeLogs: [], stageAssignments: {}, timerStartedAt: null
+        },
+        settings: { businessName: "Vision79 Digital" },
+        payments: { totalPaid: 0, outstandingAmount: 0, fullyPaid: true },
+        billing: { available: false, provider: "wipay", environment: null, currency: null }
+      });
+    }
+
 
     const summary = await paymentSummary(job);
     const {
@@ -3541,6 +3571,7 @@ app.post("/api/portal/:token/approve-quote", portalActionLimiter, async (req, re
   try {
     const job = await getActivePortalJob(req.params.token);
     if (!job) return res.status(404).json({ error: "Invalid or expired link" });
+    if (isHubHelpPortalJob(job)) return res.status(403).json({ error: "Billing and quote actions are unavailable for support tickets." });
 
     if (!job.quoteApproved) {
       if (job.status === "request" || job.status === "estimation") {
@@ -3563,6 +3594,7 @@ async function startPortalWipayCheckout(req, res, paymentKind) {
   try {
     const job = await getActivePortalJob(req.params.token);
     if (!job) return res.status(404).json({ error: "Invalid or expired link" });
+    if (isHubHelpPortalJob(job)) return res.status(403).json({ error: "Billing and quote actions are unavailable for support tickets." });
     if (!tiquetBillingConfigured()) return res.status(503).json({ error: "Online payment is not configured.", code: "BILLING_NOT_CONFIGURED" });
 
     const [summary, account, settings] = await Promise.all([
@@ -3609,6 +3641,7 @@ app.post("/api/portal/:token/payment-confirm", portalActionLimiter, async (req, 
   try {
     const job = await getActivePortalJob(req.params.token);
     if (!job) return res.status(404).json({ error: "Invalid or expired link" });
+    if (isHubHelpPortalJob(job)) return res.status(403).json({ error: "Billing and quote actions are unavailable for support tickets." });
     const orderId = String(req.body?.orderId || "").trim();
     if (!/^v79_[A-Za-z0-9_]+$/.test(orderId) || orderId.length > 64) return res.status(400).json({ error: "Invalid billing order." });
 
