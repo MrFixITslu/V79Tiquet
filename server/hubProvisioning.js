@@ -69,6 +69,9 @@ export async function provisionHubIdentity(hubSession) {
       if (!settings) {
         await txDb.prepare("INSERT INTO settings (id, name, email, account_id) VALUES (?, ?, ?, ?)")
           .run(uuidv4(), organizationName, email, accountId);
+      } else {
+        await txDb.prepare("UPDATE settings SET name = ? WHERE id = ? AND account_id = ?")
+          .run(organizationName, settings.id, accountId);
       }
     }
 
