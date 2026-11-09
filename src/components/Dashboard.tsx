@@ -21,6 +21,7 @@ import {
   Activity,
   UserRoundX,
   CalendarClock,
+  ChevronRight,
 } from "lucide-react";
 import { D3PieChartWidget } from "./D3PieChartWidget";
 import { api } from "../api";
@@ -32,7 +33,11 @@ type PaymentSummary = {
   outstandingInvoices: number;
 };
 
-export function Dashboard({ jobs, currency = "USD" }: { jobs: Job[]; currency?: string }) {
+export function Dashboard({ jobs, currency = "USD", onOpenTicket }: {
+  jobs: Job[];
+  currency?: string;
+  onOpenTicket?: (job: Job) => void;
+}) {
   const [payments, setPayments] = useState<PaymentSummary>({
     received: 0,
     count: 0,
@@ -136,19 +141,31 @@ export function Dashboard({ jobs, currency = "USD" }: { jobs: Job[]; currency?: 
               <AlertCircle className="w-4 h-4 text-amber-400" />
               Attention Required
             </h3>
-            <p className="text-xs text-slate-400 mt-1">Overdue, unassigned and high-priority work rises to the top.</p>
+            <p className="text-xs text-slate-400 mt-1">
+              Overdue, unassigned and high-priority work rises to the top.
+              {onOpenTicket ? " Select a ticket to open its details." : " Ticket details require Jobs access."}
+            </p>
           </div>
           <span className="text-xs text-slate-500">{attentionJobs.length} shown</span>
         </div>
         {attentionJobs.length ? (
           <div className="divide-y divide-[#18324b]">
             {attentionJobs.map(({ job, overdue, unassigned, highPriority }) => (
-              <div key={job.id} className="p-4 flex flex-col md:flex-row md:items-center justify-between gap-3 hover:bg-white/[0.018]">
+              <button
+                key={job.id}
+                type="button"
+                onClick={() => onOpenTicket?.(job)}
+                disabled={!onOpenTicket}
+                aria-label={"Open ticket: " + job.title + " for " + job.client}
+                className="w-full p-4 flex flex-col md:flex-row md:items-center justify-between gap-3 text-left
+                  hover:bg-white/[0.045] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset
+                  focus-visible:ring-sky-400 transition-colors cursor-pointer disabled:cursor-default disabled:opacity-70"
+              >
                 <div className="min-w-0">
                   <div className="font-semibold text-slate-100 truncate">{job.title}</div>
                   <div className="text-xs text-slate-400 mt-1">{job.client} · {job.status.replace("-", " ")}</div>
                 </div>
-                <div className="flex flex-wrap gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   {overdue && <Signal icon={<Clock className="w-3 h-3" />} label="Overdue" tone="warning" />}
                   {unassigned && <Signal icon={<UserRoundX className="w-3 h-3" />} label="Unassigned" />}
                   {highPriority && <Signal icon={<AlertCircle className="w-3 h-3" />} label="High priority" tone="danger" />}
@@ -157,8 +174,9 @@ export function Dashboard({ jobs, currency = "USD" }: { jobs: Job[]; currency?: 
                       Due {new Date(job.dueDate).toLocaleDateString()}
                     </span>
                   )}
+                  {onOpenTicket && <ChevronRight aria-hidden="true" className="w-4 h-4 text-sky-400 ml-1 shrink-0" />}
                 </div>
-              </div>
+              </button>
             ))}
           </div>
         ) : (

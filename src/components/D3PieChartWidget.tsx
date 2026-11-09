@@ -118,7 +118,7 @@ export function D3PieChartWidget({ jobs }: { jobs: Job[] }) {
       .append("text")
       .attr("class", "center-text-value")
       .attr("y", 10)
-      .attr("fill", "#0f172a")
+      .attr("fill", "var(--v79-chart-text, #14243a)")
       .style("font-family", "Inter, sans-serif")
       .style("font-size", "20px")
       .style("font-weight", "800")
