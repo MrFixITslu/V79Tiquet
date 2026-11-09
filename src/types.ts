@@ -5,7 +5,8 @@ export type JobStatus =
   | "review"
   | "invoiced"
   | "completed"
-  | "paid";
+  | "paid"
+  | "cancelled";
 
 export const COLUMNS: { id: JobStatus; label: string; color: string }[] = [
   {
@@ -27,6 +28,7 @@ export const COLUMNS: { id: JobStatus; label: string; color: string }[] = [
   { id: "invoiced", label: "Invoiced", color: "bg-indigo-100 text-indigo-700" },
   { id: "completed", label: "Completed", color: "bg-green-100 text-green-700" },
   { id: "paid", label: "Paid", color: "bg-emerald-100 text-emerald-700" },
+  { id: "cancelled", label: "Cancelled (Archive)", color: "bg-slate-100 text-slate-600" },
 ];
 
 export interface ActivityLogEntry {
@@ -143,6 +145,7 @@ export interface Job {
   title: string;
   client: string; // Keeping for backward compatibility or display name
   clientId?: string; // Link to Client entity
+  clientEmail?: string | null;
   description: string;
   status: JobStatus;
   createdAt: string;
@@ -150,6 +153,12 @@ export interface Job {
   amount?: number;
   priority: "low" | "medium" | "high";
   invoiceNotes?: string;
+  cancellationReason?: string | null;
+  cancelledAt?: string | null;
+  cancelledBy?: string | null;
+  invoiceIssuedAt?: string | null;
+  invoiceSentAt?: string | null;
+  invoiceSentTo?: string | null;
   assignedTo?: string;
   tags?: string[];
   activityLog?: ActivityLogEntry[];

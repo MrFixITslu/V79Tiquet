@@ -172,8 +172,9 @@ export async function sendStatusUpdate(clientEmail, jobTitle, newStatus, secureT
         estimation:   'Estimation In Progress',
         'in-progress':'Work In Progress',
         review:       'Ready for Review',
-        invoiced:     'Invoice Sent',
+        invoiced:     'Invoice Ready',
         completed:    'Completed',
+        cancelled:    'Cancelled',
     };
     const label = STATUS_LABELS[newStatus] || newStatus;
 
@@ -184,6 +185,7 @@ export async function sendStatusUpdate(clientEmail, jobTitle, newStatus, secureT
         review:       '#8b5cf6',
         invoiced:     '#10b981',
         completed:    '#059669',
+        cancelled:    '#64748b',
     };
     const badgeColour = STATUS_COLOURS[newStatus] || '#64748b';
 
@@ -382,3 +384,38 @@ export async function sendUserInvite(userEmail, name, role, tempPassword) {
     return send(userEmail, subject, html);
 }
 
+
+
+/**
+ * Deliver a genuine PDF invoice attachment. Unlike the general email helper,
+ * missing SMTP is a hard failure: we must never claim an invoice was sent.
+ */
+export async function sendInvoiceDocument({ to, companyName, number, title, amount, pdf, filename }) {
+  if (!isSmtpConfigured || !transporter) {
+    logger.warn("Invoice email blocked because SMTP is not configured", { invoice: number });
+    return { success: false, skipped: true, error: "SMTP not configured" };
+  }
+  const subject = "Invoice " + number + " from " + companyName;
+  const html = wrapEmailShell({
+    companyName,
+    companyAddress: "",
+    companyPhone: "",
+    companyEmail: "",
+    bodyHtml: "<h2 style='color:#0f172a'>Your invoice is attached</h2>" +
+      "<p>Please find invoice <strong>" + escapeHtml(number) +
+      "</strong> for " + escapeHtml(title) + ".</p>" +
+      "<p><strong>Total: " + escapeHtml(amount) + "</strong></p>" +
+      "<p>Contact your service provider if you have any questions. Thank you.</p>",
+  });
+  try {
+    const result = await transporter.sendMail({
+      from: SMTP_FROM, to, subject, html,
+      attachments: [{ filename, content: pdf, contentType: "application/pdf" }],
+    });
+    logger.info("Invoice email accepted by SMTP", { invoice: number, messageId: result.messageId });
+    return { success: true, messageId: result.messageId };
+  } catch (error) {
+    logger.error("Invoice email failed", { invoice: number, error: error.message });
+    return { success: false, error: error.message };
+  }
+}

@@ -57,14 +57,14 @@ export function Dashboard({ jobs, currency = "USD" }: { jobs: Job[]; currency?: 
     const now = Date.now();
     return jobs.filter((job) =>
       job.dueDate &&
-      !["completed", "paid"].includes(job.status) &&
+      !["completed", "paid", "cancelled"].includes(job.status) &&
       new Date(job.dueDate).getTime() < now
     );
   }, [jobs]);
 
   const attentionJobs = useMemo(() => {
     return jobs
-      .filter((job) => !["completed", "paid"].includes(job.status))
+      .filter((job) => !["completed", "paid", "cancelled"].includes(job.status))
       .map((job) => {
         const overdue = Boolean(job.dueDate && new Date(job.dueDate).getTime() < Date.now());
         const unassigned = !job.assignedTo;

@@ -1,4 +1,5 @@
 import { createTiquetAuthentication } from "./hubAwareAuthentication.js";
+import { invoiceReference, invoiceRecipient, validateInvoice, renderInvoicePdf } from "./invoiceDocuments.js";
 import { revokeSignedRequestTokens, isSignedSessionRevoked, tokenFingerprint } from "./tokenRevocation.js";
 import { createSentinelIngestRouter, sentinelConfigFromEnv, SENTINEL_PATH } from "./sentinelIngress.js";
 import { createSentinelHubServiceChecker } from "./sentinelHubServiceChecker.js";
@@ -16,7 +17,7 @@ import cors from "cors";
 import http from "http";
 import { WebSocketServer } from "ws";
 import db, { dbDir, seedDefaultTemplatesForAccount } from "./db.js";
-import { sendPortalLink, sendStatusUpdate, sendTemplated, renderEmailFromPlainTemplate, sendPasswordReset, sendUserInvite } from "./email.js";
+import { sendPortalLink, sendStatusUpdate, sendTemplated, renderEmailFromPlainTemplate, sendPasswordReset, sendUserInvite, sendInvoiceDocument } from "./email.js";
 import { registerOAuthRoutes } from "./oauth.js";
 import { v4 as uuidv4 } from "uuid";
 import jwt from "jsonwebtoken";
@@ -979,7 +980,7 @@ const getJobMessages = async jobId => {
 };
 
 const PORTAL_LINK_TTL_MS = 14 * 24 * 60 * 60 * 1000;
-const JOB_STATUSES = new Set(["request", "estimation", "in-progress", "review", "invoiced", "completed", "paid"]);
+const JOB_STATUSES = new Set(["request", "estimation", "in-progress", "review", "invoiced", "completed", "paid", "cancelled"]);
 
 
 function createPortalCredential() {
@@ -1004,7 +1005,7 @@ async function getActivePortalJob(token) {
   const job = await db.prepare(
     "SELECT * FROM jobs WHERE secureToken = ? AND secureTokenRevokedAt IS NULL LIMIT 1"
   ).get(cleanToken);
-  if (!job) return null;
+  if (!job || job.status === "cancelled") return null;
   if (!job.secureTokenExpires || new Date(job.secureTokenExpires).getTime() <= Date.now()) return null;
   return job;
 }
@@ -1160,6 +1161,11 @@ const createNotification = async ({
 const updateJobStage = async (id, newStatus, accountId, userName = "System") => {
   const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(id, accountId);
   if (!job) return null;
+  if (job.status === "cancelled" && newStatus !== "cancelled") {
+    const error = new Error("Use Reopen Ticket to restore a cancelled job.");
+    error.statusCode = 409;
+    throw error;
+  }
 
   if (newStatus === "paid" && job.status !== "paid" && Number(job.amount || 0) > 0) {
     const paidAmount = await recordedPaymentTotal(id, accountId);
@@ -1196,7 +1202,7 @@ const updateJobStage = async (id, newStatus, accountId, userName = "System") => 
   }
 
   // 3. Status-specific logic: Stop timer if finished
-  const isFinished = ['completed', 'paid'].includes(newStatus);
+  const isFinished = ['completed', 'paid', 'cancelled'].includes(newStatus);
   const timerStartedAt = isFinished ? null : now;
 
   // 4. Update DB
@@ -1822,6 +1828,19 @@ app.put("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"), as
     if (status !== undefined && !JOB_STATUSES.has(String(status))) {
       return badRequest(res, "Invalid job status");
     }
+    if (status === "cancelled" || (existingJob.status === "cancelled" && status && status !== "cancelled")) {
+      return res.status(409).json({ error: "Use Cancel Ticket or Reopen Ticket to change this status.", code: "CANCELLATION_WORKFLOW_REQUIRED" });
+    }
+    if (existingJob.invoiceSentAt) {
+      const lockedFields = { title, client, description, amount, invoiceNotes, clientEmail, clientId };
+      const changed = Object.entries(lockedFields).some(([field, value]) =>
+        value !== undefined && String(value ?? "") !== String(existingJob[field] ?? "")
+      );
+      if (changed) return res.status(409).json({
+        error: "This invoice was already issued. Use a documented adjustment or credit-note process instead of editing its contents.",
+        code: "ISSUED_INVOICE_LOCKED"
+      });
+    }
     if (clientId !== undefined && clientId !== null) {
       const linkedClient = await db.prepare("SELECT id FROM clients WHERE id = ? AND account_id = ?").get(clientId, req.accountId);
       if (!linkedClient) return badRequest(res, "Unknown client");
@@ -1974,6 +1993,125 @@ app.delete("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"),
     res.status(500).json({
       error: isProduction ? "Internal Server Error" : error.message
     });
+  }
+});
+
+
+// Cancellation is a distinct, auditable outcome, never a Completed or Paid job.
+app.post("/api/jobs/:id/cancel", authenticateToken, requireAnyPagePermission("jobs"), async (req, res) => {
+  const reason = String(req.body?.reason || "").trim();
+  if (reason.length < 5 || reason.length > 500) return badRequest(res, "Provide a cancellation reason (5-500 characters).");
+  try {
+    const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(req.params.id, req.accountId);
+    if (!job) return res.status(404).json({ error: "Job not found" });
+    if (job.status === "cancelled") return res.status(409).json({ error: "Ticket already cancelled.", code: "ALREADY_CANCELLED" });
+    if (["invoiced", "completed", "paid"].includes(job.status) || (await recordedPaymentTotal(job.id, req.accountId)) > 0) {
+      return res.status(409).json({ error: "This job has billing or completed work. Review an adjustment or refund before cancellation.", code: "BILLING_REVIEW_REQUIRED" });
+    }
+    await updateJobStage(job.id, "cancelled", req.accountId, req.user.email);
+    const now = new Date().toISOString();
+    await db.prepare("UPDATE jobs SET cancellationReason = ?, cancelledAt = ?, cancelledBy = ?, secureTokenRevokedAt = ? WHERE id = ? AND account_id = ?")
+      .run(reason, now, req.user.email, now, job.id, req.accountId);
+    await db.prepare('INSERT INTO activity_logs (id, job_id, action, timestamp, "user", account_id) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(uuidv4(), job.id, "Cancellation reason: " + reason, now, req.user.email, req.accountId);
+    logger.audit("job_cancelled", { accountId: req.accountId, jobId: job.id });
+    const updated = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(job.id, req.accountId);
+    res.json({ job: updated, success: true });
+  } catch (error) {
+    const code = error.statusCode || 500;
+    res.status(code).json({ error: code === 500 && isProduction ? "Internal Server Error" : error.message });
+  }
+});
+
+app.post("/api/jobs/:id/reopen", authenticateToken, requireAnyPagePermission("jobs"), async (req, res) => {
+  try {
+    const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(req.params.id, req.accountId);
+    if (!job) return res.status(404).json({ error: "Job not found" });
+    if (job.status !== "cancelled") return res.status(409).json({ error: "Only cancelled jobs can be reopened." });
+    // Reopening preserves the cancellation record, but restarts the ordinary request workflow.
+    await db.prepare("UPDATE jobs SET status = ?, quoteApproved = 0 WHERE id = ? AND account_id = ? AND status = ?")
+      .run("request", job.id, req.accountId, "cancelled");
+    const now = new Date().toISOString();
+    await db.prepare('INSERT INTO activity_logs (id, job_id, action, timestamp, "user", account_id) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(uuidv4(), job.id, "Cancelled ticket reopened as Request", now, req.user.email, req.accountId);
+    await safeQueuePlatformEvent({ accountId: req.accountId, type: "job.status_changed", subjectId: job.id, occurredAt: now,
+      payload: { title: job.title, previousStatus: "cancelled", status: "request" } });
+    logger.audit("job_reopened", { accountId: req.accountId, jobId: job.id });
+    const updated = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(job.id, req.accountId);
+    res.json({ job: updated, success: true });
+  } catch (error) {
+    res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+  }
+});
+
+async function loadInvoiceContext(id, accountId) {
+  const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(id, accountId);
+  if (!job) return null;
+  const client = job.clientId ? await db.prepare("SELECT * FROM clients WHERE id = ? AND account_id = ?").get(job.clientId, accountId) : null;
+  const settings = await db.prepare("SELECT * FROM settings WHERE account_id = ? LIMIT 1").get(accountId);
+  const paidAmount = await recordedPaymentTotal(job.id, accountId);
+  return { job, client, settings: settings || {}, paidAmount };
+}
+
+app.get("/api/jobs/:id/invoice.pdf", authenticateToken, requireAnyPagePermission("invoices"), async (req, res) => {
+  try {
+    const context = await loadInvoiceContext(req.params.id, req.accountId);
+    if (!context) return res.status(404).json({ error: "Job not found" });
+    const issue = validateInvoice(context.job, null, false);
+    if (issue) return res.status(409).json({ error: issue });
+    const pdf = await renderInvoicePdf({ ...context, issuedAt: context.job.invoiceIssuedAt || new Date().toISOString() });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Cache-Control", "no-store, private");
+    res.setHeader("Content-Disposition", 'attachment; filename="' + invoiceReference(context.job.id) + '.pdf"');
+    res.send(pdf);
+  } catch (error) {
+    logger.error("invoice pdf failed", { error: error.message });
+    res.status(500).json({ error: "Could not generate the invoice PDF." });
+  }
+});
+
+const invoiceEmailLimiter = rateLimit({ windowMs: 60_000, limit: 5, standardHeaders: "draft-7", legacyHeaders: false });
+app.post("/api/jobs/:id/send-invoice", authenticateToken, requireAnyPagePermission("invoices"), invoiceEmailLimiter, async (req, res) => {
+  let leaseAcquired = false;
+  try {
+    const context = await loadInvoiceContext(req.params.id, req.accountId);
+    if (!context) return res.status(404).json({ error: "Job not found" });
+    const { job, client, settings, paidAmount } = context;
+    const recipient = invoiceRecipient(job, client);
+    const issue = validateInvoice(job, recipient);
+    if (issue) return res.status(409).json({ error: issue });
+    if (job.invoiceSentAt && Date.now() - Date.parse(job.invoiceSentAt) < 60_000) {
+      return res.status(429).json({ error: "This invoice was just sent. Please check the delivery record before resending." });
+    }
+    const now = new Date().toISOString();
+    const leaseCutoff = new Date(Date.now() - 300_000).toISOString();
+    const acquired = await db.prepare("UPDATE jobs SET invoiceSendingAt = ? WHERE id = ? AND account_id = ? AND (invoiceSendingAt IS NULL OR invoiceSendingAt < ?) RETURNING id")
+      .get(now, job.id, req.accountId, leaseCutoff);
+    if (!acquired) return res.status(409).json({ error: "This invoice is already being sent. Check again shortly." });
+    leaseAcquired = true;
+    const issuedAt = job.invoiceIssuedAt || now;
+    const pdf = await renderInvoicePdf({ job, client, settings, issuedAt, paidAmount });
+    const number = invoiceReference(job.id);
+    const amount = new Intl.NumberFormat("en-GB", { style: "currency", currency: settings.currency || "XCD" }).format(Number(job.amount));
+    const result = await sendInvoiceDocument({ to: recipient, companyName: settings.name || "V79 Tiquet",
+      number, title: job.title, amount, pdf, filename: number + ".pdf" });
+    if (!result.success || result.skipped) {
+      return res.status(503).json({ error: result.skipped ? "Email is not configured. Download the PDF and send it manually." : "Email service did not accept the invoice. Please retry later." });
+    }
+    await db.prepare("UPDATE jobs SET invoiceIssuedAt = COALESCE(invoiceIssuedAt, ?), invoiceSentAt = ?, invoiceSentTo = ? WHERE id = ? AND account_id = ?")
+      .run(issuedAt, now, recipient, job.id, req.accountId);
+    await db.prepare('INSERT INTO activity_logs (id, job_id, action, timestamp, "user", account_id) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(uuidv4(), job.id, "Invoice " + number + " emailed to " + recipient, now, req.user.email, req.accountId);
+    logger.audit("invoice_emailed", { accountId: req.accountId, jobId: job.id, invoice: number });
+    res.json({ success: true, invoice: number, sentTo: recipient, sentAt: now });
+  } catch (error) {
+    logger.error("invoice send failed", { error: error.message });
+    res.status(500).json({ error: "Could not send invoice; verify delivery before retrying." });
+  } finally {
+    if (leaseAcquired) {
+      db.prepare("UPDATE jobs SET invoiceSendingAt = NULL WHERE id = ? AND account_id = ?")
+        .run(req.params.id, req.accountId).catch(error => logger.error("invoice send lease cleanup failed", { error: error.message }));
+    }
   }
 });
 
@@ -2143,6 +2281,10 @@ app.post("/api/payments", authenticateToken, requireAnyPagePermission("invoices"
   try {
     const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(jobId, req.accountId);
     if (!job) return res.status(404).json({ error: "Job not found" });
+    if (job.status === "cancelled") return res.status(409).json({
+      error: "Cannot record a new payment against a cancelled ticket.",
+      code: "CANCELLED_TICKET"
+    });
 
     const jobValue = Math.max(0, Number(job.amount || 0));
     if (jobValue <= 0) return res.status(409).json({
@@ -3537,6 +3679,7 @@ async function startPortalWipayCheckout(req, res, paymentKind) {
   try {
     const job = await getActivePortalJob(req.params.token);
     if (!job) return res.status(404).json({ error: "Invalid or expired link" });
+    if (job.status === "cancelled") return res.status(409).json({ error: "This ticket has been cancelled.", code: "CANCELLED_TICKET" });
     if (!tiquetBillingConfigured()) return res.status(503).json({ error: "Online payment is not configured.", code: "BILLING_NOT_CONFIGURED" });
 
     const [summary, account, settings] = await Promise.all([
@@ -3583,6 +3726,7 @@ app.post("/api/portal/:token/payment-confirm", portalActionLimiter, async (req, 
   try {
     const job = await getActivePortalJob(req.params.token);
     if (!job) return res.status(404).json({ error: "Invalid or expired link" });
+    if (job.status === "cancelled") return res.status(409).json({ error: "This ticket has been cancelled.", code: "CANCELLED_TICKET" });
     const orderId = String(req.body?.orderId || "").trim();
     if (!/^v79_[A-Za-z0-9_]+$/.test(orderId) || orderId.length > 64) return res.status(400).json({ error: "Invalid billing order." });
 

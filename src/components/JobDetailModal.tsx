@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { Job, Employee, JobNote, Client, BusinessSettings } from "../types";
 import { formatMoney } from "../currency";
+import { api } from "../api";
 import { AgentReplyDraftPanel } from "./AgentReplyDraftPanel";
 import {
   X,
@@ -31,6 +32,7 @@ export function JobDetailModal({
   settings,
   onClose,
   onUpdate,
+  onChanged,
 }: {
   job: Job;
   employees: Employee[];
@@ -38,8 +40,43 @@ export function JobDetailModal({
   settings: BusinessSettings;
   onClose: () => void;
   onUpdate: (updatedJob: Job) => void;
+  onChanged?: () => Promise<void>;
 }) {
   const [invoiceNotes, setInvoiceNotes] = useState(job.invoiceNotes || "");
+  const [showCancelConfirm, setShowCancelConfirm] = useState(false);
+  const [cancelReason, setCancelReason] = useState("Customer requested cancellation");
+  const [ticketActionLoading, setTicketActionLoading] = useState(false);
+  const [ticketActionError, setTicketActionError] = useState<string | null>(null);
+
+  const submitCancel = async () => {
+    if (cancelReason.trim().length < 5 || ticketActionLoading) return;
+    setTicketActionLoading(true);
+    setTicketActionError(null);
+    try {
+      await api.post("/jobs/" + encodeURIComponent(job.id) + "/cancel", { reason: cancelReason.trim() });
+      if (onChanged) await onChanged();
+      onClose();
+    } catch (error: any) {
+      setTicketActionError(error.message || "Could not cancel ticket.");
+    } finally {
+      setTicketActionLoading(false);
+    }
+  };
+
+  const submitReopen = async () => {
+    if (ticketActionLoading || !window.confirm("Reopen this cancelled ticket as a new Request?")) return;
+    setTicketActionLoading(true);
+    setTicketActionError(null);
+    try {
+      await api.post("/jobs/" + encodeURIComponent(job.id) + "/reopen");
+      if (onChanged) await onChanged();
+      onClose();
+    } catch (error: any) {
+      setTicketActionError(error.message || "Could not reopen ticket.");
+    } finally {
+      setTicketActionLoading(false);
+    }
+  };
   const [showDocPreview, setShowDocPreview] = useState(false);
   const [docType, setDocType] = useState<"estimate" | "work_order" | "invoice">("invoice");
   const [newNote, setNewNote] = useState("");
@@ -176,6 +213,7 @@ export function JobDetailModal({
               ) : (
                 <button
                   onClick={() => setEditingAmount(true)}
+                  disabled={Boolean(job.invoiceSentAt) || job.status === "cancelled"}
                   className="font-semibold text-slate-900 flex items-center gap-1.5 group w-full text-left"
                 >
                   {job.amount ? formatMoney(job.amount, settings.currency) : "TBD"}
@@ -194,6 +232,35 @@ export function JobDetailModal({
               </p>
             </div>
           </div>
+
+          {ticketActionError && (
+            <p role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{ticketActionError}</p>
+          )}
+          {job.status === "cancelled" ? (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-2">
+              <p className="font-semibold text-sm text-slate-800">Ticket cancelled and archived</p>
+              <p className="text-sm text-slate-600">Reason: {job.cancellationReason || "Not recorded"}</p>
+              <p className="text-xs text-slate-500">{job.cancelledAt ? new Date(job.cancelledAt).toLocaleString() : ""} {job.cancelledBy || ""}</p>
+              <button type="button" disabled={ticketActionLoading} onClick={submitReopen} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">Reopen Ticket</button>
+            </div>
+          ) : !["invoiced", "completed", "paid"].includes(job.status) && (
+            <div className="border-t border-slate-100 pt-4 space-y-3">
+              <button type="button" onClick={() => setShowCancelConfirm(!showCancelConfirm)} className="text-sm font-semibold text-red-700 hover:underline">Cancel Ticket</button>
+              {showCancelConfirm && (
+                <div className="rounded-xl border border-red-200 bg-red-50 p-4 space-y-3">
+                  <p className="text-sm text-red-900">Cancellation removes this ticket from active work, not from your records. Already billed or paid jobs cannot be cancelled here.</p>
+                  <label className="block text-sm font-semibold text-slate-800" htmlFor="cancellation-reason">Reason</label>
+                  <textarea id="cancellation-reason" value={cancelReason} maxLength={500} rows={2} onChange={(e) => setCancelReason(e.target.value)}
+                    className="w-full rounded-lg border border-slate-300 p-2 text-sm" />
+                  <div className="flex gap-2">
+                    <button type="button" disabled={ticketActionLoading || cancelReason.trim().length < 5} onClick={submitCancel}
+                      className="rounded-lg bg-red-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">Confirm Cancellation</button>
+                    <button type="button" onClick={() => setShowCancelConfirm(false)} className="rounded-lg border border-slate-300 px-4 py-2 text-sm">Back</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
@@ -283,6 +350,7 @@ export function JobDetailModal({
 
                 <button
                   type="button"
+                  disabled={job.status === "cancelled"}
                   onClick={() => {
                     setDocType("invoice");
                     setShowDocPreview(true);
@@ -371,6 +439,7 @@ export function JobDetailModal({
                 value={invoiceNotes}
                 onChange={(e) => setInvoiceNotes(e.target.value)}
                 onBlur={handleSaveNotes}
+                disabled={Boolean(job.invoiceSentAt) || job.status === "cancelled"}
                 rows={4}
                 className="w-full px-4 py-3 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-colors resize-none text-sm text-slate-700"
                 placeholder="Enter document line items (e.g., 1. Web Design - $500)..."

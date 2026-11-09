@@ -79,6 +79,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_intake_event ON jobs(intakeEventId) W
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS clientId TEXT;
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS secureTokenExpires TEXT;
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS secureTokenRevokedAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS cancellationReason TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS cancelledAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS cancelledBy TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS invoiceIssuedAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS invoiceSentAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS invoiceSentTo TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS invoiceSendingAt TEXT;
 CREATE INDEX IF NOT EXISTS idx_jobs_client_account ON jobs(account_id, clientId);
 CREATE INDEX IF NOT EXISTS idx_jobs_secure_token ON jobs(secureToken) WHERE secureToken IS NOT NULL;
 UPDATE jobs

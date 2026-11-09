@@ -143,7 +143,7 @@ export default function App() {
   const canReadClients = authenticated && (
     canAccess("clients") || canAccess("jobs") || canAccess("new-request")
   );
-  const { items: jobs, setItems: setJobs } = useSyncedCollection<Job>("/jobs", canReadJobs);
+  const { items: jobs, setItems: setJobs, reload: reloadJobs } = useSyncedCollection<Job>("/jobs", canReadJobs);
   const { items: clients, setItems: setClients } = useSyncedCollection<Client>("/clients", canReadClients);
 
   // Surfaces whether the welcome email on a newly-created client actually
@@ -277,7 +277,7 @@ export default function App() {
         businessName={settings.name || activeBusiness!.name}
         onSwitchBusiness={handleLogout}
         onLogout={handleLogout}
-        jobCount={jobs.filter((j) => j.status !== "completed" && j.status !== "paid").length}
+        jobCount={jobs.filter((j) => !["completed", "paid", "cancelled"].includes(j.status)).length}
         openInvoiceCount={jobs.filter((j) => j.status === "invoiced").length}
         isOpenMobile={isMobileSidebarOpen}
         onCloseMobile={() => setIsMobileSidebarOpen(false)}
@@ -401,7 +401,7 @@ export default function App() {
         <div className="flex-1 overflow-auto p-4 sm:p-5 xl:p-6 bg-[#07111f]">
           {activeTab === "dashboard" && <Dashboard jobs={jobs} currency={settings.currency} />}
           {activeTab === "jobs" && (
-            <JobBoard jobs={jobs} setJobs={setJobs} employees={employees} clients={clients} settings={settings} />
+            <JobBoard jobs={jobs} setJobs={setJobs} reloadJobs={reloadJobs} employees={employees} clients={clients} settings={settings} />
           )}
           {activeTab === "clients" && <Clients clients={clients} setClients={setClients} jobs={jobs} industries={industries} currency={settings.currency} />}
           {activeTab === "payroll" && (
@@ -416,7 +416,7 @@ export default function App() {
           {activeTab === "users" && <UserManagement users={users} setUsers={setUsers} />}
           {activeTab === "files" && <FileRepository files={files} onFilesChanged={reloadFiles} />}
           {activeTab === "invoices" && (
-            <Invoices jobs={jobs} setJobs={setJobs} employees={employees} clients={clients} settings={settings} />
+            <Invoices jobs={jobs} setJobs={setJobs} reloadJobs={reloadJobs} employees={employees} clients={clients} settings={settings} />
           )}
           {activeTab === "settings" && (
             <Settings settings={settings} setSettings={handleUpdateSettings} industries={industries} setIndustries={setIndustries} workspaceId={activeBusiness!.id} />
