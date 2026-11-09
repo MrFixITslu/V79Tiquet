@@ -2,6 +2,17 @@
 -- Migration from SQLite to PostgreSQL 16
 -- ==============================================================
 -- 1. Accounts (Tenants)
+-- App Help receipts are deliberately independent of the job FK. Keep deletion
+-- tombstones so an uncertain delivery retry cannot recreate a deleted ticket.
+CREATE TABLE IF NOT EXISTS hub_help_support_receipts (
+    request_id TEXT PRIMARY KEY,
+    requester_hash TEXT NOT NULL,
+    body_sha256 TEXT NOT NULL,
+    job_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_hub_help_requester_time ON hub_help_support_receipts(requester_hash, created_at);
 CREATE TABLE IF NOT EXISTS accounts (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,

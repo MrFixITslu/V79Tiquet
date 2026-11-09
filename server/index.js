@@ -2,6 +2,7 @@ import { createTiquetAuthentication } from "./hubAwareAuthentication.js";
 import { invoiceReference, invoiceRecipient, validateInvoice, renderInvoicePdf } from "./invoiceDocuments.js";
 import { revokeSignedRequestTokens, isSignedSessionRevoked, tokenFingerprint } from "./tokenRevocation.js";
 import { createSentinelIngestRouter, sentinelConfigFromEnv, SENTINEL_PATH } from "./sentinelIngress.js";
+import { createHubHelpRouter, HUB_HELP_PATH } from "./hubHelpSupport.js";
 import { createSentinelHubServiceChecker } from "./sentinelHubServiceChecker.js";
 import { createSentinelNocApproverChecker } from "./sentinelNocApproverChecker.js";
 import { readPrivateMachineSecret } from "./sentinelMachineSecretFile.js";
@@ -10,8 +11,9 @@ import { authorizeTiquetStaffSocket, revalidateTiquetStaffSocket } from "./tique
 import { revalidateTiquetPortalSocket } from "./tiquetPortalSocketAccess.js";
 import { isStalledSocketRevalidation } from "./tiquetSocketHeartbeatGuard.js";
 import { createHubEntitlementChecker } from "./hubEntitlementRevalidation.js";
+import { createHubSessionStatusChecker } from "./hubSessionStatus.js";
+import { resolveOwnedJobFile, resolveJobFolder } from "./jobFileBoundary.js";
 import 'dotenv/config';
-import { createServer as createViteServer } from "vite";
 import express from "express";
 import cors from "cors";
 import http from "http";
@@ -224,8 +226,18 @@ const checkHubSubscription = process.env.V79_ENTITLEMENT_RECHECK_ENABLED === "1"
     })
   : null;
 
+// OFF by default. Enable only on isolated paired Hub/Tiquet candidates.
+if (process.env.V79_TIQUET_SESSION_BINDING_ENABLED === "1" && !checkHubSubscription) {
+  throw new Error("Hub session binding requires active signed entitlement checks");
+}
+const checkHubSession = process.env.V79_TIQUET_SESSION_BINDING_ENABLED === "1"
+  ? createHubSessionStatusChecker({
+      hubUrl: process.env.V79_HUB_INTERNAL_URL,
+      secret: process.env.V79_TIQUET_LAUNCH_SECRET,
+    })
+  : null;
 const authenticateToken = createTiquetAuthentication({
-  jwt, jwtSecret: JWT_SECRET, db, checkHubSubscription,
+  jwt, jwtSecret: JWT_SECRET, db, checkHubSubscription, checkHubSession,
 });
 
 // --- Admin-only middleware ---
@@ -330,8 +342,7 @@ if (!isProduction) {
  * All file access in production must go through this authenticated route.
  */
 app.get('/api/files/:accountId/*', authenticateToken, requireAnyPagePermission("files"), (req, res, next) => {
-  // Reserve the existing general-file endpoint for its DB-scoped handler.
-  // This wildcard would otherwise treat the file ID as an account ID.
+  // Reserve the general-file endpoint for its authenticated DB-scoped handler.
   if (req.params[0] === 'download') return next('route');
   const {
     accountId
@@ -500,6 +511,14 @@ app.get("/api/platform/launch", async (req, res) => {
   try {
     const hubSession = await consumeHubLaunchTicket(ticket);
     const local = await provisionHubIdentity(hubSession);
+    if (checkHubSession) {
+      if (!/^[a-f0-9]{64}$/.test(String(hubSession.hubSessionId || "")) ||
+          !(await checkHubSession({
+            hubSessionId: hubSession.hubSessionId,
+            organizationId: hubSession.organization.id,
+            scopedUserId: hubSession.user.id,
+          }))) throw new Error("Hub session lineage is unavailable.");
+    }
     const token = jwt.sign({
       id: local.userId,
       email: local.email,
@@ -507,6 +526,7 @@ app.get("/api/platform/launch", async (req, res) => {
       account_id: local.accountId,
       hub_managed: true,
       hub_organization_id: hubSession.organization.id,
+      ...(checkHubSession ? { hub_session_id: hubSession.hubSessionId } : {}),
     }, JWT_SECRET, { expiresIn: "30m", jwtid: uuidv4() });
     setHubSessionCookie(res, token);
     logger.audit("hub_login_success", {
@@ -576,6 +596,7 @@ app.use(SENTINEL_PATH, createSentinelIngestRouter({
   authorizeApprover:sentinelNocApproverChecker
 }));
 app.use("/api/platform", platformRoutes);
+app.use(HUB_HELP_PATH, createHubHelpRouter({db}));
 
 // --- AUTHENTICATION ROUTES ---
 if (LEGACY_AUTH_ENABLED) {
@@ -3571,15 +3592,20 @@ app.delete("/api/jobs/:id/files/:filename", authenticateToken, requireAnyPagePer
     if (!job) return res.status(404).json({
       error: 'Job not found'
     });
-    const folder = getJobFolder(req.accountId, job.client, jobId);
-    const filePath = path.join(folder, filename);
-
-    // Security: ensure file is inside the job folder (prevent path traversal)
-    if (!filePath.startsWith(folder)) return res.status(403).json({
+    // Only this sensitive deletion path gets strict segment resolution.
+    // Normal uploads and existing folder naming remain unchanged.
+    const folder = resolveJobFolder(UPLOADS_ROOT, req.accountId, job.client, jobId);
+    const filePath = resolveOwnedJobFile(folder, filename);
+    if (!filePath) return res.status(403).json({
       error: 'Forbidden'
     });
     if (!fs.existsSync(filePath)) return res.status(404).json({
       error: 'File not found'
+    });
+    // Refuse directory or symlink targets; delete only a regular file in
+    // this exact job directory, not a similarly prefixed sibling job.
+    if (!fs.lstatSync(filePath).isFile()) return res.status(403).json({
+      error: 'Forbidden'
     });
     fs.unlinkSync(filePath);
     appendProjectLog(req.accountId, job.client, jobId, {
@@ -3603,10 +3629,40 @@ const getSettingsForPortal = async accountId => {
   return (await db.prepare("SELECT * FROM settings WHERE account_id = ? LIMIT 1").get(accountId)) || {};
 };
 
+// Hub App Help tickets carry an internal staff description and tenant IDs.
+// A bearer-link customer can only read the verified public support summary.
+function isHubHelpPortalJob(job) {
+  return typeof job?.intakeEventId === "string" && /^hub-help:[a-f0-9]{64}$/.test(job.intakeEventId);
+}
+
 app.get("/api/portal/:token", async (req, res) => {
   try {
     const job = await getActivePortalJob(req.params.token);
     if (!job) return res.status(404).json({ error: "Invalid or expired link" });
+    if (isHubHelpPortalJob(job)) {
+      const summaryText = String(job.description || "").split("\n\n").at(-1).slice(0, 18000);
+      const rows = await getJobMessages(job.id);
+      const messages = rows.filter(row => row.sender === "Client" || row.sender === "V79 Customer Care")
+        .slice(-100).map(row => ({
+          id: row.id, sender: row.sender === "Client" ? "Client" : "Support",
+          content: String(row.content || "").slice(0, 2000), timestamp: row.timestamp
+        }));
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("Referrer-Policy", "no-referrer");
+      return res.json({
+        job: {
+          id: job.id, title: job.title, client: job.client, status: job.status,
+          priority: job.priority, createdAt: job.createdAt, dueDate: null,
+          description: summaryText, amount: 0, depositPaid: 0,
+          quoteApproved: false, activityLog: [], messages, lineItems: [],
+          deliverables: [], timeLogs: [], stageAssignments: {}, timerStartedAt: null
+        },
+        settings: { businessName: "Vision79 Digital" },
+        payments: { totalPaid: 0, outstandingAmount: 0, fullyPaid: true },
+        billing: { available: false, provider: "wipay", environment: null, currency: null }
+      });
+    }
+
 
     const summary = await paymentSummary(job);
     const {
@@ -3657,6 +3713,7 @@ app.post("/api/portal/:token/approve-quote", portalActionLimiter, async (req, re
   try {
     const job = await getActivePortalJob(req.params.token);
     if (!job) return res.status(404).json({ error: "Invalid or expired link" });
+    if (isHubHelpPortalJob(job)) return res.status(403).json({ error: "Billing and quote actions are unavailable for support tickets." });
 
     if (!job.quoteApproved) {
       if (job.status === "request" || job.status === "estimation") {
@@ -3679,6 +3736,7 @@ async function startPortalWipayCheckout(req, res, paymentKind) {
   try {
     const job = await getActivePortalJob(req.params.token);
     if (!job) return res.status(404).json({ error: "Invalid or expired link" });
+    if (isHubHelpPortalJob(job)) return res.status(403).json({ error: "Billing and quote actions are unavailable for support tickets." });
     if (job.status === "cancelled") return res.status(409).json({ error: "This ticket has been cancelled.", code: "CANCELLED_TICKET" });
     if (!tiquetBillingConfigured()) return res.status(503).json({ error: "Online payment is not configured.", code: "BILLING_NOT_CONFIGURED" });
 
@@ -3726,6 +3784,7 @@ app.post("/api/portal/:token/payment-confirm", portalActionLimiter, async (req, 
   try {
     const job = await getActivePortalJob(req.params.token);
     if (!job) return res.status(404).json({ error: "Invalid or expired link" });
+    if (isHubHelpPortalJob(job)) return res.status(403).json({ error: "Billing and quote actions are unavailable for support tickets." });
     if (job.status === "cancelled") return res.status(409).json({ error: "This ticket has been cancelled.", code: "CANCELLED_TICKET" });
     const orderId = String(req.body?.orderId || "").trim();
     if (!/^v79_[A-Za-z0-9_]+$/.test(orderId) || orderId.length > 64) return res.status(400).json({ error: "Invalid billing order." });
@@ -4048,6 +4107,7 @@ if (process.env.STRIPE_SECRET_KEY) {
 
 // Serve frontend
 if (!isProduction) {
+  const { createServer: createViteServer } = await import("vite");
   const vite = await createViteServer({
     root: path.resolve(__dirname, '..'),
     server: {
@@ -4167,7 +4227,7 @@ wss.on("connection", async (ws, req) => {
         return;
       }
       const staffAccess = await authorizeTiquetStaffSocket({
-        decoded, db, checkHubSubscription,
+        decoded, db, checkHubSubscription, checkHubSession,
       });
       if (!staffAccess.allowed) {
         ws.close(4003, "Hub entitlement or staff session unavailable");
@@ -4176,6 +4236,7 @@ wss.on("connection", async (ws, req) => {
       jobId = job.id;
       ws.role = "staff";
       ws.hubIdentity = staffAccess.hubIdentity;
+      ws.hubSessionId = staffAccess.hubSessionId;
       ws.sessionIdentity = staffAccess.sessionIdentity;
       ws.tokenHash = tokenFingerprint(authParam);
       ws.jwtExpiresAt = staffAccess.jwtExpiresAt;
@@ -4226,7 +4287,7 @@ const wsHeartbeat = setInterval(() => {
             unsubscribeFromJob(ws.jobId, ws);
             return ws.close(4003, "Portal link no longer authorized");
           }
-        } else if (!(await revalidateTiquetStaffSocket(ws, checkHubSubscription, Date.now(), db))) {
+        } else if (!(await revalidateTiquetStaffSocket(ws, checkHubSubscription, Date.now(), db, checkHubSession))) {
           unsubscribeFromJob(ws.jobId, ws);
           return ws.close(4003, "Hub entitlement or session expired");
         }
