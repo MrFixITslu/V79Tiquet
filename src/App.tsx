@@ -63,6 +63,16 @@ export default function App() {
 
   const authenticated = !!currentUser && !!activeBusiness;
 
+  useEffect(() => {
+    const pages: Record<string, string> = {
+      dashboard: "Overview", jobs: "Jobs Pipeline", clients: "Clients",
+      invoices: "Invoices", "new-request": "New Request",
+      files: "Files", payroll: "Payroll", users: "Users & Roles",
+      settings: "Settings",
+    };
+    document.title = `${portalRoute.matched ? "Customer Portal" : resetPasswordRoute.matched ? "Reset Password" : pages[activeTab] || "Workspace"} | Tiquet | Vision79`;
+  }, [activeTab, portalRoute.matched, resetPasswordRoute.matched]);
+
   // Keep authorized workspace navigation in the URL so refresh restores the page.
   useEffect(() => {
     if (!authenticated || portalRoute.matched || resetPasswordRoute.matched) return;

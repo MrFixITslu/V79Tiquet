@@ -74,15 +74,15 @@ export function Sidebar({
           <div className="flex items-center gap-3 min-w-0">
             <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-[#0A86FF] via-[#0871d4] to-[#FF7A00] p-[1px] shadow-[0_0_24px_rgba(10,134,255,.15)] shrink-0">
               <div className="w-full h-full rounded-[15px] bg-[#081727] flex items-center justify-center">
-                <Briefcase className="w-5 h-5 text-[#ff9a3d]" />
+                <img src="/brand/icon-64.png" alt="" className="w-7 h-7" />
               </div>
             </div>
             <div className="min-w-0">
               <div className="flex items-baseline gap-1.5">
                 <span className="text-[16px] font-black tracking-[-0.04em] text-white">TIQUET</span>
-                <span className="text-[8px] font-black tracking-[0.18em] text-[#55c7ff]">V79</span>
+                <span className="text-[11px] font-bold tracking-[0.09em] text-[#74d0ff]">Vision79</span>
               </div>
-              <div className="text-[9px] text-slate-500 mt-0.5 truncate max-w-[135px]">{businessName}</div>
+              <div className="text-xs text-slate-300 mt-0.5 truncate max-w-[135px]">{businessName}</div>
             </div>
           </div>
           <button onClick={onCloseMobile} className="p-1.5 text-slate-500 hover:text-white rounded-lg hover:bg-white/5 lg:hidden">
