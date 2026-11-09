@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Search, Shield, Zap, ChevronDown, UserPlus, Clock, X, Loader2, Menu } from "lucide-react";
+import { Search, Shield, Zap, ChevronDown, UserPlus, Clock, X, Loader2, Menu, Sun, Moon } from "lucide-react";
 import { JobBoard } from "./components/JobBoard";
 import { Sidebar } from "./components/Sidebar";
 import { JobRequestForm } from "./components/JobRequestForm";
@@ -28,6 +28,7 @@ const DEFAULT_SETTINGS: BusinessSettings = {
   logoUrl: "",
   website: "",
   paymentTerms: "",
+  invoiceCopyEmail: "",
   currency: "USD",
   taxRate: 0,
 };
@@ -46,7 +47,19 @@ function matchPortalPath(pathname: string): { matched: boolean; token: string | 
   return { matched: true, token: parts[1] || null };
 }
 
+type TiquetTheme = "dark" | "light";
+const TIQUET_THEME_KEY = "v79-tiquet-theme";
+
+function initialTheme(): TiquetTheme {
+  try {
+    return window.localStorage.getItem(TIQUET_THEME_KEY) === "light" ? "light" : "dark";
+  } catch {
+    return "dark";
+  }
+}
+
 export default function App() {
+  const [theme, setTheme] = useState<TiquetTheme>(initialTheme);
   const [currentUser, setCurrentUser] = useState<AuthenticatedUser | null>(null);
   const [activeBusiness, setActiveBusiness] = useState<Business | null>(null);
   const [restoringSession, setRestoringSession] = useState(true);
@@ -62,6 +75,21 @@ export default function App() {
   const [selectedJobForModal, setSelectedJobForModal] = useState<Job | null>(null);
 
   const authenticated = !!currentUser && !!activeBusiness;
+
+  // Appearance is a browser preference, never part of authentication or workspace data.
+  useEffect(() => {
+    try { window.localStorage.setItem(TIQUET_THEME_KEY, theme); } catch { /* storage blocked */ }
+  }, [theme]);
+
+  useEffect(() => {
+    const pages: Record<string, string> = {
+      dashboard: "Overview", jobs: "Jobs Pipeline", clients: "Clients",
+      invoices: "Invoices", "new-request": "New Request",
+      files: "Files", payroll: "Payroll", users: "Users & Roles",
+      settings: "Settings",
+    };
+    document.title = `${portalRoute.matched ? "Customer Portal" : resetPasswordRoute.matched ? "Reset Password" : pages[activeTab] || "Workspace"} | Tiquet | Vision79`;
+  }, [activeTab, portalRoute.matched, resetPasswordRoute.matched]);
 
   // Keep authorized workspace navigation in the URL so refresh restores the page.
   useEffect(() => {
@@ -123,6 +151,7 @@ export default function App() {
             logoUrl: settings?.logoUrl || "",
             website: settings?.website || "",
             paymentTerms: settings?.paymentTerms || DEFAULT_SETTINGS.paymentTerms,
+            invoiceCopyEmail: settings?.invoiceCopyEmail || "",
             currency: settings?.currency || "USD",
             taxRate: settings?.taxRate || 0,
           },
@@ -143,7 +172,7 @@ export default function App() {
   const canReadClients = authenticated && (
     canAccess("clients") || canAccess("jobs") || canAccess("new-request")
   );
-  const { items: jobs, setItems: setJobs } = useSyncedCollection<Job>("/jobs", canReadJobs);
+  const { items: jobs, setItems: setJobs, reload: reloadJobs } = useSyncedCollection<Job>("/jobs", canReadJobs);
   const { items: clients, setItems: setClients } = useSyncedCollection<Client>("/clients", canReadClients);
 
   // Surfaces whether the welcome email on a newly-created client actually
@@ -270,14 +299,14 @@ export default function App() {
   }
 
   return (
-    <div className="v79-tiquet-app flex h-[100dvh] min-h-[100dvh] bg-[#07111f] text-slate-100 font-sans overflow-hidden">
+    <div data-theme={theme} className="v79-tiquet-app flex h-[100dvh] min-h-[100dvh] bg-[#07111f] text-slate-100 font-sans overflow-hidden">
       <Sidebar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         businessName={settings.name || activeBusiness!.name}
         onSwitchBusiness={handleLogout}
         onLogout={handleLogout}
-        jobCount={jobs.filter((j) => j.status !== "completed" && j.status !== "paid").length}
+        jobCount={jobs.filter((j) => !["completed", "paid", "cancelled"].includes(j.status)).length}
         openInvoiceCount={jobs.filter((j) => j.status === "invoiced").length}
         isOpenMobile={isMobileSidebarOpen}
         onCloseMobile={() => setIsMobileSidebarOpen(false)}
@@ -323,6 +352,22 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-4">
+            <button
+              type="button"
+              data-testid="tiquet-theme-toggle"
+              onClick={() => setTheme((previous) => previous === "dark" ? "light" : "dark")}
+              aria-label={"Switch to " + (theme === "dark" ? "light" : "dark") + " mode"}
+              title={"Switch to " + (theme === "dark" ? "light" : "dark") + " mode"}
+              aria-pressed={theme === "light"}
+              className="v79-theme-toggle inline-flex min-w-10 min-h-10 items-center justify-center gap-2
+                rounded-xl border border-[#1a3854] bg-[#091728] px-2.5
+                text-slate-300 hover:text-[#55c7ff] hover:border-sky-500/40
+                focus-visible:ring-2 focus-visible:ring-sky-500 focus-visible:ring-offset-2
+                transition-colors cursor-pointer"
+            >
+              {theme === "dark" ? <Sun aria-hidden="true" className="w-4 h-4" /> : <Moon aria-hidden="true" className="w-4 h-4" />}
+              <span className="hidden lg:inline text-xs font-semibold">{theme === "dark" ? "Light mode" : "Dark mode"}</span>
+            </button>
             <div className="hidden sm:flex items-center gap-1.5 text-[9px] text-emerald-400 font-bold uppercase tracking-wider bg-emerald-500/10 px-3 py-1.5 rounded-full border border-emerald-500/20">
               <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
               Connected
@@ -399,9 +444,16 @@ export default function App() {
         )}
 
         <div className="flex-1 overflow-auto p-4 sm:p-5 xl:p-6 bg-[#07111f]">
-          {activeTab === "dashboard" && <Dashboard jobs={jobs} currency={settings.currency} />}
+          {activeTab === "dashboard" && <Dashboard jobs={jobs} currency={settings.currency}
+            onOpenTicket={canAccess("jobs") ? (job) => {
+              // Navigate to existing job detail route; preserve refresh and URL.
+              window.history.pushState(window.history.state, "",
+                tiquetNavigationPath(window.location.href, "jobs", job.id));
+              setActiveTab("jobs");
+            } : undefined}
+          />}
           {activeTab === "jobs" && (
-            <JobBoard jobs={jobs} setJobs={setJobs} employees={employees} clients={clients} settings={settings} />
+            <JobBoard jobs={jobs} setJobs={setJobs} reloadJobs={reloadJobs} employees={employees} clients={clients} settings={settings} />
           )}
           {activeTab === "clients" && <Clients clients={clients} setClients={setClients} jobs={jobs} industries={industries} currency={settings.currency} />}
           {activeTab === "payroll" && (
@@ -416,7 +468,7 @@ export default function App() {
           {activeTab === "users" && <UserManagement users={users} setUsers={setUsers} />}
           {activeTab === "files" && <FileRepository files={files} onFilesChanged={reloadFiles} />}
           {activeTab === "invoices" && (
-            <Invoices jobs={jobs} setJobs={setJobs} employees={employees} clients={clients} settings={settings} />
+            <Invoices jobs={jobs} setJobs={setJobs} reloadJobs={reloadJobs} employees={employees} clients={clients} settings={settings} />
           )}
           {activeTab === "settings" && (
             <Settings settings={settings} setSettings={handleUpdateSettings} industries={industries} setIndustries={setIndustries} workspaceId={activeBusiness!.id} />
@@ -515,6 +567,7 @@ export default function App() {
           clients={clients}
           settings={settings}
           onClose={() => setSelectedJobForModal(null)}
+          onChanged={reloadJobs}
           onUpdate={(updatedJob) => {
             setJobs(jobs.map((j) => (j.id === updatedJob.id ? updatedJob : j)));
             setSelectedJobForModal(updatedJob);

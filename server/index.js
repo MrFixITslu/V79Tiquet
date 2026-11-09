@@ -1,6 +1,9 @@
 import { createTiquetAuthentication } from "./hubAwareAuthentication.js";
+import { invoiceReference, invoiceRecipient, validateInvoice, renderInvoicePdf } from "./invoiceDocuments.js";
+import { normalizeInvoiceCopyEmail, invoiceBccForWorkspace, parseDueDate } from "./billingOptions.js";
 import { revokeSignedRequestTokens, isSignedSessionRevoked, tokenFingerprint } from "./tokenRevocation.js";
 import { createSentinelIngestRouter, sentinelConfigFromEnv, SENTINEL_PATH } from "./sentinelIngress.js";
+import { createHubHelpRouter, HUB_HELP_PATH } from "./hubHelpSupport.js";
 import { createSentinelHubServiceChecker } from "./sentinelHubServiceChecker.js";
 import { createSentinelNocApproverChecker } from "./sentinelNocApproverChecker.js";
 import { readPrivateMachineSecret } from "./sentinelMachineSecretFile.js";
@@ -9,14 +12,15 @@ import { authorizeTiquetStaffSocket, revalidateTiquetStaffSocket } from "./tique
 import { revalidateTiquetPortalSocket } from "./tiquetPortalSocketAccess.js";
 import { isStalledSocketRevalidation } from "./tiquetSocketHeartbeatGuard.js";
 import { createHubEntitlementChecker } from "./hubEntitlementRevalidation.js";
+import { createHubSessionStatusChecker } from "./hubSessionStatus.js";
+import { resolveOwnedJobFile, resolveJobFolder } from "./jobFileBoundary.js";
 import 'dotenv/config';
-import { createServer as createViteServer } from "vite";
 import express from "express";
 import cors from "cors";
 import http from "http";
 import { WebSocketServer } from "ws";
 import db, { dbDir, seedDefaultTemplatesForAccount } from "./db.js";
-import { sendPortalLink, sendStatusUpdate, sendTemplated, renderEmailFromPlainTemplate, sendPasswordReset, sendUserInvite } from "./email.js";
+import { sendPortalLink, sendStatusUpdate, sendTemplated, renderEmailFromPlainTemplate, sendPasswordReset, sendUserInvite, sendInvoiceDocument } from "./email.js";
 import { registerOAuthRoutes } from "./oauth.js";
 import { v4 as uuidv4 } from "uuid";
 import jwt from "jsonwebtoken";
@@ -223,8 +227,18 @@ const checkHubSubscription = process.env.V79_ENTITLEMENT_RECHECK_ENABLED === "1"
     })
   : null;
 
+// OFF by default. Enable only on isolated paired Hub/Tiquet candidates.
+if (process.env.V79_TIQUET_SESSION_BINDING_ENABLED === "1" && !checkHubSubscription) {
+  throw new Error("Hub session binding requires active signed entitlement checks");
+}
+const checkHubSession = process.env.V79_TIQUET_SESSION_BINDING_ENABLED === "1"
+  ? createHubSessionStatusChecker({
+      hubUrl: process.env.V79_HUB_INTERNAL_URL,
+      secret: process.env.V79_TIQUET_LAUNCH_SECRET,
+    })
+  : null;
 const authenticateToken = createTiquetAuthentication({
-  jwt, jwtSecret: JWT_SECRET, db, checkHubSubscription,
+  jwt, jwtSecret: JWT_SECRET, db, checkHubSubscription, checkHubSession,
 });
 
 // --- Admin-only middleware ---
@@ -329,8 +343,7 @@ if (!isProduction) {
  * All file access in production must go through this authenticated route.
  */
 app.get('/api/files/:accountId/*', authenticateToken, requireAnyPagePermission("files"), (req, res, next) => {
-  // Reserve the existing general-file endpoint for its DB-scoped handler.
-  // This wildcard would otherwise treat the file ID as an account ID.
+  // Reserve the general-file endpoint for its authenticated DB-scoped handler.
   if (req.params[0] === 'download') return next('route');
   const {
     accountId
@@ -499,6 +512,14 @@ app.get("/api/platform/launch", async (req, res) => {
   try {
     const hubSession = await consumeHubLaunchTicket(ticket);
     const local = await provisionHubIdentity(hubSession);
+    if (checkHubSession) {
+      if (!/^[a-f0-9]{64}$/.test(String(hubSession.hubSessionId || "")) ||
+          !(await checkHubSession({
+            hubSessionId: hubSession.hubSessionId,
+            organizationId: hubSession.organization.id,
+            scopedUserId: hubSession.user.id,
+          }))) throw new Error("Hub session lineage is unavailable.");
+    }
     const token = jwt.sign({
       id: local.userId,
       email: local.email,
@@ -506,6 +527,7 @@ app.get("/api/platform/launch", async (req, res) => {
       account_id: local.accountId,
       hub_managed: true,
       hub_organization_id: hubSession.organization.id,
+      ...(checkHubSession ? { hub_session_id: hubSession.hubSessionId } : {}),
     }, JWT_SECRET, { expiresIn: "30m", jwtid: uuidv4() });
     setHubSessionCookie(res, token);
     logger.audit("hub_login_success", {
@@ -575,6 +597,7 @@ app.use(SENTINEL_PATH, createSentinelIngestRouter({
   authorizeApprover:sentinelNocApproverChecker
 }));
 app.use("/api/platform", platformRoutes);
+app.use(HUB_HELP_PATH, createHubHelpRouter({db}));
 
 // --- AUTHENTICATION ROUTES ---
 if (LEGACY_AUTH_ENABLED) {
@@ -979,7 +1002,7 @@ const getJobMessages = async jobId => {
 };
 
 const PORTAL_LINK_TTL_MS = 14 * 24 * 60 * 60 * 1000;
-const JOB_STATUSES = new Set(["request", "estimation", "in-progress", "review", "invoiced", "completed", "paid"]);
+const JOB_STATUSES = new Set(["request", "estimation", "in-progress", "review", "invoiced", "completed", "paid", "cancelled"]);
 
 
 function createPortalCredential() {
@@ -1004,7 +1027,7 @@ async function getActivePortalJob(token) {
   const job = await db.prepare(
     "SELECT * FROM jobs WHERE secureToken = ? AND secureTokenRevokedAt IS NULL LIMIT 1"
   ).get(cleanToken);
-  if (!job) return null;
+  if (!job || job.status === "cancelled") return null;
   if (!job.secureTokenExpires || new Date(job.secureTokenExpires).getTime() <= Date.now()) return null;
   return job;
 }
@@ -1160,6 +1183,11 @@ const createNotification = async ({
 const updateJobStage = async (id, newStatus, accountId, userName = "System") => {
   const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(id, accountId);
   if (!job) return null;
+  if (job.status === "cancelled" && newStatus !== "cancelled") {
+    const error = new Error("Use Reopen Ticket to restore a cancelled job.");
+    error.statusCode = 409;
+    throw error;
+  }
 
   if (newStatus === "paid" && job.status !== "paid" && Number(job.amount || 0) > 0) {
     const paidAmount = await recordedPaymentTotal(id, accountId);
@@ -1196,7 +1224,7 @@ const updateJobStage = async (id, newStatus, accountId, userName = "System") => 
   }
 
   // 3. Status-specific logic: Stop timer if finished
-  const isFinished = ['completed', 'paid'].includes(newStatus);
+  const isFinished = ['completed', 'paid', 'cancelled'].includes(newStatus);
   const timerStartedAt = isFinished ? null : now;
 
   // 4. Update DB
@@ -1822,6 +1850,25 @@ app.put("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"), as
     if (status !== undefined && !JOB_STATUSES.has(String(status))) {
       return badRequest(res, "Invalid job status");
     }
+    if (status === "cancelled" || (existingJob.status === "cancelled" && status && status !== "cancelled")) {
+      return res.status(409).json({ error: "Use Cancel Ticket or Reopen Ticket to change this status.", code: "CANCELLATION_WORKFLOW_REQUIRED" });
+    }
+    // Due dates use the validated, auditable dedicated endpoint.
+    const requestedDate = dueDate ? String(dueDate).slice(0, 10) : null;
+    const storedDate = existingJob.dueDate ? String(existingJob.dueDate).slice(0, 10) : null;
+    if (dueDate !== undefined && requestedDate !== storedDate) {
+      return res.status(409).json({ error: "Use the ticket Due Date editor to reschedule and record the change." });
+    }
+    if (existingJob.invoiceSentAt) {
+      const lockedFields = { title, client, description, amount, invoiceNotes, clientEmail, clientId };
+      const changed = Object.entries(lockedFields).some(([field, value]) =>
+        value !== undefined && String(value ?? "") !== String(existingJob[field] ?? "")
+      );
+      if (changed) return res.status(409).json({
+        error: "This invoice was already issued. Use a documented adjustment or credit-note process instead of editing its contents.",
+        code: "ISSUED_INVOICE_LOCKED"
+      });
+    }
     if (clientId !== undefined && clientId !== null) {
       const linkedClient = await db.prepare("SELECT id FROM clients WHERE id = ? AND account_id = ?").get(clientId, req.accountId);
       if (!linkedClient) return badRequest(res, "Unknown client");
@@ -1946,6 +1993,38 @@ app.put("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"), as
   }
 });
 
+// Change only the due date; never overwrite unrelated fields from a stale browser form.
+app.put("/api/jobs/:id/due-date", authenticateToken, requireAnyPagePermission("jobs"), async (req, res) => {
+  let dueDate;
+  try {
+    dueDate = parseDueDate(req.body?.dueDate);
+  } catch (error) {
+    return badRequest(res, error.message);
+  }
+  try {
+    const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(req.params.id, req.accountId);
+    if (!job) return res.status(404).json({ error: "Job not found" });
+    if (["completed", "paid", "cancelled"].includes(job.status)) {
+      return res.status(409).json({ error: "Closed or cancelled tickets cannot be rescheduled." });
+    }
+    const previous = job.dueDate ? String(job.dueDate).slice(0, 10) : null;
+    if (previous === dueDate) return res.json({ job, unchanged: true });
+    const updated = await db.prepare(
+      "UPDATE jobs SET dueDate = ? WHERE id = ? AND account_id = ? AND status NOT IN ('completed', 'paid', 'cancelled') RETURNING *"
+    ).get(dueDate, job.id, req.accountId);
+    if (!updated) return res.status(409).json({ error: "Ticket status changed while saving. Refresh and retry." });
+    const now = new Date().toISOString();
+    const action = "Due date changed from " + (previous || "Not set") + " to " + (dueDate || "Not set");
+    await db.prepare('INSERT INTO activity_logs (id, job_id, action, timestamp, "user", account_id) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(uuidv4(), job.id, action, now, req.user.email, req.accountId);
+    logger.audit("job_due_date_updated", { accountId: req.accountId, jobId: job.id });
+    res.json({ job: updated, success: true });
+  } catch (error) {
+    logger.error("due date update failed", { error: error.message });
+    res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+  }
+});
+
 // Delete job endpoint
 app.delete("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"), async (req, res) => {
   const {
@@ -1974,6 +2053,127 @@ app.delete("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"),
     res.status(500).json({
       error: isProduction ? "Internal Server Error" : error.message
     });
+  }
+});
+
+
+// Cancellation is a distinct, auditable outcome, never a Completed or Paid job.
+app.post("/api/jobs/:id/cancel", authenticateToken, requireAnyPagePermission("jobs"), async (req, res) => {
+  const reason = String(req.body?.reason || "").trim();
+  if (reason.length < 5 || reason.length > 500) return badRequest(res, "Provide a cancellation reason (5-500 characters).");
+  try {
+    const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(req.params.id, req.accountId);
+    if (!job) return res.status(404).json({ error: "Job not found" });
+    if (job.status === "cancelled") return res.status(409).json({ error: "Ticket already cancelled.", code: "ALREADY_CANCELLED" });
+    if (["invoiced", "completed", "paid"].includes(job.status) || (await recordedPaymentTotal(job.id, req.accountId)) > 0) {
+      return res.status(409).json({ error: "This job has billing or completed work. Review an adjustment or refund before cancellation.", code: "BILLING_REVIEW_REQUIRED" });
+    }
+    await updateJobStage(job.id, "cancelled", req.accountId, req.user.email);
+    const now = new Date().toISOString();
+    await db.prepare("UPDATE jobs SET cancellationReason = ?, cancelledAt = ?, cancelledBy = ?, secureTokenRevokedAt = ? WHERE id = ? AND account_id = ?")
+      .run(reason, now, req.user.email, now, job.id, req.accountId);
+    await db.prepare('INSERT INTO activity_logs (id, job_id, action, timestamp, "user", account_id) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(uuidv4(), job.id, "Cancellation reason: " + reason, now, req.user.email, req.accountId);
+    logger.audit("job_cancelled", { accountId: req.accountId, jobId: job.id });
+    const updated = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(job.id, req.accountId);
+    res.json({ job: updated, success: true });
+  } catch (error) {
+    const code = error.statusCode || 500;
+    res.status(code).json({ error: code === 500 && isProduction ? "Internal Server Error" : error.message });
+  }
+});
+
+app.post("/api/jobs/:id/reopen", authenticateToken, requireAnyPagePermission("jobs"), async (req, res) => {
+  try {
+    const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(req.params.id, req.accountId);
+    if (!job) return res.status(404).json({ error: "Job not found" });
+    if (job.status !== "cancelled") return res.status(409).json({ error: "Only cancelled jobs can be reopened." });
+    // Reopening preserves the cancellation record, but restarts the ordinary request workflow.
+    await db.prepare("UPDATE jobs SET status = ?, quoteApproved = 0 WHERE id = ? AND account_id = ? AND status = ?")
+      .run("request", job.id, req.accountId, "cancelled");
+    const now = new Date().toISOString();
+    await db.prepare('INSERT INTO activity_logs (id, job_id, action, timestamp, "user", account_id) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(uuidv4(), job.id, "Cancelled ticket reopened as Request", now, req.user.email, req.accountId);
+    await safeQueuePlatformEvent({ accountId: req.accountId, type: "job.status_changed", subjectId: job.id, occurredAt: now,
+      payload: { title: job.title, previousStatus: "cancelled", status: "request" } });
+    logger.audit("job_reopened", { accountId: req.accountId, jobId: job.id });
+    const updated = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(job.id, req.accountId);
+    res.json({ job: updated, success: true });
+  } catch (error) {
+    res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+  }
+});
+
+async function loadInvoiceContext(id, accountId) {
+  const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(id, accountId);
+  if (!job) return null;
+  const client = job.clientId ? await db.prepare("SELECT * FROM clients WHERE id = ? AND account_id = ?").get(job.clientId, accountId) : null;
+  const settings = await db.prepare("SELECT * FROM settings WHERE account_id = ? LIMIT 1").get(accountId);
+  const paidAmount = await recordedPaymentTotal(job.id, accountId);
+  return { job, client, settings: settings || {}, paidAmount };
+}
+
+app.get("/api/jobs/:id/invoice.pdf", authenticateToken, requireAnyPagePermission("invoices"), async (req, res) => {
+  try {
+    const context = await loadInvoiceContext(req.params.id, req.accountId);
+    if (!context) return res.status(404).json({ error: "Job not found" });
+    const issue = validateInvoice(context.job, null, false);
+    if (issue) return res.status(409).json({ error: issue });
+    const pdf = await renderInvoicePdf({ ...context, issuedAt: context.job.invoiceIssuedAt || new Date().toISOString() });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Cache-Control", "no-store, private");
+    res.setHeader("Content-Disposition", 'attachment; filename="' + invoiceReference(context.job.id) + '.pdf"');
+    res.send(pdf);
+  } catch (error) {
+    logger.error("invoice pdf failed", { error: error.message });
+    res.status(500).json({ error: "Could not generate the invoice PDF." });
+  }
+});
+
+const invoiceEmailLimiter = rateLimit({ windowMs: 60_000, limit: 5, standardHeaders: "draft-7", legacyHeaders: false });
+app.post("/api/jobs/:id/send-invoice", authenticateToken, requireAnyPagePermission("invoices"), invoiceEmailLimiter, async (req, res) => {
+  let leaseAcquired = false;
+  try {
+    const context = await loadInvoiceContext(req.params.id, req.accountId);
+    if (!context) return res.status(404).json({ error: "Job not found" });
+    const { job, client, settings, paidAmount } = context;
+    const recipient = invoiceRecipient(job, client);
+    const issue = validateInvoice(job, recipient);
+    if (issue) return res.status(409).json({ error: issue });
+    if (job.invoiceSentAt && Date.now() - Date.parse(job.invoiceSentAt) < 60_000) {
+      return res.status(429).json({ error: "This invoice was just sent. Please check the delivery record before resending." });
+    }
+    const now = new Date().toISOString();
+    const leaseCutoff = new Date(Date.now() - 300_000).toISOString();
+    const acquired = await db.prepare("UPDATE jobs SET invoiceSendingAt = ? WHERE id = ? AND account_id = ? AND (invoiceSendingAt IS NULL OR invoiceSendingAt < ?) RETURNING id")
+      .get(now, job.id, req.accountId, leaseCutoff);
+    if (!acquired) return res.status(409).json({ error: "This invoice is already being sent. Check again shortly." });
+    leaseAcquired = true;
+    const issuedAt = job.invoiceIssuedAt || now;
+    const pdf = await renderInvoicePdf({ job, client, settings, issuedAt, paidAmount });
+    const number = invoiceReference(job.id);
+    const amount = new Intl.NumberFormat("en-GB", { style: "currency", currency: settings.currency || "XCD" }).format(Number(job.amount));
+    // Only a workspace's own configured address may receive the private invoice copy.
+    const bcc = invoiceBccForWorkspace(settings, recipient);
+    const result = await sendInvoiceDocument({ to: recipient, bcc, companyName: settings.name || "V79 Tiquet",
+      number, title: job.title, amount, pdf, filename: number + ".pdf" });
+    if (!result.success || result.skipped) {
+      return res.status(503).json({ error: result.skipped ? "Email is not configured. Download the PDF and send it manually." : "Email service did not accept the invoice. Please retry later." });
+    }
+    await db.prepare("UPDATE jobs SET invoiceIssuedAt = COALESCE(invoiceIssuedAt, ?), invoiceSentAt = ?, invoiceSentTo = ? WHERE id = ? AND account_id = ?")
+      .run(issuedAt, now, recipient, job.id, req.accountId);
+    await db.prepare('INSERT INTO activity_logs (id, job_id, action, timestamp, "user", account_id) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(uuidv4(), job.id, "Invoice " + number + " emailed to " + recipient + (bcc ? " (BCC " + bcc + ")" : ""), now, req.user.email, req.accountId);
+    logger.audit("invoice_emailed", { accountId: req.accountId, jobId: job.id, invoice: number });
+    res.json({ success: true, invoice: number, sentTo: recipient, copyTo: bcc || null, sentAt: now });
+  } catch (error) {
+    logger.error("invoice send failed", { error: error.message });
+    res.status(500).json({ error: "Could not send invoice; verify delivery before retrying." });
+  } finally {
+    if (leaseAcquired) {
+      db.prepare("UPDATE jobs SET invoiceSendingAt = NULL WHERE id = ? AND account_id = ?")
+        .run(req.params.id, req.accountId).catch(error => logger.error("invoice send lease cleanup failed", { error: error.message }));
+    }
   }
 });
 
@@ -2143,6 +2343,10 @@ app.post("/api/payments", authenticateToken, requireAnyPagePermission("invoices"
   try {
     const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(jobId, req.accountId);
     if (!job) return res.status(404).json({ error: "Job not found" });
+    if (job.status === "cancelled") return res.status(409).json({
+      error: "Cannot record a new payment against a cancelled ticket.",
+      code: "CANCELLED_TICKET"
+    });
 
     const jobValue = Math.max(0, Number(job.amount || 0));
     if (jobValue <= 0) return res.status(409).json({
@@ -2261,21 +2465,29 @@ app.put("/api/settings", authenticateToken, requireAdmin, async (req, res) => {
     website,
     paymentTerms,
     currency,
-    taxRate
+    taxRate,
+    invoiceCopyEmail
   } = sanitizeObject(req.body);
+  let copyAddress;
+  try {
+    copyAddress = invoiceCopyEmail === undefined ? undefined : normalizeInvoiceCopyEmail(invoiceCopyEmail);
+  } catch (error) {
+    return badRequest(res, error.message);
+  }
   try {
     const existing = await db.prepare("SELECT id FROM settings WHERE account_id = ?").get(req.accountId);
     if (existing) {
       await db.prepare(`
                 UPDATE settings 
-                SET name = ?, address = ?, email = ?, phone = ?, logoUrl = ?, website = ?, paymentTerms = ?, currency = ?, taxRate = ? 
+                SET name = ?, address = ?, email = ?, phone = ?, logoUrl = ?, website = ?, paymentTerms = ?, currency = ?, taxRate = ?,
+                    invoiceCopyEmail = COALESCE(?, invoiceCopyEmail)
                 WHERE account_id = ?
-            `).run(name, address, email, phone, logoUrl, website, paymentTerms, currency, taxRate, req.accountId);
+            `).run(name, address, email, phone, logoUrl, website, paymentTerms, currency, taxRate, copyAddress === undefined ? null : copyAddress, req.accountId);
     } else {
       await db.prepare(`
-                INSERT INTO settings (id, name, address, email, phone, logoUrl, website, paymentTerms, currency, taxRate, account_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `).run(uuidv4(), name, address, email, phone, logoUrl, website, paymentTerms, currency, taxRate, req.accountId);
+                INSERT INTO settings (id, name, address, email, phone, logoUrl, website, paymentTerms, currency, taxRate, invoiceCopyEmail, account_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `).run(uuidv4(), name, address, email, phone, logoUrl, website, paymentTerms, currency, taxRate, copyAddress === undefined ? "" : copyAddress, req.accountId);
     }
     res.json(await db.prepare("SELECT * FROM settings WHERE account_id = ?").get(req.accountId));
   } catch (error) {
@@ -3429,15 +3641,20 @@ app.delete("/api/jobs/:id/files/:filename", authenticateToken, requireAnyPagePer
     if (!job) return res.status(404).json({
       error: 'Job not found'
     });
-    const folder = getJobFolder(req.accountId, job.client, jobId);
-    const filePath = path.join(folder, filename);
-
-    // Security: ensure file is inside the job folder (prevent path traversal)
-    if (!filePath.startsWith(folder)) return res.status(403).json({
+    // Only this sensitive deletion path gets strict segment resolution.
+    // Normal uploads and existing folder naming remain unchanged.
+    const folder = resolveJobFolder(UPLOADS_ROOT, req.accountId, job.client, jobId);
+    const filePath = resolveOwnedJobFile(folder, filename);
+    if (!filePath) return res.status(403).json({
       error: 'Forbidden'
     });
     if (!fs.existsSync(filePath)) return res.status(404).json({
       error: 'File not found'
+    });
+    // Refuse directory or symlink targets; delete only a regular file in
+    // this exact job directory, not a similarly prefixed sibling job.
+    if (!fs.lstatSync(filePath).isFile()) return res.status(403).json({
+      error: 'Forbidden'
     });
     fs.unlinkSync(filePath);
     appendProjectLog(req.accountId, job.client, jobId, {
@@ -3461,10 +3678,40 @@ const getSettingsForPortal = async accountId => {
   return (await db.prepare("SELECT * FROM settings WHERE account_id = ? LIMIT 1").get(accountId)) || {};
 };
 
+// Hub App Help tickets carry an internal staff description and tenant IDs.
+// A bearer-link customer can only read the verified public support summary.
+function isHubHelpPortalJob(job) {
+  return typeof job?.intakeEventId === "string" && /^hub-help:[a-f0-9]{64}$/.test(job.intakeEventId);
+}
+
 app.get("/api/portal/:token", async (req, res) => {
   try {
     const job = await getActivePortalJob(req.params.token);
     if (!job) return res.status(404).json({ error: "Invalid or expired link" });
+    if (isHubHelpPortalJob(job)) {
+      const summaryText = String(job.description || "").split("\n\n").at(-1).slice(0, 18000);
+      const rows = await getJobMessages(job.id);
+      const messages = rows.filter(row => row.sender === "Client" || row.sender === "V79 Customer Care")
+        .slice(-100).map(row => ({
+          id: row.id, sender: row.sender === "Client" ? "Client" : "Support",
+          content: String(row.content || "").slice(0, 2000), timestamp: row.timestamp
+        }));
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("Referrer-Policy", "no-referrer");
+      return res.json({
+        job: {
+          id: job.id, title: job.title, client: job.client, status: job.status,
+          priority: job.priority, createdAt: job.createdAt, dueDate: null,
+          description: summaryText, amount: 0, depositPaid: 0,
+          quoteApproved: false, activityLog: [], messages, lineItems: [],
+          deliverables: [], timeLogs: [], stageAssignments: {}, timerStartedAt: null
+        },
+        settings: { businessName: "Vision79 Digital" },
+        payments: { totalPaid: 0, outstandingAmount: 0, fullyPaid: true },
+        billing: { available: false, provider: "wipay", environment: null, currency: null }
+      });
+    }
+
 
     const summary = await paymentSummary(job);
     const {
@@ -3515,6 +3762,7 @@ app.post("/api/portal/:token/approve-quote", portalActionLimiter, async (req, re
   try {
     const job = await getActivePortalJob(req.params.token);
     if (!job) return res.status(404).json({ error: "Invalid or expired link" });
+    if (isHubHelpPortalJob(job)) return res.status(403).json({ error: "Billing and quote actions are unavailable for support tickets." });
 
     if (!job.quoteApproved) {
       if (job.status === "request" || job.status === "estimation") {
@@ -3537,6 +3785,8 @@ async function startPortalWipayCheckout(req, res, paymentKind) {
   try {
     const job = await getActivePortalJob(req.params.token);
     if (!job) return res.status(404).json({ error: "Invalid or expired link" });
+    if (isHubHelpPortalJob(job)) return res.status(403).json({ error: "Billing and quote actions are unavailable for support tickets." });
+    if (job.status === "cancelled") return res.status(409).json({ error: "This ticket has been cancelled.", code: "CANCELLED_TICKET" });
     if (!tiquetBillingConfigured()) return res.status(503).json({ error: "Online payment is not configured.", code: "BILLING_NOT_CONFIGURED" });
 
     const [summary, account, settings] = await Promise.all([
@@ -3583,6 +3833,8 @@ app.post("/api/portal/:token/payment-confirm", portalActionLimiter, async (req, 
   try {
     const job = await getActivePortalJob(req.params.token);
     if (!job) return res.status(404).json({ error: "Invalid or expired link" });
+    if (isHubHelpPortalJob(job)) return res.status(403).json({ error: "Billing and quote actions are unavailable for support tickets." });
+    if (job.status === "cancelled") return res.status(409).json({ error: "This ticket has been cancelled.", code: "CANCELLED_TICKET" });
     const orderId = String(req.body?.orderId || "").trim();
     if (!/^v79_[A-Za-z0-9_]+$/.test(orderId) || orderId.length > 64) return res.status(400).json({ error: "Invalid billing order." });
 
@@ -3904,6 +4156,7 @@ if (process.env.STRIPE_SECRET_KEY) {
 
 // Serve frontend
 if (!isProduction) {
+  const { createServer: createViteServer } = await import("vite");
   const vite = await createViteServer({
     root: path.resolve(__dirname, '..'),
     server: {
@@ -4023,7 +4276,7 @@ wss.on("connection", async (ws, req) => {
         return;
       }
       const staffAccess = await authorizeTiquetStaffSocket({
-        decoded, db, checkHubSubscription,
+        decoded, db, checkHubSubscription, checkHubSession,
       });
       if (!staffAccess.allowed) {
         ws.close(4003, "Hub entitlement or staff session unavailable");
@@ -4032,6 +4285,7 @@ wss.on("connection", async (ws, req) => {
       jobId = job.id;
       ws.role = "staff";
       ws.hubIdentity = staffAccess.hubIdentity;
+      ws.hubSessionId = staffAccess.hubSessionId;
       ws.sessionIdentity = staffAccess.sessionIdentity;
       ws.tokenHash = tokenFingerprint(authParam);
       ws.jwtExpiresAt = staffAccess.jwtExpiresAt;
@@ -4082,7 +4336,7 @@ const wsHeartbeat = setInterval(() => {
             unsubscribeFromJob(ws.jobId, ws);
             return ws.close(4003, "Portal link no longer authorized");
           }
-        } else if (!(await revalidateTiquetStaffSocket(ws, checkHubSubscription, Date.now(), db))) {
+        } else if (!(await revalidateTiquetStaffSocket(ws, checkHubSubscription, Date.now(), db, checkHubSession))) {
           unsubscribeFromJob(ws.jobId, ws);
           return ws.close(4003, "Hub entitlement or session expired");
         }

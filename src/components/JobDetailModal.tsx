@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { Job, Employee, JobNote, Client, BusinessSettings } from "../types";
 import { formatMoney } from "../currency";
+import { api } from "../api";
 import { AgentReplyDraftPanel } from "./AgentReplyDraftPanel";
 import {
   X,
@@ -31,6 +32,7 @@ export function JobDetailModal({
   settings,
   onClose,
   onUpdate,
+  onChanged,
 }: {
   job: Job;
   employees: Employee[];
@@ -38,13 +40,70 @@ export function JobDetailModal({
   settings: BusinessSettings;
   onClose: () => void;
   onUpdate: (updatedJob: Job) => void;
+  onChanged?: () => Promise<void>;
 }) {
   const [invoiceNotes, setInvoiceNotes] = useState(job.invoiceNotes || "");
+  const [showCancelConfirm, setShowCancelConfirm] = useState(false);
+  const [cancelReason, setCancelReason] = useState("Customer requested cancellation");
+  const [ticketActionLoading, setTicketActionLoading] = useState(false);
+  const [ticketActionError, setTicketActionError] = useState<string | null>(null);
+
+  const submitCancel = async () => {
+    if (cancelReason.trim().length < 5 || ticketActionLoading) return;
+    setTicketActionLoading(true);
+    setTicketActionError(null);
+    try {
+      await api.post("/jobs/" + encodeURIComponent(job.id) + "/cancel", { reason: cancelReason.trim() });
+      if (onChanged) await onChanged();
+      onClose();
+    } catch (error: any) {
+      setTicketActionError(error.message || "Could not cancel ticket.");
+    } finally {
+      setTicketActionLoading(false);
+    }
+  };
+
+  const submitReopen = async () => {
+    if (ticketActionLoading || !window.confirm("Reopen this cancelled ticket as a new Request?")) return;
+    setTicketActionLoading(true);
+    setTicketActionError(null);
+    try {
+      await api.post("/jobs/" + encodeURIComponent(job.id) + "/reopen");
+      if (onChanged) await onChanged();
+      onClose();
+    } catch (error: any) {
+      setTicketActionError(error.message || "Could not reopen ticket.");
+    } finally {
+      setTicketActionLoading(false);
+    }
+  };
   const [showDocPreview, setShowDocPreview] = useState(false);
   const [docType, setDocType] = useState<"estimate" | "work_order" | "invoice">("invoice");
   const [newNote, setNewNote] = useState("");
   const [editingAmount, setEditingAmount] = useState(false);
   const [amountDraft, setAmountDraft] = useState(job.amount != null ? String(job.amount) : "");
+  const [editingDueDate, setEditingDueDate] = useState(false);
+  const [dueDateDraft, setDueDateDraft] = useState(job.dueDate ? String(job.dueDate).slice(0, 10) : "");
+  const [savingDueDate, setSavingDueDate] = useState(false);
+  const [dueDateError, setDueDateError] = useState<string | null>(null);
+
+  const handleSaveDueDate = async () => {
+    if (savingDueDate) return;
+    setSavingDueDate(true);
+    setDueDateError(null);
+    try {
+      const result = await api.put<{ job: Job }>("/jobs/" + encodeURIComponent(job.id) + "/due-date", {
+        dueDate: dueDateDraft || null,
+      });
+      onUpdate({ ...job, dueDate: result.job.dueDate });
+      if (onChanged) await onChanged();
+      setEditingDueDate(false);
+    } catch (error: any) {
+      setDueDateError(error.message || "The due date could not be saved.");
+    } finally {
+      setSavingDueDate(false);
+    }
+  };
 
   const handleSaveAmount = () => {
     const trimmed = amountDraft.trim();
@@ -176,6 +235,7 @@ export function JobDetailModal({
               ) : (
                 <button
                   onClick={() => setEditingAmount(true)}
+                  disabled={Boolean(job.invoiceSentAt) || job.status === "cancelled"}
                   className="font-semibold text-slate-900 flex items-center gap-1.5 group w-full text-left"
                 >
                   {job.amount ? formatMoney(job.amount, settings.currency) : "TBD"}
@@ -187,13 +247,71 @@ export function JobDetailModal({
               <p className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-1 flex items-center gap-1">
                 <Calendar className="w-3 h-3" /> Due Date
               </p>
-              <p className="font-semibold text-slate-900">
-                {job.dueDate
-                  ? new Date(job.dueDate).toLocaleDateString()
-                  : "Not set"}
-              </p>
+              {editingDueDate ? (
+                <div className="space-y-2">
+                  <input
+                    type="date"
+                    aria-label="Ticket due date"
+                    value={dueDateDraft}
+                    onChange={(event) => setDueDateDraft(event.target.value)}
+                    disabled={savingDueDate}
+                    className="w-full px-2 py-1 rounded-lg border border-slate-300 bg-white text-sm text-slate-900"
+                  />
+                  <div className="flex flex-wrap gap-2">
+                    <button type="button" onClick={handleSaveDueDate} disabled={savingDueDate}
+                      className="px-2.5 py-1 rounded-lg bg-indigo-600 text-white text-xs font-semibold disabled:opacity-50">Save</button>
+                    <button type="button" onClick={() => setDueDateDraft("")} disabled={savingDueDate}
+                      className="px-2.5 py-1 rounded-lg border border-slate-300 text-xs font-medium">Clear</button>
+                    <button type="button" onClick={() => { setEditingDueDate(false); setDueDateError(null); }} disabled={savingDueDate}
+                      className="px-2.5 py-1 rounded-lg border border-slate-300 text-xs font-medium">Cancel</button>
+                  </div>
+                  {dueDateError && <p role="alert" className="text-xs text-red-600">{dueDateError}</p>}
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  aria-label="Edit ticket due date"
+                  title={["completed", "paid", "cancelled"].includes(job.status) ? "Closed tickets cannot be rescheduled" : "Edit due date"}
+                  disabled={["completed", "paid", "cancelled"].includes(job.status)}
+                  onClick={() => { setDueDateDraft(job.dueDate ? String(job.dueDate).slice(0, 10) : ""); setEditingDueDate(true); }}
+                  className="font-semibold text-slate-900 inline-flex items-center gap-2 text-left disabled:cursor-default"
+                >
+                  <span>{job.dueDate ? String(job.dueDate).slice(0, 10) : "Not set"}</span>
+                  {!["completed", "paid", "cancelled"].includes(job.status) &&
+                    <Pencil className="w-3.5 h-3.5 text-slate-400" aria-hidden="true" />}
+                </button>
+              )}
             </div>
           </div>
+
+          {ticketActionError && (
+            <p role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{ticketActionError}</p>
+          )}
+          {job.status === "cancelled" ? (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-2">
+              <p className="font-semibold text-sm text-slate-800">Ticket cancelled and archived</p>
+              <p className="text-sm text-slate-600">Reason: {job.cancellationReason || "Not recorded"}</p>
+              <p className="text-xs text-slate-500">{job.cancelledAt ? new Date(job.cancelledAt).toLocaleString() : ""} {job.cancelledBy || ""}</p>
+              <button type="button" disabled={ticketActionLoading} onClick={submitReopen} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">Reopen Ticket</button>
+            </div>
+          ) : !["invoiced", "completed", "paid"].includes(job.status) && (
+            <div className="border-t border-slate-100 pt-4 space-y-3">
+              <button type="button" onClick={() => setShowCancelConfirm(!showCancelConfirm)} className="text-sm font-semibold text-red-700 hover:underline">Cancel Ticket</button>
+              {showCancelConfirm && (
+                <div className="rounded-xl border border-red-200 bg-red-50 p-4 space-y-3">
+                  <p className="text-sm text-red-900">Cancellation removes this ticket from active work, not from your records. Already billed or paid jobs cannot be cancelled here.</p>
+                  <label className="block text-sm font-semibold text-slate-800" htmlFor="cancellation-reason">Reason</label>
+                  <textarea id="cancellation-reason" value={cancelReason} maxLength={500} rows={2} onChange={(e) => setCancelReason(e.target.value)}
+                    className="w-full rounded-lg border border-slate-300 p-2 text-sm" />
+                  <div className="flex gap-2">
+                    <button type="button" disabled={ticketActionLoading || cancelReason.trim().length < 5} onClick={submitCancel}
+                      className="rounded-lg bg-red-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">Confirm Cancellation</button>
+                    <button type="button" onClick={() => setShowCancelConfirm(false)} className="rounded-lg border border-slate-300 px-4 py-2 text-sm">Back</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
@@ -283,6 +401,7 @@ export function JobDetailModal({
 
                 <button
                   type="button"
+                  disabled={job.status === "cancelled"}
                   onClick={() => {
                     setDocType("invoice");
                     setShowDocPreview(true);
@@ -371,6 +490,7 @@ export function JobDetailModal({
                 value={invoiceNotes}
                 onChange={(e) => setInvoiceNotes(e.target.value)}
                 onBlur={handleSaveNotes}
+                disabled={Boolean(job.invoiceSentAt) || job.status === "cancelled"}
                 rows={4}
                 className="w-full px-4 py-3 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-colors resize-none text-sm text-slate-700"
                 placeholder="Enter document line items (e.g., 1. Web Design - $500)..."

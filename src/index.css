@@ -78,3 +78,113 @@
   .v79-tiquet-app .text-\[9px\] { font-size: 0.6875rem !important; }
   .v79-tiquet-app .text-\[10px\] { font-size: 0.75rem !important; }
 }
+
+/* V79 Tiquet light mode — scoped to the signed-in workspace only. */
+.v79-tiquet-app {
+  --v79-chart-text: #f8fafc;
+}
+.v79-tiquet-app[data-theme="light"] {
+  --v79-bg: #f4f7fb;
+  --v79-panel: #ffffff;
+  --v79-panel-2: #edf3fa;
+  --v79-border-dark: #d7e2ed;
+  --v79-ink: #14243a;
+  --v79-chart-text: #14243a;
+  color: var(--v79-ink) !important;
+  color-scheme: light;
+  background-color: var(--v79-bg) !important;
+}
+.v79-tiquet-app[data-theme="light"] :is(main, aside, header, nav) { color-scheme: light; }
+.v79-tiquet-app[data-theme="light"] main,
+.v79-tiquet-app[data-theme="light"] [class*="bg-[#07111f]"] {
+  background-color: var(--v79-bg) !important;
+}
+.v79-tiquet-app[data-theme="light"] main > header,
+.v79-tiquet-app[data-theme="light"] [class*="bg-[#091728]"],
+.v79-tiquet-app[data-theme="light"] [class*="bg-[#091727]"],
+.v79-tiquet-app[data-theme="light"] [class*="bg-[#06101d]"],
+.v79-tiquet-app[data-theme="light"] [class*="bg-[#050d17]"],
+.v79-tiquet-app[data-theme="light"] .bg-white { background-color: var(--v79-panel) !important; }
+.v79-tiquet-app[data-theme="light"] [class*="bg-[#0b1a2c]"],
+.v79-tiquet-app[data-theme="light"] [class*="bg-[#0d1e32]"],
+.v79-tiquet-app[data-theme="light"] [class*="bg-[#081727]"],
+.v79-tiquet-app[data-theme="light"] .bg-slate-100,
+.v79-tiquet-app[data-theme="light"] .bg-slate-50 { background-color: var(--v79-panel-2) !important; }
+.v79-tiquet-app[data-theme="light"] aside {
+  background-color: #ffffff !important;
+  border-color: var(--v79-border-dark) !important;
+  box-shadow: 5px 0 18px rgb(24 55 89 / 4%);
+}
+.v79-tiquet-app[data-theme="light"] aside > div:first-child { opacity: 0.26; }
+.v79-tiquet-app[data-theme="light"] [class*="border-[#1a3854]"],
+.v79-tiquet-app[data-theme="light"] [class*="border-[#18324b]"],
+.v79-tiquet-app[data-theme="light"] [class*="border-[#17324d]"],
+.v79-tiquet-app[data-theme="light"] [class*="border-[#1b3956]"],
+.v79-tiquet-app[data-theme="light"] [class*="border-[#244560]"],
+.v79-tiquet-app[data-theme="light"] .border-slate-100,
+.v79-tiquet-app[data-theme="light"] .border-slate-200,
+.v79-tiquet-app[data-theme="light"] .border-slate-300 { border-color: var(--v79-border-dark) !important; }
+.v79-tiquet-app[data-theme="light"] .text-white,
+.v79-tiquet-app[data-theme="light"] .text-slate-100,
+.v79-tiquet-app[data-theme="light"] .text-slate-200,
+.v79-tiquet-app[data-theme="light"] .text-slate-900,
+.v79-tiquet-app[data-theme="light"] .text-slate-800 { color: var(--v79-ink) !important; }
+.v79-tiquet-app[data-theme="light"] .text-slate-300,
+.v79-tiquet-app[data-theme="light"] .text-slate-700 { color: #374f68 !important; }
+.v79-tiquet-app[data-theme="light"] .text-slate-400,
+.v79-tiquet-app[data-theme="light"] .text-slate-500,
+.v79-tiquet-app[data-theme="light"] .text-slate-600 { color: #526980 !important; }
+.v79-tiquet-app[data-theme="light"] [class*="text-[#74d0ff]"],
+.v79-tiquet-app[data-theme="light"] [class*="text-[#55c7ff]"] { color: #09639d !important; }
+.v79-tiquet-app[data-theme="light"] .text-emerald-400 { color: #047857 !important; }
+.v79-tiquet-app[data-theme="light"] .text-sky-400 { color: #0369a1 !important; }
+.v79-tiquet-app[data-theme="light"] .text-amber-400 { color: #b45309 !important; }
+.v79-tiquet-app[data-theme="light"] .text-rose-300 { color: #be123c !important; }
+.v79-tiquet-app[data-theme="light"] .text-amber-300 { color: #92400e !important; }
+.v79-tiquet-app[data-theme="light"] :is(button, a).text-white,
+.v79-tiquet-app[data-theme="light"] :is(button, a)[class*="bg-gradient"] .text-white,
+.v79-tiquet-app[data-theme="light"] :is(button, a)[class*="bg-indigo"] .text-white,
+.v79-tiquet-app[data-theme="light"] :is(button, a)[class*="bg-red"] .text-white,
+.v79-tiquet-app[data-theme="light"] :is(button, a)[class*="bg-emerald"] .text-white { color: #ffffff !important; }
+.v79-tiquet-app[data-theme="light"] aside nav .group { color: #475569; }
+.v79-tiquet-app[data-theme="light"] aside nav .group[class*="bg-gradient-to-r"] {
+  background: #e1f0ff !important;
+  color: #0b568c !important;
+  border-color: #bad8f5 !important;
+  box-shadow: none !important;
+}
+.v79-tiquet-app[data-theme="light"] aside nav .group:hover {
+  background-color: #eef5fc;
+  color: #0b568c;
+}
+.v79-tiquet-app[data-theme="light"] aside nav .group .text-slate-400,
+.v79-tiquet-app[data-theme="light"] aside nav .group[class*="bg-gradient-to-r"] span { color: inherit !important; }
+.v79-tiquet-app[data-theme="light"] input,
+.v79-tiquet-app[data-theme="light"] select,
+.v79-tiquet-app[data-theme="light"] textarea {
+  background: #ffffff !important;
+  color: #14243a !important;
+  border-color: #c5d5e5 !important;
+}
+.v79-tiquet-app[data-theme="light"] input::placeholder,
+.v79-tiquet-app[data-theme="light"] textarea::placeholder { color: #62768c !important; }
+.v79-tiquet-app[data-theme="light"] .v79-theme-toggle {
+  background: #edf5ff !important;
+  border-color: #bfd6ed !important;
+  color: #0b568c !important;
+}
+.v79-tiquet-app[data-theme="light"] .v79-theme-toggle:hover { background: #dbeefe !important; }
+.v79-tiquet-app[data-theme="light"] .shadow-xs,
+.v79-tiquet-app[data-theme="light"] .shadow-sm { box-shadow: 0 6px 22px rgb(23 52 83 / 6%) !important; }
+.v79-tiquet-app[data-theme="light"] ::-webkit-scrollbar-track { background: #f0f5fa; }
+.v79-tiquet-app[data-theme="light"] ::-webkit-scrollbar-thumb {
+  background: #cbd9e8;
+  border-color: #f0f5fa;
+}
+/* Recharts applies inline colours; the light theme keeps chart labels legible. */
+.v79-tiquet-app[data-theme="light"] .recharts-cartesian-axis-tick text { fill: #526980 !important; }
+.v79-tiquet-app[data-theme="light"] .recharts-default-tooltip {
+  background-color: #ffffff !important;
+  color: #14243a !important;
+  border-color: #d7e2ed !important;
+}
