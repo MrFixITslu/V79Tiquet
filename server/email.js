@@ -452,7 +452,7 @@ export async function sendInvoiceDocument({ to, bcc = null, companyName, number,
  * Caller persists send status and retries separately; missing SMTP is a skip.
  */
 export async function sendWebsiteTicketAcknowledgement({ to, customerName, title, requestSummary, reference, portalToken }) {
-  if (!to || !portalToken || !/^[a-f0-9-]{36}$/i.test(portalToken)) {
+  if (!to || !portalToken || !/^[A-Za-z0-9_-]{32,180}$/.test(portalToken)) {
     return { success: false, error: "Invalid recipient or ticket tracking token." };
   }
   const tracker = APP_BASE_URL + "/portal/" + encodeURIComponent(portalToken);
