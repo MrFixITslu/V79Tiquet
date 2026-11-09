@@ -446,3 +446,32 @@ export async function sendInvoiceDocument({ to, bcc = null, companyName, number,
     return { success: false, error: error.message };
   }
 }
+
+/**
+ * Acknowledges a WEBSITE enquiry, not an accepted job or paid service.
+ * Caller persists send status and retries separately; missing SMTP is a skip.
+ */
+export async function sendWebsiteTicketAcknowledgement({ to, customerName, title, requestSummary, reference, portalToken }) {
+  if (!to || !portalToken || !/^[a-f0-9-]{36}$/i.test(portalToken)) {
+    return { success: false, error: "Invalid recipient or ticket tracking token." };
+  }
+  const tracker = APP_BASE_URL + "/portal/" + encodeURIComponent(portalToken);
+  const subject = "We received your request — " + reference + " | Vision79 Digital";
+  const html = [
+    '<!doctype html><html lang="en"><head><meta charset="utf-8"></head>',
+    '<body style="background:#f6f8fb;font-family:Arial,Helvetica,sans-serif;color:#18263d;padding:24px">',
+    '<div style="max-width:600px;margin:auto;background:#fff;border:1px solid #dbe4ef;border-radius:12px;padding:28px">',
+    '<h1 style="font-size:22px;margin:0 0 20px;color:#0b3860">Vision79 Digital</h1>',
+    '<h2 style="font-size:19px">Your request is received</h2>',
+    '<p>Hello ' + escapeHtml(customerName || "there") + ',</p>',
+    '<p>Thank you for contacting Vision79 Digital. We have received your enquiry and will contact you to confirm the service you need before work begins.</p>',
+    '<p><strong>Ticket reference:</strong> ' + escapeHtml(reference) + '</p>',
+    '<p><strong>Request:</strong> ' + escapeHtml(title) + '</p>',
+    '<p style="white-space:pre-wrap;font-size:14px">' + escapeHtml(String(requestSummary || "").slice(0, 500)) + '</p>',
+    '<p><strong>Status:</strong> Received — awaiting confirmation</p>',
+    '<p><a href="' + escapeHtml(tracker) + '" style="background:#1268a7;color:#fff;padding:12px 18px;display:inline-block;border-radius:7px;text-decoration:none">View your request</a></p>',
+    '<p style="font-size:13px;color:#546478">This link is private and expires after 14 days. Keep the ticket reference for future enquiries. If this was not your request, contact Vision79 Digital.</p>',
+    '<p>Regards,<br>Vision79 Digital Customer Care</p></div></body></html>'
+  ].join("");
+  return send(to, subject, html);
+}

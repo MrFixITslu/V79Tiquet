@@ -3,6 +3,7 @@ import { Job, Employee, JobNote, Client, BusinessSettings } from "../types";
 import { formatMoney } from "../currency";
 import { api } from "../api";
 import { AgentReplyDraftPanel } from "./AgentReplyDraftPanel";
+import { WebsiteEnquiryConfirmation } from "./WebsiteEnquiryConfirmation";
 import {
   X,
   FileText,
@@ -33,6 +34,7 @@ export function JobDetailModal({
   onClose,
   onUpdate,
   onChanged,
+  canConfirmCustomer,
 }: {
   job: Job;
   employees: Employee[];
@@ -41,6 +43,7 @@ export function JobDetailModal({
   onClose: () => void;
   onUpdate: (updatedJob: Job) => void;
   onChanged?: () => Promise<void>;
+  canConfirmCustomer?: boolean;
 }) {
   const [invoiceNotes, setInvoiceNotes] = useState(job.invoiceNotes || "");
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
@@ -286,6 +289,9 @@ export function JobDetailModal({
 
           {ticketActionError && (
             <p role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{ticketActionError}</p>
+          )}
+          {job.intakeEventId && /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(job.intakeEventId) && (
+            <WebsiteEnquiryConfirmation job={job} canConfirmCustomer={canConfirmCustomer} onChanged={onChanged} />
           )}
           {job.status === "cancelled" ? (
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-2">

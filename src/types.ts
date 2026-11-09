@@ -159,6 +159,17 @@ export interface Job {
   invoiceIssuedAt?: string | null;
   invoiceSentAt?: string | null;
   invoiceSentTo?: string | null;
+  intakeEventId?: string | null;
+  websiteAckStatus?: "queued" | "sending" | "failed" | "sent" | null;
+  websiteAckSentAt?: string | null;
+  websiteAckAttempts?: number;
+  contactOutcome?: "confirmed" | "callback" | "declined" | null;
+  contactNotes?: string | null;
+  contactAt?: string | null;
+  contactBy?: string | null;
+  crmSyncStatus?: "pending" | "failed" | "synced" | null;
+  crmLeadId?: string | null;
+  crmCustomerId?: string | null;
   assignedTo?: string;
   tags?: string[];
   activityLog?: ActivityLogEntry[];

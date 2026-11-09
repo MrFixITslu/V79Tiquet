@@ -453,7 +453,8 @@ export default function App() {
             } : undefined}
           />}
           {activeTab === "jobs" && (
-            <JobBoard jobs={jobs} setJobs={setJobs} reloadJobs={reloadJobs} employees={employees} clients={clients} settings={settings} />
+            <JobBoard jobs={jobs} setJobs={setJobs} reloadJobs={reloadJobs} employees={employees} clients={clients} settings={settings}
+              canConfirmCustomer={currentUser?.role === "Admin"} />
           )}
           {activeTab === "clients" && <Clients clients={clients} setClients={setClients} jobs={jobs} industries={industries} currency={settings.currency} />}
           {activeTab === "payroll" && (
@@ -468,7 +469,8 @@ export default function App() {
           {activeTab === "users" && <UserManagement users={users} setUsers={setUsers} />}
           {activeTab === "files" && <FileRepository files={files} onFilesChanged={reloadFiles} />}
           {activeTab === "invoices" && (
-            <Invoices jobs={jobs} setJobs={setJobs} reloadJobs={reloadJobs} employees={employees} clients={clients} settings={settings} />
+            <Invoices jobs={jobs} setJobs={setJobs} reloadJobs={reloadJobs} employees={employees} clients={clients} settings={settings}
+              canConfirmCustomer={currentUser?.role === "Admin"} />
           )}
           {activeTab === "settings" && (
             <Settings settings={settings} setSettings={handleUpdateSettings} industries={industries} setIndustries={setIndustries} workspaceId={activeBusiness!.id} />
@@ -568,6 +570,7 @@ export default function App() {
           settings={settings}
           onClose={() => setSelectedJobForModal(null)}
           onChanged={reloadJobs}
+          canConfirmCustomer={currentUser?.role === "Admin"}
           onUpdate={(updatedJob) => {
             setJobs(jobs.map((j) => (j.id === updatedJob.id ? updatedJob : j)));
             setSelectedJobForModal(updatedJob);

@@ -10,6 +10,7 @@ export function JobBoard({
   jobs,
   setJobs,
   reloadJobs,
+  canConfirmCustomer,
   employees,
   clients,
   settings,
@@ -17,6 +18,7 @@ export function JobBoard({
   jobs: Job[];
   setJobs: React.Dispatch<React.SetStateAction<Job[]>>;
   reloadJobs: () => Promise<void>;
+  canConfirmCustomer?: boolean;
   employees: Employee[];
   clients: Client[];
   settings: BusinessSettings;
@@ -206,6 +208,7 @@ export function JobBoard({
           settings={settings}
           onClose={() => setSelectedJobId(null)}
           onChanged={reloadJobs}
+          canConfirmCustomer={canConfirmCustomer}
           onUpdate={(updatedJob) => {
             setJobs(jobs.map((j) => (j.id === updatedJob.id ? updatedJob : j)));
           }}

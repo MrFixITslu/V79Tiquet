@@ -10,6 +10,8 @@ const root = path.resolve(__dirname,"..");
 const jobId = "f51ab246-1234-4a1d-bacd-111111111111";
 const sampleJob = {
   id: jobId, status: "request", priority: "high",
+  intakeEventId: "4a39196a-0e70-422a-9363-4e0000000001",
+  websiteAckStatus: "failed",
   title: "Fix clinic Wi-Fi", client: "Sample Customer", clientEmail: "test@example.invalid",
   description: "Testing isolated ticket navigation", amount: 80,
   assignedTo: "", dueDate: "2026-10-01T12:00:00Z",
@@ -94,6 +96,12 @@ async function main(){
  const clicked=await evaluate("({url:location.href,details:document.body.innerText.includes('Testing isolated ticket navigation')})");
  assert.match(clicked.url,/tab=jobs/);assert.match(clicked.url,/job=f51ab246/);assert.equal(clicked.details,true);
  console.log("PASS: attention ticket opens existing job detail and deep-link",clicked.url);
+ await poll(async()=>evaluate("Boolean(document.querySelector('section[aria-label=\"Website enquiry and customer confirmation\"]'))"));
+ const action=await evaluate("(()=>{const section=document.querySelector('section[aria-label=\"Website enquiry and customer confirmation\"]');const button=[...section.querySelectorAll('button')].find(b=>b.textContent.includes('Confirm & Convert to Customer'));return {exists:!!button,disabled:button?.disabled,ref:section.textContent.includes('TQ-F51AB2461234'),ack:section.textContent.includes('Retry required')}})()");
+ assert.equal(action.exists,true);assert.equal(action.disabled,true);
+ assert.equal(action.ref,true);assert.equal(action.ack,true);
+ console.log("PASS: website ticket reference and admin-only conversion panel render with guarded action");
+
  await poll(async()=>evaluate("Boolean(document.querySelector('button[aria-label=\"Edit ticket due date\"]'))"));
  await evaluate("document.querySelector('button[aria-label=\"Edit ticket due date\"]').click();true");
  await poll(async()=>evaluate("Boolean(document.querySelector('input[aria-label=\"Ticket due date\"]'))"));

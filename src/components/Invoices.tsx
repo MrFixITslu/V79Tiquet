@@ -25,6 +25,7 @@ export function Invoices({
   jobs,
   setJobs,
   reloadJobs,
+  canConfirmCustomer,
   employees,
   clients,
   settings,
@@ -32,6 +33,7 @@ export function Invoices({
   jobs: Job[];
   setJobs: React.Dispatch<React.SetStateAction<Job[]>>;
   reloadJobs: () => Promise<void>;
+  canConfirmCustomer?: boolean;
   employees: Employee[];
   clients: Client[];
   settings: BusinessSettings;
@@ -300,6 +302,8 @@ export function Invoices({
           clients={clients}
           settings={settings}
           onClose={() => setSelectedJobId(null)}
+          onChanged={reloadJobs}
+          canConfirmCustomer={canConfirmCustomer}
           onUpdate={(updatedJob) => {
             setJobs(jobs.map((job) => (job.id === updatedJob.id ? updatedJob : job)));
           }}

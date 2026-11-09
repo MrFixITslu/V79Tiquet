@@ -1,6 +1,8 @@
 import { createTiquetAuthentication } from "./hubAwareAuthentication.js";
 import { invoiceReference, invoiceRecipient, validateInvoice, renderInvoicePdf } from "./invoiceDocuments.js";
 import { normalizeInvoiceCopyEmail, invoiceBccForWorkspace, parseDueDate } from "./billingOptions.js";
+import { websiteTicketReference, isWebsiteEvent, validateContactOutcome, submitConfirmedCustomerToWebsite } from "./websiteCustomerWorkflow.js";
+import { createWebsiteAcknowledgementService } from "./websiteAckWorker.js";
 import { revokeSignedRequestTokens, isSignedSessionRevoked, tokenFingerprint } from "./tokenRevocation.js";
 import { createSentinelIngestRouter, sentinelConfigFromEnv, SENTINEL_PATH } from "./sentinelIngress.js";
 import { createHubHelpRouter, HUB_HELP_PATH } from "./hubHelpSupport.js";
@@ -20,7 +22,7 @@ import cors from "cors";
 import http from "http";
 import { WebSocketServer } from "ws";
 import db, { dbDir, seedDefaultTemplatesForAccount } from "./db.js";
-import { sendPortalLink, sendStatusUpdate, sendTemplated, renderEmailFromPlainTemplate, sendPasswordReset, sendUserInvite, sendInvoiceDocument } from "./email.js";
+import { sendPortalLink, sendStatusUpdate, sendTemplated, renderEmailFromPlainTemplate, sendPasswordReset, sendUserInvite, sendInvoiceDocument, sendWebsiteTicketAcknowledgement } from "./email.js";
 import { registerOAuthRoutes } from "./oauth.js";
 import { v4 as uuidv4 } from "uuid";
 import jwt from "jsonwebtoken";
@@ -1613,6 +1615,12 @@ const intakeLimiter = rateLimit({
     error: "Too many requests. Please try again later or contact us directly."
   }
 });
+// Acknowledgements have a durable SMTP retry state on each new website ticket.
+const websiteAckWorker = createWebsiteAcknowledgementService({
+  db, logger, send: sendWebsiteTicketAcknowledgement,
+  accountId: process.env.INTAKE_ACCOUNT_ID || "default_account"
+});
+
 const requireIntakeSecret = (req, res, next) => {
   const configuredSecret = process.env.INTAKE_SECRET;
   if (!configuredSecret) {
@@ -1693,12 +1701,15 @@ app.post("/api/public/intake", intakeLimiter, requireIntakeSecret, async (req, r
         success: true,
         action: "already_processed",
         jobId: existingJob.id,
-        clientId: existingClient?.id || null
+        clientId: existingClient?.id || null,
+        ticketReference: websiteTicketReference(existingJob.id),
+        acknowledgement: "previously_accepted"
       });
     }
   }
   const id = uuidv4();
-  const secureToken = uuidv4();
+  const portalCredential = createPortalCredential();
+  const secureToken = portalCredential.token;
   const title = `Website Inquiry — ${company}`.slice(0, 300);
   const now = new Date().toISOString();
   const descriptionParts = [];
@@ -1712,8 +1723,8 @@ app.post("/api/public/intake", intakeLimiter, requireIntakeSecret, async (req, r
   const trimNotes = notes => notes.length > MAX_NOTES_LENGTH ? notes.slice(notes.length - MAX_NOTES_LENGTH) : notes;
   try {
     await db.prepare(`
-            INSERT INTO jobs (id, title, client, description, status, createdAt, priority, clientEmail, secureToken, depositPaid, account_id, timerStartedAt, timeLogs, intakeEventId)
-            VALUES (@id, @title, @client, @description, @status, @createdAt, @priority, @clientEmail, @secureToken, 0, @account_id, @timerStartedAt, '[]', @intakeEventId)
+            INSERT INTO jobs (id, title, client, description, status, createdAt, priority, clientEmail, secureToken, secureTokenExpires, depositPaid, account_id, timerStartedAt, timeLogs, intakeEventId, websiteAckStatus, websiteAckAttempts, websiteAckRetryAt)
+            VALUES (@id, @title, @client, @description, @status, @createdAt, @priority, @clientEmail, @secureToken, @secureTokenExpires, 0, @account_id, @timerStartedAt, '[]', @intakeEventId, 'queued', 0, @websiteAckRetryAt)
         `).run({
       id,
       title,
@@ -1724,8 +1735,10 @@ app.post("/api/public/intake", intakeLimiter, requireIntakeSecret, async (req, r
       priority: "medium",
       clientEmail: email,
       secureToken,
+      secureTokenExpires: portalCredential.expiresAt,
       account_id: accountId,
       timerStartedAt: now,
+      websiteAckRetryAt: now,
       intakeEventId: eventId ? String(eventId) : null
     });
     const insertTag = db.prepare('INSERT INTO job_tags (job_id, tag, account_id) VALUES (?, ?, ?)');
@@ -1807,7 +1820,12 @@ app.post("/api/public/intake", intakeLimiter, requireIntakeSecret, async (req, r
       success: true,
       action,
       jobId: id,
-      clientId
+      clientId,
+      ticketReference: websiteTicketReference(id),
+      acknowledgement: "queued"
+    });
+    void websiteAckWorker.process(id).catch(error => {
+      logger.error("Ticket receipt send attempt failed", { jobId: id, reason: error.message });
     });
   } catch (error) {
     console.error("[Intake] Failed to create job:", error);
@@ -2022,6 +2040,121 @@ app.put("/api/jobs/:id/due-date", authenticateToken, requireAnyPagePermission("j
   } catch (error) {
     logger.error("due date update failed", { error: error.message });
     res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+  }
+});
+
+// Admin-only customer call outcomes for website-originated enquiries.
+// A confirmation is NOT a payment, quote approval or an automatic stage change.
+app.post("/api/jobs/:id/customer-confirmation", authenticateToken, requireAdmin, async (req, res) => {
+  let decision;
+  try { decision = validateContactOutcome(req.body?.outcome, req.body?.notes); }
+  catch (error) { return badRequest(res, error.message); }
+
+  const accountId = process.env.INTAKE_ACCOUNT_ID || "default_account";
+  if (req.accountId !== accountId) return res.status(403).json({ error: "This workflow is limited to Vision79's website workspace." });
+  try {
+    const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(req.params.id, accountId);
+    if (!job) return res.status(404).json({ error: "Ticket not found" });
+    if (!isWebsiteEvent(job.intakeEventId)) return res.status(409).json({ error: "This is not a website-originated enquiry." });
+    if (["completed", "paid", "cancelled"].includes(job.status))
+      return res.status(409).json({ error: "Closed or cancelled tickets cannot be confirmed as a new customer." });
+    if (job.crmCustomerId && job.crmLeadId) {
+      return res.json({ success: true, alreadyConverted: true, crmLeadId: Number(job.crmLeadId), customerId: job.crmCustomerId });
+    }
+    if (job.contactOutcome === "confirmed" && decision.outcome !== "confirmed") {
+      return res.status(409).json({ error: "A previously confirmed enquiry cannot be declined without administrative reconciliation." });
+    }
+    const actor = req.user.email;
+    const now = new Date().toISOString();
+    const activity = async (action) => db.prepare(
+      'INSERT INTO activity_logs (id, job_id, action, timestamp, "user", account_id) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(uuidv4(), job.id, action, now, actor, accountId);
+
+    if (decision.outcome !== "confirmed") {
+      await db.prepare([
+        "UPDATE jobs SET contactOutcome = ?, contactNotes = ?, contactAt = ?, contactBy = ?",
+        "WHERE id = ? AND account_id = ?"
+      ].join(" ")).run(decision.outcome, decision.notes, now, actor, job.id, accountId);
+      await activity("Website enquiry call outcome: " + decision.outcome + ". Notes: " + decision.notes);
+      logger.audit("website_enquiry_call_recorded", { accountId, jobId: job.id, outcome: decision.outcome });
+      const updated = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(job.id, accountId);
+      return res.json({ success: true, outcome: decision.outcome, job: updated });
+    }
+
+    // A small lease prevents concurrent conversion clicks. If the website
+    // confirms a conversion but this server crashes, retries are idempotent.
+    const stale = new Date(Date.now() - 5 * 60_000).toISOString();
+    const claimed = await db.prepare([
+      "UPDATE jobs SET contactOutcome = 'confirmed', contactNotes = ?,",
+      "contactAt = ?, contactBy = ?, crmSyncStatus = 'pending', crmSyncLeaseAt = ?",
+      "WHERE id = ? AND account_id = ?",
+      "AND (crmSyncLeaseAt IS NULL OR crmSyncLeaseAt < ?)",
+      "AND crmCustomerId IS NULL AND status NOT IN ('cancelled','completed','paid')",
+      "RETURNING *"
+    ].join(" ")).get(decision.notes, now, actor, now, job.id, accountId, stale);
+    if (!claimed) return res.status(409).json({ error: "This enquiry is being updated. Refresh before retrying." });
+    try {
+      const converted = await submitConfirmedCustomerToWebsite({
+        jobId: claimed.id, intakeEventId: claimed.intakeEventId,
+        accountId, confirmationNotes: decision.notes, confirmedBy: actor
+      });
+      await db.prepare([
+        "UPDATE jobs SET crmSyncStatus = 'synced', crmSyncLeaseAt = NULL,",
+        "crmLeadId = ?, crmCustomerId = ?",
+        "WHERE id = ? AND account_id = ? AND crmSyncLeaseAt = ?"
+      ].join(" ")).run(String(converted.crmLeadId), converted.crmCustomerId, job.id, accountId, now);
+      if (job.clientId) {
+        await db.prepare("UPDATE clients SET leadStatus = ? WHERE id = ? AND account_id = ?")
+          .run("Converted", job.clientId, accountId);
+      }
+      await activity("Customer confirmed by phone; website CRM lead #" +
+        converted.crmLeadId + " linked to customer " + converted.crmCustomerId +
+        ". Call notes: " + decision.notes);
+      logger.audit("website_enquiry_converted", { accountId, jobId: job.id, crmLeadId: converted.crmLeadId });
+      const updated = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(job.id, accountId);
+      return res.json({ success: true, outcome: "confirmed", crmLeadId: converted.crmLeadId,
+        customerId: converted.crmCustomerId, alreadyConverted: converted.alreadyConverted, job: updated });
+    } catch (error) {
+      await db.prepare([
+        "UPDATE jobs SET crmSyncStatus = 'failed', crmSyncLeaseAt = NULL",
+        "WHERE id = ? AND account_id = ? AND crmSyncLeaseAt = ?"
+      ].join(" ")).run(job.id, accountId, now);
+      await activity("Customer confirmation recorded; website CRM conversion pending verification.");
+      return res.status(error.status === 409 ? 409 : 503).json({
+        error: error.status === 409 ? error.message : "Customer call saved, but CRM conversion is pending. Retry when the website CRM is available.",
+        confirmationSaved: true, crmSyncStatus: "failed"
+      });
+    }
+  } catch (error) {
+    logger.error("Customer confirmation update failed", { error: error.message });
+    return res.status(500).json({ error: isProduction ? "Customer confirmation could not be completed." : error.message });
+  }
+});
+
+// Explicit retry: never send a second acknowledgement that SMTP has accepted.
+app.post("/api/jobs/:id/retry-acknowledgement", authenticateToken, requireAdmin, async (req, res) => {
+  const accountId = process.env.INTAKE_ACCOUNT_ID || "default_account";
+  if (req.accountId !== accountId) return res.status(403).json({ error: "Wrong workspace." });
+  try {
+    const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(req.params.id, accountId);
+    if (!job) return res.status(404).json({ error: "Ticket not found" });
+    if (!isWebsiteEvent(job.intakeEventId) || !job.websiteAckStatus)
+      return res.status(409).json({ error: "Acknowledgements are only available for new website enquiries." });
+    if (job.websiteAckStatus === "sent")
+      return res.status(409).json({ error: "An acknowledgement was already accepted by the email service." });
+    if (job.websiteAckStatus === "sending" && job.websiteAckLeaseAt &&
+        Date.now() - Date.parse(job.websiteAckLeaseAt) < 5 * 60_000)
+      return res.status(409).json({ error: "The acknowledgement is being sent. Check again shortly." });
+    await db.prepare([
+      "UPDATE jobs SET websiteAckStatus = 'queued', websiteAckAttempts = 0,",
+      "websiteAckRetryAt = ?, websiteAckLeaseAt = NULL",
+      "WHERE id = ? AND account_id = ? AND websiteAckStatus <> 'sent'"
+    ].join(" ")).run(new Date().toISOString(), job.id, accountId);
+    const attempt = await websiteAckWorker.process(job.id);
+    return res.json({ success: attempt.accepted, acknowledged: attempt.accepted, retryScheduled: !attempt.accepted });
+  } catch (error) {
+    logger.error("Ticket acknowledgement retry failed", { jobId: req.params.id, error: error.message });
+    return res.status(503).json({ error: "Could not retry acknowledgement." });
   }
 });
 
@@ -4372,6 +4505,7 @@ if (process.env.INTAKE_SECRET) {
   })();
 }
 startPlatformEventPump();
+websiteAckWorker.start();
 
 server.listen(PRIMARY_PORT, '0.0.0.0', () => {
   logger.info(`Backend server running on primary port ${PRIMARY_PORT} in ${isProduction ? 'production' : 'development'} mode (HTTP + WS)`);
