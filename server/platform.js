@@ -57,6 +57,34 @@ function verifyPlatformRequest(req, res, next) {
 
 router.use(verifyPlatformRequest);
 
+// Only the Hub platform service may update an already-linked tenant's display
+// name. The account ID, slug, billing data and user records are untouched.
+router.post("/organization/name", async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
+  const organizationId = typeof body.organizationId === "string" ? body.organizationId.trim() : "";
+  const name = typeof body.name === "string" ? body.name.trim().replace(/\s+/g, " ") : "";
+  if (!/^[A-Za-z0-9._:@-]{8,180}$/.test(organizationId) ||
+      name.length < 2 || name.length > 120 || /[\u0000-\u001f\u007f]/.test(name)) {
+    return res.status(400).json({ error: "Invalid Hub organisation name update." });
+  }
+  try {
+    const account = await db.prepare(
+      "SELECT id, name FROM accounts WHERE hub_organization_id=? LIMIT 1"
+    ).get(organizationId);
+    if (!account) return res.status(404).json({ error: "Hub-linked tenant not found." });
+    if (account.name !== name) {
+      await db.prepare("UPDATE accounts SET name=? WHERE id=? AND hub_organization_id=?")
+        .run(name, account.id, organizationId);
+    }
+    return res.json({ success: true, organizationId, name });
+  } catch (error) {
+    console.error("[platform] Tiquet business-name update unavailable:", error?.message || error);
+    return res.status(503).json({ error: "Could not update the Tiquet organisation name." });
+  }
+});
+
+
 router.post("/provision", async (req, res) => {
   const body = req.body && typeof req.body === "object" && !Array.isArray(req.body) ? req.body : {};
   const organization = body.organization && typeof body.organization === "object" && !Array.isArray(body.organization)
