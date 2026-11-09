@@ -57,6 +57,7 @@ const CAMEL_MAP = {
   jobid: 'jobId',
   logourl: 'logoUrl',
   paymentterms: 'paymentTerms',
+  invoicecopyemail: 'invoiceCopyEmail',
   taxrate: 'taxRate',
   twofactorsecret: 'twoFactorSecret',
   twofactorenabled: 'twoFactorEnabled',

@@ -55,9 +55,9 @@ export function Invoices({
     setInvoiceNotice(null);
     setSendingInvoiceId(job.id);
     try {
-      const result = await api.post<{ sentTo: string; invoice: string }>("/jobs/" + encodeURIComponent(job.id) + "/send-invoice");
+      const result = await api.post<{ sentTo: string; invoice: string; copyTo?: string | null }>("/jobs/" + encodeURIComponent(job.id) + "/send-invoice");
       await reloadJobs();
-      setInvoiceNotice({ error: false, text: result.invoice + " accepted by the email service for " + result.sentTo + ". This does not confirm inbox delivery." });
+      setInvoiceNotice({ error: false, text: result.invoice + " accepted by the email service for " + result.sentTo + (result.copyTo ? "; private copy to " + result.copyTo : "") + ". This does not confirm inbox delivery." });
     } catch (error: any) {
       setInvoiceNotice({ error: true, text: error.message || "Invoice could not be sent." });
     } finally {

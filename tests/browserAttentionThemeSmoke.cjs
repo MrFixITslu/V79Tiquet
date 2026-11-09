@@ -21,6 +21,11 @@ app.use(express.json());
 app.get("/api/auth/me", (_req,res)=>res.json({id:"test-staff",name:"Test Operator",email:"test@example.invalid",role:"Admin",account_id:"isolated-test",permissions:["dashboard","jobs","invoices"]}));
 app.get("/api/settings", (_req,res)=>res.json(settings));
 app.get("/api/jobs", (_req,res)=>res.json([sampleJob]));
+app.put("/api/jobs/:id/due-date", (req,res)=>{
+  if(req.params.id!==jobId) return res.status(404).json({error:"Job not found"});
+  sampleJob.dueDate=req.body.dueDate;
+  res.json({success:true,job:sampleJob});
+});
 app.get("/api/payments/summary", (_req,res)=>res.json({received:0,count:0,outstandingInvoices:0}));
 for(const ep of ["/api/clients","/api/employees","/api/payroll","/api/users","/api/industries","/api/files"]) {
   app.get(ep,(_req,res)=>res.json([]));
@@ -89,6 +94,15 @@ async function main(){
  const clicked=await evaluate("({url:location.href,details:document.body.innerText.includes('Testing isolated ticket navigation')})");
  assert.match(clicked.url,/tab=jobs/);assert.match(clicked.url,/job=f51ab246/);assert.equal(clicked.details,true);
  console.log("PASS: attention ticket opens existing job detail and deep-link",clicked.url);
+ await poll(async()=>evaluate("Boolean(document.querySelector('button[aria-label=\"Edit ticket due date\"]'))"));
+ await evaluate("document.querySelector('button[aria-label=\"Edit ticket due date\"]').click();true");
+ await poll(async()=>evaluate("Boolean(document.querySelector('input[aria-label=\"Ticket due date\"]'))"));
+ await evaluate("document.querySelector('input[aria-label=\"Ticket due date\"]').parentElement.querySelectorAll('button')[1].click();true");
+ await poll(async()=>evaluate("document.querySelector('input[aria-label=\"Ticket due date\"]').value===''"));
+ await evaluate("document.querySelector('input[aria-label=\"Ticket due date\"]').parentElement.querySelector('button').click();true");
+ await poll(async()=>evaluate("!document.querySelector('input[aria-label=\"Ticket due date\"]') && document.querySelector('button[aria-label=\"Edit ticket due date\"]')?.innerText.includes('Not set')"));
+ assert.equal(sampleJob.dueDate,null);
+ console.log("PASS: authorised ticket due-date editor clears and persists the ticket date");
  await command("Page.reload",{ignoreCache:true});
  await poll(async()=>evaluate("document.querySelector('.v79-tiquet-app')?.dataset.theme==='light' && document.body.innerText.includes('Testing isolated ticket navigation')"));
  const retained=await evaluate("({theme:document.querySelector('.v79-tiquet-app').dataset.theme,job:location.search.includes('job=')})");

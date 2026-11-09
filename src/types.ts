@@ -191,6 +191,7 @@ export interface BusinessSettings {
   logoUrl: string;
   website: string;
   paymentTerms: string;
+  invoiceCopyEmail?: string;
   currency: string;
   taxRate: number;
 }

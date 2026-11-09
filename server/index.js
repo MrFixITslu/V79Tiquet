@@ -1,5 +1,6 @@
 import { createTiquetAuthentication } from "./hubAwareAuthentication.js";
 import { invoiceReference, invoiceRecipient, validateInvoice, renderInvoicePdf } from "./invoiceDocuments.js";
+import { normalizeInvoiceCopyEmail, invoiceBccForWorkspace, parseDueDate } from "./billingOptions.js";
 import { revokeSignedRequestTokens, isSignedSessionRevoked, tokenFingerprint } from "./tokenRevocation.js";
 import { createSentinelIngestRouter, sentinelConfigFromEnv, SENTINEL_PATH } from "./sentinelIngress.js";
 import { createHubHelpRouter, HUB_HELP_PATH } from "./hubHelpSupport.js";
@@ -1852,6 +1853,12 @@ app.put("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"), as
     if (status === "cancelled" || (existingJob.status === "cancelled" && status && status !== "cancelled")) {
       return res.status(409).json({ error: "Use Cancel Ticket or Reopen Ticket to change this status.", code: "CANCELLATION_WORKFLOW_REQUIRED" });
     }
+    // Due dates use the validated, auditable dedicated endpoint.
+    const requestedDate = dueDate ? String(dueDate).slice(0, 10) : null;
+    const storedDate = existingJob.dueDate ? String(existingJob.dueDate).slice(0, 10) : null;
+    if (dueDate !== undefined && requestedDate !== storedDate) {
+      return res.status(409).json({ error: "Use the ticket Due Date editor to reschedule and record the change." });
+    }
     if (existingJob.invoiceSentAt) {
       const lockedFields = { title, client, description, amount, invoiceNotes, clientEmail, clientId };
       const changed = Object.entries(lockedFields).some(([field, value]) =>
@@ -1986,6 +1993,38 @@ app.put("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"), as
   }
 });
 
+// Change only the due date; never overwrite unrelated fields from a stale browser form.
+app.put("/api/jobs/:id/due-date", authenticateToken, requireAnyPagePermission("jobs"), async (req, res) => {
+  let dueDate;
+  try {
+    dueDate = parseDueDate(req.body?.dueDate);
+  } catch (error) {
+    return badRequest(res, error.message);
+  }
+  try {
+    const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(req.params.id, req.accountId);
+    if (!job) return res.status(404).json({ error: "Job not found" });
+    if (["completed", "paid", "cancelled"].includes(job.status)) {
+      return res.status(409).json({ error: "Closed or cancelled tickets cannot be rescheduled." });
+    }
+    const previous = job.dueDate ? String(job.dueDate).slice(0, 10) : null;
+    if (previous === dueDate) return res.json({ job, unchanged: true });
+    const updated = await db.prepare(
+      "UPDATE jobs SET dueDate = ? WHERE id = ? AND account_id = ? AND status NOT IN ('completed', 'paid', 'cancelled') RETURNING *"
+    ).get(dueDate, job.id, req.accountId);
+    if (!updated) return res.status(409).json({ error: "Ticket status changed while saving. Refresh and retry." });
+    const now = new Date().toISOString();
+    const action = "Due date changed from " + (previous || "Not set") + " to " + (dueDate || "Not set");
+    await db.prepare('INSERT INTO activity_logs (id, job_id, action, timestamp, "user", account_id) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(uuidv4(), job.id, action, now, req.user.email, req.accountId);
+    logger.audit("job_due_date_updated", { accountId: req.accountId, jobId: job.id });
+    res.json({ job: updated, success: true });
+  } catch (error) {
+    logger.error("due date update failed", { error: error.message });
+    res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+  }
+});
+
 // Delete job endpoint
 app.delete("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"), async (req, res) => {
   const {
@@ -2114,7 +2153,9 @@ app.post("/api/jobs/:id/send-invoice", authenticateToken, requireAnyPagePermissi
     const pdf = await renderInvoicePdf({ job, client, settings, issuedAt, paidAmount });
     const number = invoiceReference(job.id);
     const amount = new Intl.NumberFormat("en-GB", { style: "currency", currency: settings.currency || "XCD" }).format(Number(job.amount));
-    const result = await sendInvoiceDocument({ to: recipient, companyName: settings.name || "V79 Tiquet",
+    // Only a workspace's own configured address may receive the private invoice copy.
+    const bcc = invoiceBccForWorkspace(settings, recipient);
+    const result = await sendInvoiceDocument({ to: recipient, bcc, companyName: settings.name || "V79 Tiquet",
       number, title: job.title, amount, pdf, filename: number + ".pdf" });
     if (!result.success || result.skipped) {
       return res.status(503).json({ error: result.skipped ? "Email is not configured. Download the PDF and send it manually." : "Email service did not accept the invoice. Please retry later." });
@@ -2122,9 +2163,9 @@ app.post("/api/jobs/:id/send-invoice", authenticateToken, requireAnyPagePermissi
     await db.prepare("UPDATE jobs SET invoiceIssuedAt = COALESCE(invoiceIssuedAt, ?), invoiceSentAt = ?, invoiceSentTo = ? WHERE id = ? AND account_id = ?")
       .run(issuedAt, now, recipient, job.id, req.accountId);
     await db.prepare('INSERT INTO activity_logs (id, job_id, action, timestamp, "user", account_id) VALUES (?, ?, ?, ?, ?, ?)')
-      .run(uuidv4(), job.id, "Invoice " + number + " emailed to " + recipient, now, req.user.email, req.accountId);
+      .run(uuidv4(), job.id, "Invoice " + number + " emailed to " + recipient + (bcc ? " (BCC " + bcc + ")" : ""), now, req.user.email, req.accountId);
     logger.audit("invoice_emailed", { accountId: req.accountId, jobId: job.id, invoice: number });
-    res.json({ success: true, invoice: number, sentTo: recipient, sentAt: now });
+    res.json({ success: true, invoice: number, sentTo: recipient, copyTo: bcc || null, sentAt: now });
   } catch (error) {
     logger.error("invoice send failed", { error: error.message });
     res.status(500).json({ error: "Could not send invoice; verify delivery before retrying." });
@@ -2424,21 +2465,29 @@ app.put("/api/settings", authenticateToken, requireAdmin, async (req, res) => {
     website,
     paymentTerms,
     currency,
-    taxRate
+    taxRate,
+    invoiceCopyEmail
   } = sanitizeObject(req.body);
+  let copyAddress;
+  try {
+    copyAddress = invoiceCopyEmail === undefined ? undefined : normalizeInvoiceCopyEmail(invoiceCopyEmail);
+  } catch (error) {
+    return badRequest(res, error.message);
+  }
   try {
     const existing = await db.prepare("SELECT id FROM settings WHERE account_id = ?").get(req.accountId);
     if (existing) {
       await db.prepare(`
                 UPDATE settings 
-                SET name = ?, address = ?, email = ?, phone = ?, logoUrl = ?, website = ?, paymentTerms = ?, currency = ?, taxRate = ? 
+                SET name = ?, address = ?, email = ?, phone = ?, logoUrl = ?, website = ?, paymentTerms = ?, currency = ?, taxRate = ?,
+                    invoiceCopyEmail = COALESCE(?, invoiceCopyEmail)
                 WHERE account_id = ?
-            `).run(name, address, email, phone, logoUrl, website, paymentTerms, currency, taxRate, req.accountId);
+            `).run(name, address, email, phone, logoUrl, website, paymentTerms, currency, taxRate, copyAddress === undefined ? null : copyAddress, req.accountId);
     } else {
       await db.prepare(`
-                INSERT INTO settings (id, name, address, email, phone, logoUrl, website, paymentTerms, currency, taxRate, account_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `).run(uuidv4(), name, address, email, phone, logoUrl, website, paymentTerms, currency, taxRate, req.accountId);
+                INSERT INTO settings (id, name, address, email, phone, logoUrl, website, paymentTerms, currency, taxRate, invoiceCopyEmail, account_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `).run(uuidv4(), name, address, email, phone, logoUrl, website, paymentTerms, currency, taxRate, copyAddress === undefined ? "" : copyAddress, req.accountId);
     }
     res.json(await db.prepare("SELECT * FROM settings WHERE account_id = ?").get(req.accountId));
   } catch (error) {

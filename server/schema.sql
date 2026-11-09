@@ -210,6 +210,9 @@ CREATE TABLE IF NOT EXISTS settings (
     account_id TEXT DEFAULT 'default_account'
 );
 
+-- Invoice copies are workspace-specific; no global operator copy.
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS invoiceCopyEmail TEXT;
+
 -- 12. Clients
 CREATE TABLE IF NOT EXISTS clients (
     id TEXT PRIMARY KEY,

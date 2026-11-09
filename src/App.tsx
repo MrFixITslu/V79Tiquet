@@ -28,6 +28,7 @@ const DEFAULT_SETTINGS: BusinessSettings = {
   logoUrl: "",
   website: "",
   paymentTerms: "",
+  invoiceCopyEmail: "",
   currency: "USD",
   taxRate: 0,
 };
@@ -150,6 +151,7 @@ export default function App() {
             logoUrl: settings?.logoUrl || "",
             website: settings?.website || "",
             paymentTerms: settings?.paymentTerms || DEFAULT_SETTINGS.paymentTerms,
+            invoiceCopyEmail: settings?.invoiceCopyEmail || "",
             currency: settings?.currency || "USD",
             taxRate: settings?.taxRate || 0,
           },
@@ -565,6 +567,7 @@ export default function App() {
           clients={clients}
           settings={settings}
           onClose={() => setSelectedJobForModal(null)}
+          onChanged={reloadJobs}
           onUpdate={(updatedJob) => {
             setJobs(jobs.map((j) => (j.id === updatedJob.id ? updatedJob : j)));
             setSelectedJobForModal(updatedJob);

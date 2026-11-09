@@ -417,7 +417,7 @@ export async function sendHelpAcknowledgement(to, details) {
  * Deliver a genuine PDF invoice attachment. Unlike the general email helper,
  * missing SMTP is a hard failure: we must never claim an invoice was sent.
  */
-export async function sendInvoiceDocument({ to, companyName, number, title, amount, pdf, filename }) {
+export async function sendInvoiceDocument({ to, bcc = null, companyName, number, title, amount, pdf, filename }) {
   if (!isSmtpConfigured || !transporter) {
     logger.warn("Invoice email blocked because SMTP is not configured", { invoice: number });
     return { success: false, skipped: true, error: "SMTP not configured" };
@@ -436,7 +436,7 @@ export async function sendInvoiceDocument({ to, companyName, number, title, amou
   });
   try {
     const result = await transporter.sendMail({
-      from: SMTP_FROM, to, subject, html,
+      from: SMTP_FROM, to, ...(bcc ? { bcc } : {}), subject, html,
       attachments: [{ filename, content: pdf, contentType: "application/pdf" }],
     });
     logger.info("Invoice email accepted by SMTP", { invoice: number, messageId: result.messageId });
