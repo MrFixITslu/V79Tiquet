@@ -264,6 +264,24 @@ export function Settings({
               </div>
             </div>
 
+            <div className="space-y-2">
+              <label htmlFor="invoice-copy-email" className="block text-xs font-bold text-slate-500 uppercase tracking-widest">Invoice copy (BCC)</label>
+              <input
+                id="invoice-copy-email"
+                type="email"
+                name="invoiceCopyEmail"
+                value={draft.invoiceCopyEmail || ""}
+                onChange={handleChange}
+                maxLength={254}
+                autoComplete="email"
+                placeholder="Your accounts team inbox (optional)"
+                className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 outline-none text-sm"
+              />
+              <p className="text-xs text-slate-500">
+                Automatically sends a private PDF invoice copy to this address for this business only.
+                Customers cannot see the BCC address. Leave blank to disable.
+              </p>
+            </div>
             <div className="space-y-1">
               <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest">Default Payment Terms</label>
               <textarea

@@ -2,6 +2,17 @@
 -- Migration from SQLite to PostgreSQL 16
 -- ==============================================================
 -- 1. Accounts (Tenants)
+-- App Help receipts are deliberately independent of the job FK. Keep deletion
+-- tombstones so an uncertain delivery retry cannot recreate a deleted ticket.
+CREATE TABLE IF NOT EXISTS hub_help_support_receipts (
+    request_id TEXT PRIMARY KEY,
+    requester_hash TEXT NOT NULL,
+    body_sha256 TEXT NOT NULL,
+    job_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_hub_help_requester_time ON hub_help_support_receipts(requester_hash, created_at);
 CREATE TABLE IF NOT EXISTS accounts (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -79,6 +90,29 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_intake_event ON jobs(intakeEventId) W
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS clientId TEXT;
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS secureTokenExpires TEXT;
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS secureTokenRevokedAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS cancellationReason TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS cancelledAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS cancelledBy TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS invoiceIssuedAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS invoiceSentAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS invoiceSentTo TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS invoiceSendingAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS websiteAckStatus TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS websiteAckSentAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS websiteAckAttempts INTEGER DEFAULT 0;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS websiteAckRetryAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS websiteAckLeaseAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS websiteAckError TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS contactOutcome TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS contactNotes TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS contactAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS contactBy TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS crmSyncStatus TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS crmSyncLeaseAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS crmLeadId TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS crmCustomerId TEXT;
+CREATE INDEX IF NOT EXISTS idx_website_ack_queue ON jobs(websiteAckStatus, websiteAckRetryAt)
+  WHERE websiteAckStatus IN ('queued', 'failed', 'sending');
 CREATE INDEX IF NOT EXISTS idx_jobs_client_account ON jobs(account_id, clientId);
 CREATE INDEX IF NOT EXISTS idx_jobs_secure_token ON jobs(secureToken) WHERE secureToken IS NOT NULL;
 UPDATE jobs
@@ -191,6 +225,9 @@ CREATE TABLE IF NOT EXISTS settings (
     website TEXT,
     account_id TEXT DEFAULT 'default_account'
 );
+
+-- Invoice copies are workspace-specific; no global operator copy.
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS invoiceCopyEmail TEXT;
 
 -- 12. Clients
 CREATE TABLE IF NOT EXISTS clients (

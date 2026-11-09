@@ -28,9 +28,9 @@ async function platformRequest(pathname, { method = "GET", body = "" } = {}) {
   return { response, payload };
 }
 
-async function provision(organizationId, name, hubUserId, email) {
+async function provision(organizationId, name, hubUserId, email, stableSlug = null) {
   const body = JSON.stringify({
-    organization: { id: organizationId, name, slug: name.toLowerCase().replace(/[^a-z0-9]+/g, "-") },
+    organization: { id: organizationId, name, slug: stableSlug || name.toLowerCase().replace(/[^a-z0-9]+/g, "-") },
     user: { id: hubUserId, email, name: "Shared Owner" },
     role: "owner",
     plan: "hub",
@@ -173,11 +173,28 @@ async function memberRequest(pathname, token, { method = "GET", body } = {}) {
   assert.equal(repeatedA.accountId, a.accountId, "provisioning must be idempotent for the same workspace");
   assert.equal(repeatedA.userId, a.userId, "owner identity must be stable for the same workspace");
 
+
+  // The signed Hub launch must update both the Tiquet account and Settings.
+  // Another tenant with a shared owner email must retain its original name.
+  const renamedA = await provision(
+    "hub-org-a-1234", "V79 Digital", "hub-user-a-1234", email, "tiquet-business-a"
+  );
+  assert.equal(renamedA.accountId, a.accountId, "rename must preserve the existing account");
+  assert.equal(renamedA.userId, a.userId, "rename must preserve the existing owner");
+  const ownerSettingsA = await memberRequest("/api/settings", memberToken(renamedA, email));
+  assert.equal(ownerSettingsA.status, 200);
+  assert.equal((await ownerSettingsA.json()).name, "V79 Digital",
+    "Settings must display the new Hub business name");
+  const ownerSettingsB = await memberRequest("/api/settings", memberToken(b, email));
+  assert.equal(ownerSettingsB.status, 200);
+  assert.equal((await ownerSettingsB.json()).name, "Tiquet Business B",
+    "cross-tenant business-name update must be rejected");
+
   const summaryA = await platformRequest("/api/platform/summary/hub-org-a-1234");
   const summaryB = await platformRequest("/api/platform/summary/hub-org-b-1234");
   assert.equal(summaryA.response.status, 200, JSON.stringify(summaryA.payload));
   assert.equal(summaryB.response.status, 200, JSON.stringify(summaryB.payload));
-  assert.equal(summaryA.payload.account.name, "Tiquet Business A");
+  assert.equal(summaryA.payload.account.name, "V79 Digital");
   assert.equal(summaryB.payload.account.name, "Tiquet Business B");
   assert.notEqual(summaryA.payload.subjectId, summaryB.payload.subjectId);
 
