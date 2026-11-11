@@ -3499,10 +3499,70 @@ app.get("/api/portal/:token", async (req, res) => {
       }
     }
     res.setHeader("Cache-Control", "no-store");
-    res.json({ job: populatedJob, settings, payments: summary, billing });
+    const previousFeedback = await db.prepare(
+      "SELECT id FROM v79_job_feedback_v2 WHERE account_id = ? AND job_id = ?"
+    ).get(job.account_id, job.id);
+    res.json({ job: populatedJob, settings, payments: summary, billing,
+      feedback: { submitted: Boolean(previousFeedback) } });
   } catch (error) {
     res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
   }
+});
+
+// Feedback is customer-initiated and opt-in. Never auto-create a CRM
+// opportunity, reveal the free text to Hub, or close a job on submission.
+app.post("/api/portal/:token/feedback", portalActionLimiter, async (req, res) => {
+  try {
+    const job = await getActivePortalJob(req.params.token);
+    if (!job) return res.status(404).json({ error: "Invalid or expired link" });
+    if (!["review","completed","paid"].includes(job.status))
+      return res.status(409).json({ error: "Feedback opens during client review or after delivery" });
+    const rating = req.body?.rating, raw = req.body?.comment;
+    if (!Number.isInteger(rating) || rating < 1 || rating > 5 ||
+        typeof raw !== "string" || raw.length > 1000 ||
+        typeof req.body?.contactAllowed !== "boolean")
+      return res.status(400).json({ error: "Valid rating, comment and contact choice required" });
+    const now = new Date().toISOString();
+    const saved = await db.prepare(`
+      INSERT INTO v79_job_feedback_v2
+        (id, account_id, job_id, rating, comment, contact_allowed, submitted_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (account_id, job_id) DO NOTHING
+      RETURNING id
+    `).get(uuidv4(), job.account_id, job.id, rating, raw.trim(),
+      req.body.contactAllowed, now);
+    if (!saved) return res.json({ submitted: true, alreadySubmitted: true });
+    await db.prepare(
+      "INSERT INTO activity_logs (id, job_id, action, timestamp, user, account_id) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run(uuidv4(), job.id, "Client feedback received", now, "Client", job.account_id);
+    await safeQueuePlatformEvent({
+      accountId: job.account_id,
+      type: "customer.feedback_submitted",
+      subjectId: job.id,
+      occurredAt: now,
+      payload: {
+        rating: String(rating),
+        contactAllowed: req.body.contactAllowed ? "yes" : "no",
+      },
+    });
+    return res.status(201).json({ submitted: true, alreadySubmitted: false });
+  } catch (error) {
+    return res.status(503).json({ error: "Feedback outcome uncertain; refresh the portal before retrying" });
+  }
+});
+
+// Customer words remain accessible only in tenant-scoped, authenticated Tiquet.
+app.get("/api/jobs/:id/feedback", authenticateToken,
+  requireAnyPagePermission("jobs", "clients"), async (req, res) => {
+  const job=await db.prepare("SELECT id FROM jobs WHERE id = ? AND account_id = ?")
+    .get(req.params.id, req.accountId);
+  if(!job)return res.status(404).json({error:"Job not found"});
+  const feedback=await db.prepare(`
+    SELECT id, rating, comment, contact_allowed, submitted_at
+      FROM v79_job_feedback_v2 WHERE account_id = ? AND job_id = ?
+  `).get(req.accountId,job.id);
+  res.setHeader("Cache-Control","no-store");
+  return res.json({ feedback:feedback||null });
 });
 
 app.post("/api/portal/:token/approve-quote", portalActionLimiter, async (req, res) => {
