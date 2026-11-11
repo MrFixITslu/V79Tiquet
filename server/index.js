@@ -3729,11 +3729,12 @@ app.get("/api/portal/:token", async (req, res) => {
       }
     }
     res.setHeader("Cache-Control", "no-store");
-    const previousFeedback = await db.prepare(
+    const feedbackEnabled = process.env.V79_ECOSYSTEM_V2_FEEDBACK_ENABLED === "1";
+    const previousFeedback = feedbackEnabled ? await db.prepare(
       "SELECT id FROM v79_job_feedback_v2 WHERE account_id = ? AND job_id = ?"
-    ).get(job.account_id, job.id);
+    ).get(job.account_id, job.id) : null;
     res.json({ job: populatedJob, settings, payments: summary, billing,
-      feedback: { submitted: Boolean(previousFeedback) } });
+      feedback: { enabled:feedbackEnabled,submitted:Boolean(previousFeedback) } });
   } catch (error) {
     res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
   }
@@ -3742,6 +3743,8 @@ app.get("/api/portal/:token", async (req, res) => {
 // Feedback is customer-initiated and opt-in. Never auto-create a CRM
 // opportunity, reveal the free text to Hub, or close a job on submission.
 app.post("/api/portal/:token/feedback", portalActionLimiter, async (req, res) => {
+  if (process.env.V79_ECOSYSTEM_V2_FEEDBACK_ENABLED !== "1")
+    return res.status(404).json({error:"Not available"});
   try {
     const job = await getActivePortalJob(req.params.token);
     if (!job) return res.status(404).json({ error: "Invalid or expired link" });
@@ -3784,6 +3787,8 @@ app.post("/api/portal/:token/feedback", portalActionLimiter, async (req, res) =>
 // Customer words remain accessible only in tenant-scoped, authenticated Tiquet.
 app.get("/api/jobs/:id/feedback", authenticateToken,
   requireAnyPagePermission("jobs", "clients"), async (req, res) => {
+  if (process.env.V79_ECOSYSTEM_V2_FEEDBACK_ENABLED !== "1")
+    return res.status(404).json({error:"Not available"});
   const job=await db.prepare("SELECT id FROM jobs WHERE id = ? AND account_id = ?")
     .get(req.params.id, req.accountId);
   if(!job)return res.status(404).json({error:"Job not found"});
