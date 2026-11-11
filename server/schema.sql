@@ -79,6 +79,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_intake_event ON jobs(intakeEventId) W
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS clientId TEXT;
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS secureTokenExpires TEXT;
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS secureTokenRevokedAt TEXT;
+-- Customer acknowledgement of delivered work, distinct from quote approval/payment.
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS deliveryAcceptedAt TEXT;
 CREATE INDEX IF NOT EXISTS idx_jobs_client_account ON jobs(account_id, clientId);
 CREATE INDEX IF NOT EXISTS idx_jobs_secure_token ON jobs(secureToken) WHERE secureToken IS NOT NULL;
 UPDATE jobs
