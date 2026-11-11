@@ -22,6 +22,7 @@ import { cancellationDecision, validTicketDate } from "./jobCancellation.js";
 import { invoiceDeliveryDecision, invoiceCcForAccount, invoicePortalTokenDecision } from "./invoiceDelivery.js";
 import { resolveJobFolder, resolveOwnedJobFile } from "./jobFileBoundary.js";
 import { validScopeUploadName, validateScopeAgreement, snapshotExistingJobScope, readScopeBuffer } from "./jobScopeEvidence.js";
+import { deriveJobTimeEvidence } from "./jobTimeEvidence.js";
 import { registerOAuthRoutes } from "./oauth.js";
 import { v4 as uuidv4 } from "uuid";
 import jwt from "jsonwebtoken";
@@ -3801,6 +3802,23 @@ async function latestJobScope(accountId,jobId) {
     ORDER BY v.version DESC LIMIT 1
   `).get(accountId,jobId);
 }
+
+// Read-only duration evidence never claims actual labour expense, payroll or
+// margin. Historical employee hourly rates are not captured per time entry.
+app.get("/api/jobs/:id/work-evidence", authenticateToken,
+  requireAnyPagePermission("jobs","invoices"), async (req,res)=>{
+    res.setHeader("Cache-Control","no-store");
+    if(process.env.V79_ECOSYSTEM_V2_WORK_EVIDENCE_ENABLED!=="1")
+      return res.status(404).json({error:"Not available"});
+    const job=await db.prepare(
+      "SELECT id,timeLogs,timerStartedAt FROM jobs WHERE id=? AND account_id=?"
+    ).get(req.params.id,req.accountId);
+    if(!job)return res.status(404).json({error:"Ticket not found"});
+    try{return res.json(deriveJobTimeEvidence(job));}
+    catch{
+      return res.status(409).json({error:"Job duration evidence cannot be verified"});
+    }
+  });
 
 app.get("/api/jobs/:id/scope", authenticateToken,
   requireAnyPagePermission("jobs","files"), async (req,res) => {
