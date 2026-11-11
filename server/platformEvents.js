@@ -97,8 +97,8 @@ export async function flushPlatformEvents() {
              a.hub_organization_id
       FROM platform_event_outbox o
       LEFT JOIN accounts a ON a.id = o.account_id
-      WHERE status = 'pending' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-      ORDER BY created_at ASC
+      WHERE o.status = 'pending' AND (o.next_attempt_at IS NULL OR o.next_attempt_at <= ?)
+      ORDER BY o.created_at ASC
       LIMIT ${MAX_BATCH}
     `).all(now);
 
