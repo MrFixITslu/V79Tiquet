@@ -55,6 +55,10 @@ interface PortalData {
   };
   feedback?: { enabled: boolean; submitted: boolean };
   deliveryAcceptance?: { enabled: boolean; accepted: boolean };
+  scopeEvidence?: {
+    enabled: boolean;
+    current: {version:number;sha256:string;filename:string;accepted:boolean}|null;
+  };
   billing?: {
     available: boolean;
     provider: string;
@@ -89,6 +93,9 @@ export function ClientPortal({ token }: { token: string }) {
   const [feedbackError, setFeedbackError] = useState<string | null>(null);
   const [acceptingDelivery,setAcceptingDelivery] = useState(false);
   const [deliveryError,setDeliveryError] = useState<string | null>(null);
+  const [scopeReviewed,setScopeReviewed]=useState(false);
+  const [scopeBusy,setScopeBusy]=useState(false);
+  const [scopeError,setScopeError]=useState<string|null>(null);
   const paymentReturnHandled = useRef(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -327,6 +334,27 @@ export function ClientPortal({ token }: { token: string }) {
     } finally {
       setFeedbackSending(false);
     }
+  };
+
+  const acknowledgeScope=async()=>{
+    const current=data?.scopeEvidence?.current;
+    if(!current||!scopeReviewed||scopeBusy||current.accepted)return;
+    setScopeBusy(true);setScopeError(null);
+    try{
+      const response=await fetch(`/api/portal/${token}/accept-scope`,{
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({agree:true,version:current.version,sha256:current.sha256}),
+      });
+      if(!response.ok)throw new Error(
+        "Scope approval could not be confirmed. Refresh to check the latest version.");
+      setData(previous=>previous?.scopeEvidence?.current ? {
+        ...previous,scopeEvidence:{enabled:true,
+          current:{...previous.scopeEvidence.current,accepted:true}}
+      }:previous);
+      setSuccessToast("Your scope acknowledgement has been recorded.");
+    }catch(error:any){
+      setScopeError(error.message||"Scope acknowledgement uncertain.");
+    }finally{setScopeBusy(false);}
   };
 
   const acceptDelivery=async()=>{
@@ -723,6 +751,48 @@ export function ClientPortal({ token }: { token: string }) {
             </form>
           </div>
         </div>
+
+        {data.scopeEvidence?.enabled && (
+          <section className="rounded-2xl border border-slate-700 bg-slate-900/80 p-5 md:p-6 space-y-3">
+            <h3 className="font-bold text-base text-white">Agreed work and scope</h3>
+            {!data.scopeEvidence.current ? (
+              <p className="text-sm text-slate-300">
+                No versioned scope document has been published for this ticket.
+              </p>
+            ) : (
+              <>
+                <p className="text-sm text-slate-300">
+                  Scope version {data.scopeEvidence.current.version} — review the exact
+                  document before acknowledging it. A later revision requires a new acknowledgement.
+                </p>
+                <a href={`/api/portal/${token}/scope-document`} target="_blank"
+                  rel="noreferrer" className="inline-flex items-center gap-2 text-teal-300 font-semibold underline underline-offset-4 text-sm">
+                  <FileText className="w-4 h-4"/> View scope PDF
+                </a>
+                {data.scopeEvidence.current.accepted ? (
+                  <p role="status" className="text-sm text-emerald-300">
+                    You acknowledged this version of the scope. This is not a certified electronic signature.
+                  </p>
+                ) : (
+                  <>
+                    <label className="flex gap-2 items-start text-sm text-slate-200">
+                      <input type="checkbox" checked={scopeReviewed}
+                        onChange={event=>setScopeReviewed(event.target.checked)}
+                        className="mt-1"/>
+                      I have reviewed and acknowledge this exact version of the scope of work.
+                    </label>
+                    {scopeError && <p role="alert" className="text-sm text-rose-300">{scopeError}</p>}
+                    <button type="button" disabled={!scopeReviewed||scopeBusy}
+                      onClick={()=>void acknowledgeScope()}
+                      className="rounded-lg bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50">
+                      {scopeBusy ? "Recording…" : "Acknowledge scope"}
+                    </button>
+                  </>
+                )}
+              </>
+            )}
+          </section>
+        )}
 
         {/* Delivery acceptance is not consent to pay, marketing, or a quote. */}
         {data.deliveryAcceptance?.enabled &&
