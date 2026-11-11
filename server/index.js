@@ -3559,6 +3559,86 @@ app.post("/api/jobs/:id/messages", authenticateToken, requireAnyPagePermission("
   }
 });
 
+// V2 operational evidence. No event payload, contact details or service
+// credentials are exposed. Retry is an audited human decision, not replay
+// of business transactions or an instruction to send customer email.
+app.get("/api/integrations/platform-events", authenticateToken,
+  requireAdmin, async(req,res)=>{
+  res.setHeader("Cache-Control","no-store");
+  if(process.env.V79_ECOSYSTEM_V2_EVENT_ADMIN_ENABLED!=="1")
+    return res.status(404).json({error:"Not available"});
+  try{
+    const summary=await db.prepare(`
+      SELECT status,COUNT(*)::INTEGER AS count FROM platform_event_outbox
+      WHERE account_id=? GROUP BY status
+    `).all(req.accountId);
+    const events=await db.prepare(`
+      SELECT id,event_type,subject_id,correlation_id,status,attempts,
+        created_at,next_attempt_at,sent_at
+      FROM platform_event_outbox WHERE account_id=?
+      ORDER BY created_at DESC,id DESC LIMIT 75
+    `).all(req.accountId);
+    return res.json({deliveryMode:platformEventsConfigured()?"enabled":"disabled",
+      summary,events});
+  }catch{
+    return res.status(503).json({error:"Platform event evidence unavailable"});
+  }
+});
+
+app.get("/api/integrations/platform-events/correlation/:id", authenticateToken,
+  requireAdmin, async(req,res)=>{
+  res.setHeader("Cache-Control","no-store");
+  if(process.env.V79_ECOSYSTEM_V2_EVENT_ADMIN_ENABLED!=="1")
+    return res.status(404).json({error:"Not available"});
+  if(!isValidUUID(req.params.id))
+    return res.status(400).json({error:"Invalid correlation identifier"});
+  const events=await db.prepare(`
+    SELECT id,event_type,subject_id,status,attempts,created_at,sent_at
+    FROM platform_event_outbox WHERE account_id=? AND correlation_id=?
+    ORDER BY created_at,id LIMIT 75
+  `).all(req.accountId,req.params.id);
+  return res.json({correlationId:req.params.id,events});
+});
+
+app.post("/api/integrations/platform-events/:id/retry", authenticateToken,
+  requireAdmin, async(req,res)=>{
+  res.setHeader("Cache-Control","no-store");
+  if(process.env.V79_ECOSYSTEM_V2_EVENT_ADMIN_ENABLED!=="1")
+    return res.status(404).json({error:"Not available"});
+  if(!isValidUUID(req.params.id)||typeof req.body?.reason!=="string" ||
+      req.body.reason.trim().length<12||req.body.reason.length>500)
+    return res.status(400).json({error:"Valid event and 12–500 character reason required"});
+  if(!platformEventsConfigured())
+    return res.status(503).json({error:"Signed Hub event delivery is not enabled"});
+  try{
+    const outcome=await db.transaction(async tx=>{
+      const item=await tx.prepare(`
+        SELECT id,event_type,status FROM platform_event_outbox
+        WHERE id=? AND account_id=? FOR UPDATE
+      `).get(req.params.id,req.accountId);
+      if(!item||item.status!=="failed")return null;
+      const at=new Date().toISOString();
+      await tx.prepare(`
+        UPDATE platform_event_outbox SET status='pending',
+          next_attempt_at=NULL,last_error=NULL
+        WHERE id=? AND account_id=? AND status='failed'
+      `).run(item.id,req.accountId);
+      await tx.prepare(`
+        INSERT INTO activity_logs (id,job_id,action,timestamp,"user",account_id)
+        VALUES (?,?,?,?,?,?)
+      `).run(uuidv4(),null,"Admin queued signed event "+item.event_type+
+        " for reviewed retry: "+req.body.reason.trim(),at,
+        req.user?.email||"Admin",req.accountId);
+      return {id:item.id,status:"pending"};
+    })();
+    if(!outcome)return res.status(409).json({error:"Only failed events may be retried after review"});
+    return res.status(202).json({queued:true,eventId:outcome.id,
+      delivered:false});
+  }catch{
+    return res.status(503).json({error:"Event retry could not be confirmed"});
+  }
+});
+
 // --- FILE REPOSITORY ENDPOINTS ---
 
 // Dynamic multer storage — destination is set per-job folder
