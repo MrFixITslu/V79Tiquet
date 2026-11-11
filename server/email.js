@@ -20,6 +20,10 @@ const SMTP_FROM    = process.env.SMTP_FROM || '"V79 TIQUET" <noreply@v79tickit.c
 const APP_BASE_URL = (process.env.APP_BASE_URL || 'http://localhost:3000').replace(/\/$/, '');
 
 const isSmtpConfigured = !!(SMTP_HOST && SMTP_USER && SMTP_PASS);
+// Transactional acknowledgements must have an explicitly selected sender.
+export function transactionalSmtpReady() {
+    return Boolean(isSmtpConfigured && process.env.SMTP_FROM);
+}
 
 let transporter = null;
 
