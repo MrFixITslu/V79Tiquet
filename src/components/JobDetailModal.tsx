@@ -54,6 +54,51 @@ export function JobDetailModal({
   const [cancelReason, setCancelReason] = useState("");
   const [cancelBusy, setCancelBusy] = useState(false);
   const [cancelError, setCancelError] = useState<string | null>(null);
+  type PublishedScope = {
+    id:string;version:number;sha256:string;original_filename:string;accepted:boolean;
+  };
+  const [scopeEnabled,setScopeEnabled]=useState(false);
+  const [scopeVersions,setScopeVersions]=useState<PublishedScope[]>([]);
+  const [scopeSelected,setScopeSelected]=useState<File|null>(null);
+  const [scopeBusy,setScopeBusy]=useState(false);
+  const [scopeError,setScopeError]=useState<string|null>(null);
+  const [scopeMessage,setScopeMessage]=useState<string|null>(null);
+  const loadScope = async()=>{
+    try{
+      const result=await api.get<{scopeVersions:PublishedScope[]}>(
+        `/jobs/${encodeURIComponent(job.id)}/scope`);
+      setScopeEnabled(true);setScopeVersions(result.scopeVersions);
+    }catch{
+      setScopeEnabled(false);setScopeVersions([]);
+    }
+  };
+  useEffect(()=>{
+    setScopeSelected(null);setScopeError(null);setScopeMessage(null);
+    void loadScope();
+  },[job.id]);
+  const publishScope=async()=>{
+    if(!scopeSelected || scopeBusy)return;
+    setScopeBusy(true);setScopeError(null);setScopeMessage(null);
+    try{
+      if(scopeSelected.size>20*1024*1024 || scopeSelected.size<5 ||
+         !scopeSelected.name.toLowerCase().endsWith(".pdf"))
+        throw new Error("Choose a PDF document smaller than 20 MB.");
+      const form=new FormData();
+      form.append("files",scopeSelected);
+      const uploaded=await api.post<{files:Array<{filename:string}>}>(
+        `/jobs/${encodeURIComponent(job.id)}/files`,form);
+      const filename=uploaded.files?.[0]?.filename;
+      if(!filename)throw new Error("File upload was not confirmed.");
+      const published=await api.post<{scope:{version:number}}> (
+        `/jobs/${encodeURIComponent(job.id)}/scope`,{filename});
+      setScopeMessage(`Version ${published.scope.version} published. The client must acknowledge this version.`);
+      setScopeSelected(null);
+      await loadScope();
+    }catch(error:any){
+      setScopeError(error?.message || "Scope publication was not confirmed. Refresh before retrying.");
+    }finally{setScopeBusy(false);}
+  };
+
   const handleCancellation = async () => {
     if (!onCancel || cancelBusy || cancelReason.trim().length < 10) return;
     setCancelBusy(true);
@@ -325,6 +370,49 @@ export function JobDetailModal({
                 </div>
               )}
             </div>
+          )}
+
+          {scopeEnabled && (
+            <section className="rounded-xl border border-teal-200 bg-teal-50/50 p-4 space-y-3">
+              <h4 className="text-sm font-bold text-slate-900">Versioned scope of work</h4>
+              <p className="text-xs text-slate-600">
+                Publish a final PDF for customer review. New revisions require a new acknowledgement.
+                Published versions are retained for audit; approval is not a certified signature.
+              </p>
+              {scopeVersions[0] && (
+                <div className="rounded-lg bg-white border border-teal-100 p-3 text-xs">
+                  <p className="font-semibold text-slate-800">
+                    Latest: v{scopeVersions[0].version} · {scopeVersions[0].original_filename}
+                  </p>
+                  <p className={scopeVersions[0].accepted?"text-emerald-700":"text-amber-700"}>
+                    {scopeVersions[0].accepted?"Acknowledged by client":"Awaiting client acknowledgement"}
+                  </p>
+                </div>
+              )}
+              {["request","estimation","in-progress"].includes(job.status) &&
+               !job.deliveryAcceptedAt && (
+                <div className="space-y-2">
+                  <label htmlFor="job-scope-upload" className="block text-xs font-semibold text-slate-700">
+                    New scope PDF (maximum 20 MB)
+                  </label>
+                  <input id="job-scope-upload" type="file" accept="application/pdf,.pdf"
+                    disabled={scopeBusy} onChange={event=>setScopeSelected(event.target.files?.[0]||null)}
+                    className="block w-full text-xs text-slate-700"/>
+                  <button type="button" disabled={scopeBusy||!scopeSelected}
+                    onClick={()=>void publishScope()}
+                    className="rounded-lg bg-teal-700 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50">
+                    {scopeBusy?"Publishing…":"Publish scope for customer"}
+                  </button>
+                </div>
+              )}
+              {job.deliveryAcceptedAt && (
+                <p className="text-xs text-slate-600">
+                  Delivery was already accepted. Use a new ticket or approved change order.
+                </p>
+              )}
+              {scopeError && <p role="alert" className="text-xs text-rose-700">{scopeError}</p>}
+              {scopeMessage && <p role="status" className="text-xs text-emerald-700">{scopeMessage}</p>}
+            </section>
           )}
 
           {/* Document Generation Options - 100% Automated, non-AI */}
