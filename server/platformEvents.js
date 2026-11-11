@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { v4 as uuidv4 } from "uuid";
 import db from "./db.js";
 import { logger } from "./logger.js";
+import { makeHubEventProjection } from "./platformEventProjection.js";
 
 const MAX_BATCH = 25;
 let flushing = false;
@@ -100,17 +101,23 @@ export async function flushPlatformEvents() {
     for (const row of rows) {
       let payload = {};
       try { payload = JSON.parse(row.payload_json || "{}"); } catch {}
-      const event = {
-        id: row.id,
-        type: row.event_type,
-        version: 1,
-        occurredAt: row.occurred_at,
-        organizationRef: row.hub_organization_id || row.account_id,
-        subjectId: row.subject_id || undefined,
-        correlationId: row.correlation_id || undefined,
-        payload,
-      };
-      const state = await deliver(event);
+      // No local-account-ID fallback: an unmapped event MUST NOT be
+      // delivered to Hub under an unverified organisation identifier.
+      // Keep it pending with a visible reason so linking the workspace
+      // can recover it without replaying the original customer action.
+      const projection = makeHubEventProjection(row, payload);
+      if (!projection.ok) {
+        await db.prepare(`UPDATE platform_event_outbox
+          SET attempts=attempts+1, next_attempt_at=?, last_error=?
+          WHERE id=?`).run(
+            new Date(Date.now() + 30 * 60_000).toISOString(),
+            `V2 Hub event blocked: ${projection.reason}`,
+            row.id,
+          );
+        logger.warn(`[V79 Hub Events] Held ${row.event_type}: ${projection.reason}`);
+        continue;
+      }
+      const state = await deliver(projection.event);
       if (state === "sent") {
         await db.prepare("UPDATE platform_event_outbox SET status='sent', sent_at=?, last_error=NULL WHERE id=?")
           .run(new Date().toISOString(), row.id);
