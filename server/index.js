@@ -19,7 +19,7 @@ import db, { dbDir, seedDefaultTemplatesForAccount } from "./db.js";
 import { sendPortalLink, sendStatusUpdate, sendTemplated, renderEmailFromPlainTemplate, sendPasswordReset, sendUserInvite, transactionalSmtpReady, sendInvoiceNotice } from "./email.js";
 import { createIntakeAcknowledgements } from "./intakeAcknowledgements.js";
 import { cancellationDecision, validTicketDate } from "./jobCancellation.js";
-import { invoiceDeliveryDecision, invoiceCcForAccount } from "./invoiceDelivery.js";
+import { invoiceDeliveryDecision, invoiceCcForAccount, invoicePortalTokenDecision } from "./invoiceDelivery.js";
 import { registerOAuthRoutes } from "./oauth.js";
 import { v4 as uuidv4 } from "uuid";
 import jwt from "jsonwebtoken";
@@ -2257,12 +2257,15 @@ app.post("/api/jobs/:id/send-invoice", authenticateToken,
         if(prior?.status==="sent")return res.json({success:true,alreadySent:true});
         return res.status(409).json({error:"Invoice delivery uncertain; review before any new send"});
       }
-      const credential=await rotatePortalCredential(job.id,req.accountId);
-      if(!credential)throw new Error("portal_credential_unavailable");
+      const portalPolicy=invoicePortalTokenDecision(job);
+      const token=portalPolicy.mode==="reuse"
+        ? portalPolicy.token
+        : (await rotatePortalCredential(job.id,req.accountId))?.token;
+      if(!token)throw new Error("portal_credential_unavailable");
       const settings=await db.prepare(
         "SELECT name FROM settings WHERE account_id=? ORDER BY id LIMIT 1"
       ).get(req.accountId);
-      const result=await sendInvoiceNotice(job.clientEmail,job,credential.token,{
+      const result=await sendInvoiceNotice(job.clientEmail,job,token,{
         cc:ccPolicy.cc,
         companyName:settings?.name||"V79 Digital"
       });
