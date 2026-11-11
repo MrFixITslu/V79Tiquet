@@ -17,3 +17,9 @@ test("ticket details never link customers by matching company names",()=>{
   assert.match(modal,/job\.clientId\s*\?\s*clients\.find\(\(c\) => c\.id === job\.clientId\)/);
   assert.doesNotMatch(modal,/c\.company\?\.toLowerCase\(\) === job\.client\?\.toLowerCase\(\)/);
 });
+
+test("strict v2 intake rejects identity guesses while preserving idempotent ticket ID",()=>{
+  assert.match(server,/V79_ECOSYSTEM_V2_STRICT_INTAKE_IDENTITY/);
+  assert.match(server,/if \(process\.env\.V79_ECOSYSTEM_V2_STRICT_INTAKE_IDENTITY !== "1"\)/);
+  assert.match(server,/SELECT id, clientId FROM jobs WHERE intakeEventId = \? AND account_id = \?/);
+});
