@@ -80,16 +80,13 @@ export function JobDetailModal({
     setNewNote("");
   };
 
-  // Find full client details. Client.company can legitimately be null (a
-  // client with no company name on file) even though the type says
-  // `string` — the DB stores an empty company as NULL. Without the `?.`
-  // here, any job with no directly-linked clientId (common for jobs still
-  // in Estimation, created before a client is picked) would throw trying
-  // to call .toLowerCase() on that null for every non-matching client in
-  // the list, crashing the whole modal to a blank screen.
-  const clientDetails = clients.find(
-    (c) => c.id === job.clientId || c.company?.toLowerCase() === job.client?.toLowerCase()
-  );
+  // Link customer details ONLY through the explicitly stored clientId.
+  // Company/name matching can expose the wrong person's contact details
+  // when two customers use the same business name. Unlinked enquiries
+  // correctly show "No additional client contact details registered".
+  const clientDetails = job.clientId
+    ? clients.find((c) => c.id === job.clientId)
+    : undefined;
 
   const getDocTitle = () => {
     switch (docType) {
