@@ -1114,6 +1114,17 @@ async function recordVerifiedWipayPayment(job, order) {
     "WiPay via V79 Billing",
     job.account_id
   );
+  // Real settled provider funds cannot be discarded because the customer
+  // cancelled while checkout was in flight. Preserve the actual receipt
+  // and add a finance exception; NEVER issue a refund automatically.
+  if (job.status === "cancelled") {
+    await db.prepare(
+      "INSERT INTO activity_logs (id, job_id, action, timestamp, user, account_id) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run(uuidv4(),job.id,
+      "FINANCE REVIEW REQUIRED: verified payment arrived after customer cancellation",
+      recordedAt,"V79 Billing",job.account_id);
+    logger.warn("[Tiquet Billing] Verified payment arrived on a cancelled service; manual reconciliation required");
+  }
 
   await safeQueuePlatformEvent({
     accountId: job.account_id,
@@ -2252,6 +2263,11 @@ app.post("/api/payments", authenticateToken, requireAnyPagePermission("invoices"
   try {
     const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(jobId, req.accountId);
     if (!job) return res.status(404).json({ error: "Job not found" });
+    if (job.status === "cancelled")
+      return res.status(409).json({
+        error: "Cancelled service requires a manual finance review",
+        code: "CANCELLED_TICKET_FINANCE_REVIEW",
+      });
 
     const jobValue = Math.max(0, Number(job.amount || 0));
     if (jobValue <= 0) return res.status(409).json({
