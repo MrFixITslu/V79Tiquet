@@ -20,6 +20,7 @@ import { sendPortalLink, sendStatusUpdate, sendTemplated, renderEmailFromPlainTe
 import { createIntakeAcknowledgements } from "./intakeAcknowledgements.js";
 import { cancellationDecision, validTicketDate } from "./jobCancellation.js";
 import { invoiceDeliveryDecision, invoiceCcForAccount, invoicePortalTokenDecision } from "./invoiceDelivery.js";
+import { resolveJobFolder, resolveOwnedJobFile } from "./jobFileBoundary.js";
 import { registerOAuthRoutes } from "./oauth.js";
 import { v4 as uuidv4 } from "uuid";
 import jwt from "jsonwebtoken";
@@ -396,7 +397,7 @@ const sanitizeForPath = str => (str || 'unknown').replace(/[^a-zA-Z0-9_\-. ]/g, 
  * Pattern: uploads/<AccountId>/<ClientName>/<JobId>/
  */
 const getJobFolder = (accountId, clientName, jobId) => {
-  return path.join(UPLOADS_ROOT, sanitizeForPath(accountId), sanitizeForPath(clientName), jobId);
+  return resolveJobFolder(UPLOADS_ROOT, accountId, clientName, jobId);
 };
 
 /**
@@ -3680,15 +3681,12 @@ app.delete("/api/jobs/:id/files/:filename", authenticateToken, requireAnyPagePer
       error: 'Job not found'
     });
     const folder = getJobFolder(req.accountId, job.client, jobId);
-    const filePath = path.join(folder, filename);
-
-    // Security: ensure file is inside the job folder (prevent path traversal)
-    if (!filePath.startsWith(folder)) return res.status(403).json({
-      error: 'Forbidden'
-    });
-    if (!fs.existsSync(filePath)) return res.status(404).json({
-      error: 'File not found'
-    });
+    const filePath = resolveOwnedJobFile(folder, filename);
+    if (!filePath) return res.status(403).json({ error: 'Invalid file path' });
+    // Do not follow symlinks outside the tenant-owned job folder.
+    if (!fs.existsSync(filePath) || !fs.lstatSync(filePath).isFile()) {
+      return res.status(404).json({ error: 'File not found' });
+    }
     fs.unlinkSync(filePath);
     appendProjectLog(req.accountId, job.client, jobId, {
       type: 'file_deleted',
