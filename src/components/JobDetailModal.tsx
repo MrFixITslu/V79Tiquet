@@ -1,4 +1,5 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
+import { api } from "../api";
 import { Job, Employee, JobNote, Client, BusinessSettings } from "../types";
 import { formatMoney } from "../currency";
 import { AgentReplyDraftPanel } from "./AgentReplyDraftPanel";
@@ -45,6 +46,17 @@ export function JobDetailModal({
   const [newNote, setNewNote] = useState("");
   const [editingAmount, setEditingAmount] = useState(false);
   const [amountDraft, setAmountDraft] = useState(job.amount != null ? String(job.amount) : "");
+  const [clientFeedback, setClientFeedback] = useState<{
+    rating: number; comment: string; contact_allowed: boolean; submitted_at: string;
+  } | null>(null);
+  useEffect(() => {
+    let active = true;
+    setClientFeedback(null);
+    api.get<{feedback: typeof clientFeedback}>(`/jobs/${encodeURIComponent(job.id)}/feedback`)
+      .then(result => { if(active) setClientFeedback(result.feedback ?? null); })
+      .catch(() => { if(active) setClientFeedback(null); });
+    return () => { active = false; };
+  }, [job.id]);
 
   const handleSaveAmount = () => {
     const trimmed = amountDraft.trim();
@@ -240,6 +252,19 @@ export function JobDetailModal({
             </div>
           </div>
 
+          {clientFeedback && (
+            <section className="border border-teal-200 bg-teal-50 rounded-xl p-4 space-y-2">
+              <h4 className="text-sm font-semibold text-slate-900">
+                Customer feedback • {clientFeedback.rating} of 5
+              </h4>
+              {clientFeedback.comment && (
+                <p className="text-sm text-slate-700 whitespace-pre-wrap">{clientFeedback.comment}</p>
+              )}
+              <p className="text-xs text-slate-500">
+                Contact about this feedback: {clientFeedback.contact_allowed ? "Permitted" : "Not permitted"}
+              </p>
+            </section>
+          )}
           {/* Document Generation Options - 100% Automated, non-AI */}
           <div className="border-t border-slate-100 pt-6">
             <h4 className="text-sm font-semibold text-slate-900 mb-4 flex items-center gap-2">
