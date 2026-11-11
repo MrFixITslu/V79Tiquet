@@ -396,3 +396,20 @@ CREATE TABLE IF NOT EXISTS v79_job_feedback_v2 (
 );
 CREATE INDEX IF NOT EXISTS idx_v79_feedback_account_time
     ON v79_job_feedback_v2(account_id, submitted_at DESC);
+
+
+-- Additive, opt-in website acknowledgement queue. Status 'sending' after
+-- a crash is ambiguous and requires operator review; never replay blindly.
+CREATE TABLE IF NOT EXISTS v79_intake_ack_outbox (
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    job_id TEXT NOT NULL REFERENCES jobs(id),
+    status TEXT NOT NULL DEFAULT 'pending'
+       CHECK (status IN ('pending','sending','sent','requires_review')),
+    created_at TEXT NOT NULL,
+    claimed_at TEXT,
+    sent_at TEXT,
+    error_code TEXT,
+    PRIMARY KEY (account_id,job_id)
+);
+CREATE INDEX IF NOT EXISTS idx_v79_intake_ack_status
+    ON v79_intake_ack_outbox(status, created_at);
