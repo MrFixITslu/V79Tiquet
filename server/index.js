@@ -16,9 +16,10 @@ import cors from "cors";
 import http from "http";
 import { WebSocketServer } from "ws";
 import db, { dbDir, seedDefaultTemplatesForAccount } from "./db.js";
-import { sendPortalLink, sendStatusUpdate, sendTemplated, renderEmailFromPlainTemplate, sendPasswordReset, sendUserInvite, transactionalSmtpReady } from "./email.js";
+import { sendPortalLink, sendStatusUpdate, sendTemplated, renderEmailFromPlainTemplate, sendPasswordReset, sendUserInvite, transactionalSmtpReady, sendInvoiceNotice } from "./email.js";
 import { createIntakeAcknowledgements } from "./intakeAcknowledgements.js";
 import { cancellationDecision, validTicketDate } from "./jobCancellation.js";
+import { invoiceDeliveryDecision, invoiceCcForAccount } from "./invoiceDelivery.js";
 import { registerOAuthRoutes } from "./oauth.js";
 import { v4 as uuidv4 } from "uuid";
 import jwt from "jsonwebtoken";
@@ -2175,6 +2176,87 @@ app.post("/api/jobs/:id/send-quote", authenticateToken, requireAnyPagePermission
     });
   }
 });
+
+// V2 invoice notice is a signed-in staff action, not a PDF attachment.
+// Its portal link is private; SMTP and the owner-account CC must be verified.
+// An ambiguous prior send remains held, never silently replayed.
+app.get("/api/invoices/email-capability", authenticateToken,
+  requireAnyPagePermission("invoices"), (_req,res) => {
+    res.setHeader("Cache-Control","no-store");
+    res.json({enabled:process.env.V79_ECOSYSTEM_V2_INVOICE_SEND_ENABLED==="1"});
+});
+app.post("/api/jobs/:id/send-invoice", authenticateToken,
+  requireAnyPagePermission("invoices"), async (req,res) => {
+    if(process.env.V79_ECOSYSTEM_V2_INVOICE_SEND_ENABLED!=="1")
+      return res.status(404).json({error:"Not available"});
+    const id=String(req.params.id||"").trim();
+    const requestId=String(req.body?.requestId||"").trim();
+    if(!isValidUUID(requestId)||!isValidUUID(id))
+      return res.status(400).json({error:"Valid ticket and request reference required"});
+    const job=await db.prepare("SELECT * FROM jobs WHERE id=? AND account_id=?")
+      .get(id,req.accountId);
+    const decision=invoiceDeliveryDecision(job);
+    if(!decision.ok)
+      return res.status(decision.reason==="job_not_found"?404:409).json({error:"Invoice is not ready to send"});
+    if(!transactionalSmtpReady())
+      return res.status(503).json({error:"Verified invoice email delivery is not configured"});
+    const ccPolicy=invoiceCcForAccount(req.accountId);
+    if(ccPolicy.error)
+      return res.status(503).json({error:"Required invoice copy address is not configured"});
+    let owned=false;
+    try{
+      const claim=await db.prepare(`
+        INSERT INTO v79_invoice_mail_v2(account_id,job_id,request_id,status,created_at)
+        VALUES (?,?,?,'sending',?)
+        ON CONFLICT (account_id,job_id,request_id) DO NOTHING
+        RETURNING request_id
+      `).get(req.accountId,id,requestId,new Date().toISOString());
+      owned=Boolean(claim);
+      if(!owned){
+        const prior=await db.prepare(`
+          SELECT status FROM v79_invoice_mail_v2
+           WHERE account_id=? AND job_id=? AND request_id=?
+        `).get(req.accountId,id,requestId);
+        if(prior?.status==="sent")return res.json({success:true,alreadySent:true});
+        return res.status(409).json({error:"Invoice delivery uncertain; review before any new send"});
+      }
+      const credential=await rotatePortalCredential(job.id,req.accountId);
+      if(!credential)throw new Error("portal_credential_unavailable");
+      const settings=await db.prepare(
+        "SELECT name FROM settings WHERE account_id=? ORDER BY id LIMIT 1"
+      ).get(req.accountId);
+      const result=await sendInvoiceNotice(job.clientEmail,job,credential.token,{
+        cc:ccPolicy.cc,
+        companyName:settings?.name||"V79 Digital"
+      });
+      if(!result?.success || result.skipped)
+        throw new Error("invoice_delivery_unconfirmed");
+      const at=new Date().toISOString();
+      await db.prepare(`
+        UPDATE v79_invoice_mail_v2 SET status='sent',sent_at=?
+        WHERE account_id=? AND job_id=? AND request_id=? AND status='sending'
+      `).run(at,req.accountId,id,requestId);
+      await db.prepare(`
+        INSERT INTO activity_logs (id,job_id,action,timestamp,"user",account_id)
+        VALUES (?,?,?,?,?,?)
+      `).run(uuidv4(),id,
+        "Invoice portal notice sent to customer"+(ccPolicy.cc?" with account-owner copy":""),
+        at,req.user?.email||"Authorised staff",req.accountId);
+      return res.json({success:true,alreadySent:false,copySent:Boolean(ccPolicy.cc)});
+    }catch{
+      if(owned){
+        try{
+          await db.prepare(`
+            UPDATE v79_invoice_mail_v2 SET status='requires_review'
+             WHERE account_id=? AND job_id=? AND request_id=? AND status='sending'
+          `).run(req.accountId,id,requestId);
+        }catch{
+          logger.warn("[Invoice Delivery] Outcome and audit uncertain; operator review needed");
+        }
+      }
+      return res.status(503).json({error:"Invoice delivery unconfirmed; verify mailbox before retrying"});
+    }
+  });
 
 app.post("/api/jobs/:id/revoke-portal", authenticateToken, requireAnyPagePermission("jobs", "invoices"), async (req, res) => {
   const { id } = req.params;
