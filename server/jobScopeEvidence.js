@@ -22,23 +22,24 @@ export function validateScopeAgreement(value) {
     typeof value.sha256 === "string" && HASH.test(value.sha256);
 }
 
-function evidenceFolder(jobFolder) {
-  if (typeof jobFolder !== "string" || !path.isAbsolute(jobFolder))
-    throw new Error("Invalid job folder");
-  return path.join(path.resolve(jobFolder), ".scope-evidence");
+// Immutable scope evidence is independent of editable customer names.
+function evidenceFolder(archiveRoot) {
+  if (typeof archiveRoot !== "string" || !path.isAbsolute(archiveRoot))
+    throw new Error("Invalid evidence root");
+  return path.resolve(archiveRoot);
 }
 
-export function storedScopePath(jobFolder, versionId) {
+export function storedScopePath(archiveRoot, versionId) {
   if(!UUID.test(String(versionId||""))) throw new Error("Invalid scope version");
-  const dir=evidenceFolder(jobFolder);
+  const dir=evidenceFolder(archiveRoot);
   const target=resolveOwnedJobFile(dir,versionId+".pdf");
   if(!target)throw new Error("Invalid snapshot location");
   return target;
 }
 
-export async function readScopeBuffer(jobFolder,versionId,expectedDigest) {
+export async function readScopeBuffer(archiveRoot,versionId,expectedDigest) {
   if(!HASH.test(String(expectedDigest||"")))throw new Error("Invalid scope digest");
-  const target=storedScopePath(jobFolder,versionId);
+  const target=storedScopePath(archiveRoot,versionId);
   const handle=await fs.open(target,constants.O_RDONLY | (constants.O_NOFOLLOW||0));
   try{
     const stat=await handle.stat();
@@ -50,7 +51,7 @@ export async function readScopeBuffer(jobFolder,versionId,expectedDigest) {
   }finally{await handle.close();}
 }
 
-export async function snapshotExistingJobScope(jobFolder,filename,versionId) {
+export async function snapshotExistingJobScope(jobFolder,filename,archiveRoot,versionId) {
   if(!validScopeUploadName(filename))throw new Error("Invalid uploaded PDF name");
   const source=resolveOwnedJobFile(jobFolder,filename);
   if(!source)throw new Error("Scope upload escapes job folder");
@@ -65,15 +66,15 @@ export async function snapshotExistingJobScope(jobFolder,filename,versionId) {
       throw new Error("Scope document is not a PDF");
   }finally{await handle.close();}
   const digest=createHash("sha256").update(content).digest("hex");
-  const dir=evidenceFolder(jobFolder);
+  const dir=evidenceFolder(archiveRoot);
   await fs.mkdir(dir,{recursive:true,mode:0o700});
   const dirStat=await fs.lstat(dir);
   if(!dirStat.isDirectory()||dirStat.isSymbolicLink())
     throw new Error("Evidence folder cannot be a symlink");
-  const target=storedScopePath(jobFolder,versionId);
+  const target=storedScopePath(archiveRoot,versionId);
   await fs.writeFile(target,content,{flag:"wx",mode:0o600});
   // Verify archive content once more, not the mutable source file.
-  try{await readScopeBuffer(jobFolder,versionId,digest);}
+  try{await readScopeBuffer(archiveRoot,versionId,digest);}
   catch(error){await fs.unlink(target).catch(()=>{});throw error;}
   return Object.freeze({sha256:digest,bytes:content.length,storedPath:target});
 }
