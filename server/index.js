@@ -1645,27 +1645,18 @@ app.post("/api/public/intake", intakeLimiter, requireIntakeSecret, async (req, r
   // must not create a second job. website2026 generates this once per
   // submission attempt and reuses it on retry.
   if (eventId) {
-    const existingJob = await db.prepare("SELECT id FROM jobs WHERE intakeEventId = ? AND account_id = ?").get(String(eventId), accountId);
+    const existingJob = await db.prepare("SELECT id, clientId FROM jobs WHERE intakeEventId = ? AND account_id = ?").get(String(eventId), accountId);
     if (existingJob) {
-      // Look up the client the same way the create path below does —
-      // by email then phone, NOT by the job's stored client name
-      // string. Name-based lookup here would be wrong in two ways:
-      // it can match the wrong client if two clients share a name,
-      // and it returns nothing at all if staff have since renamed the
-      // client (e.g. fixed a typo), even though a real match exists.
-      let existingClient = null;
-      if (email) {
-        existingClient = await db.prepare("SELECT id FROM clients WHERE LOWER(email) = LOWER(?) AND account_id = ?").get(email, accountId);
-      }
-      if (!existingClient && phone) {
-        existingClient = await db.prepare("SELECT id FROM clients WHERE phone = ? AND account_id = ?").get(phone, accountId);
-      }
+      // Never rematch a lead to a different client by email/phone on retry.
+      const linkedClient = existingJob.clientId
+        ? await db.prepare("SELECT id FROM clients WHERE id = ? AND account_id = ?").get(existingJob.clientId, accountId)
+        : null;
       logger.info(`[Intake] Duplicate eventId ${eventId} — returning existing job ${existingJob.id} without creating another.`);
       return res.status(200).json({
         success: true,
         action: "already_processed",
         jobId: existingJob.id,
-        clientId: existingClient?.id || null
+        clientId: linkedClient?.id || null
       });
     }
   }
@@ -1750,6 +1741,9 @@ app.post("/api/public/intake", intakeLimiter, requireIntakeSecret, async (req, r
       const initialNotes = trimNotes(`Lead Source: Website\nLead Status: New\n\n[${now}] Original inquiry:\n${(message || "(no message included)").trim()}`);
       await db.prepare("INSERT INTO clients (id, name, email, phone, company, notes, createdAt, account_id, leadSource, leadStatus) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(clientId, name, email, phone || null, company, initialNotes, now, accountId, "website", "New");
     }
+    // The link is explicit and tenant-scoped; never infer it from a company name.
+    await db.prepare("UPDATE jobs SET clientId = ? WHERE id = ? AND account_id = ?")
+      .run(clientId, id, accountId);
     try {
       const jobFolder = ensureJobFolder(accountId, name, id);
       fs.writeFileSync(path.join(jobFolder, 'README.md'), `# Project: ${title}\nClient: ${name}\nJob ID: ${id}\nCreated: ${now}\n\nThis folder contains all files, quotes, invoices, and logs for this project.\n`);
