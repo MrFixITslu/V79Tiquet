@@ -29,6 +29,7 @@ interface PortalData {
     priority?: string;
     amount?: number;
     quoteApproved?: number;
+    deliveryAcceptedAt?: string | null;
     depositPaid?: number;
     dueDate?: string;
     createdAt: string;
@@ -53,6 +54,7 @@ interface PortalData {
     fullyPaid: boolean;
   };
   feedback?: { enabled: boolean; submitted: boolean };
+  deliveryAcceptance?: { enabled: boolean; accepted: boolean };
   billing?: {
     available: boolean;
     provider: string;
@@ -85,6 +87,8 @@ export function ClientPortal({ token }: { token: string }) {
   const [feedbackContactAllowed, setFeedbackContactAllowed] = useState(false);
   const [feedbackSending, setFeedbackSending] = useState(false);
   const [feedbackError, setFeedbackError] = useState<string | null>(null);
+  const [acceptingDelivery,setAcceptingDelivery] = useState(false);
+  const [deliveryError,setDeliveryError] = useState<string | null>(null);
   const paymentReturnHandled = useRef(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -316,13 +320,31 @@ export function ClientPortal({ token }: { token: string }) {
         }),
       });
       if (!response.ok) throw new Error("We could not confirm your feedback. Please check and try again.");
-      setData(previous => previous ? { ...previous, feedback: { submitted: true } } : previous);
+      setData(previous => previous ? { ...previous, feedback: { enabled:true,submitted:true } } : previous);
       setSuccessToast("Thank you. Your feedback has been received.");
     } catch (error: any) {
       setFeedbackError(error.message || "Unable to confirm feedback.");
     } finally {
       setFeedbackSending(false);
     }
+  };
+
+  const acceptDelivery=async()=>{
+    if(acceptingDelivery || data?.deliveryAcceptance?.accepted)return;
+    setAcceptingDelivery(true);setDeliveryError(null);
+    try{
+      const response=await fetch(`/api/portal/${token}/accept-delivery`,{
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({accept:true}),
+      });
+      if(!response.ok)throw new Error("We could not confirm acceptance. Please refresh before retrying.");
+      setData(previous=>previous ? {
+        ...previous,deliveryAcceptance:{enabled:true,accepted:true}
+      }:previous);
+      setSuccessToast("Your delivery acceptance has been recorded.");
+    }catch(error:any){
+      setDeliveryError(error.message||"Delivery acceptance cannot be confirmed");
+    }finally{setAcceptingDelivery(false);}
   };
 
   const { job, settings, payments } = data;
@@ -701,6 +723,32 @@ export function ClientPortal({ token }: { token: string }) {
             </form>
           </div>
         </div>
+
+        {/* Delivery acceptance is not consent to pay, marketing, or a quote. */}
+        {data.deliveryAcceptance?.enabled &&
+          ["review","invoiced","completed","paid"].includes(job.status) && (
+          <section className="rounded-2xl border border-slate-700 bg-slate-900/80 p-5 md:p-6 space-y-3">
+            <h3 className="font-bold text-base text-white">Confirm delivered work</h3>
+            {data.deliveryAcceptance.accepted ? (
+              <p role="status" className="text-sm text-emerald-300">
+                You have accepted delivery. Any outstanding invoice remains payable separately.
+              </p>
+            ) : (
+              <>
+                <p className="text-sm text-slate-300">
+                  Confirm that the agreed work has been delivered and reviewed.
+                  This does not authorise a payment or subscribe you to marketing.
+                </p>
+                {deliveryError && <p role="alert" className="text-sm text-rose-300">{deliveryError}</p>}
+                <button type="button" onClick={()=>void acceptDelivery()}
+                  disabled={acceptingDelivery}
+                  className="rounded-lg bg-teal-600 hover:bg-teal-500 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50">
+                  {acceptingDelivery?"Confirming…":"I accept the delivered work"}
+                </button>
+              </>
+            )}
+          </section>
+        )}
 
         {/* Customer feedback: visible only after review or completed delivery. */}
         {data.feedback?.enabled && ["review","completed","paid"].includes(job.status) && (
