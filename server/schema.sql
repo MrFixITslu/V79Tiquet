@@ -379,3 +379,20 @@ CREATE TABLE IF NOT EXISTS sentinel_ticket_approvals (
   recorded_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_sentinel_approvals_incident ON sentinel_ticket_approvals(source_incident_id);
+
+
+-- V79 Ecosystem v2: tenant-scoped, single-submission client feedback.
+-- Free-text stays inside Tiquet; only consented, minimal event categories
+-- may reach Hub. Never use client feedback to auto-close jobs or send ads.
+CREATE TABLE IF NOT EXISTS v79_job_feedback_v2 (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    job_id TEXT NOT NULL REFERENCES jobs(id),
+    rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
+    comment TEXT NOT NULL,
+    contact_allowed BOOLEAN NOT NULL DEFAULT FALSE,
+    submitted_at TEXT NOT NULL,
+    UNIQUE (account_id, job_id)
+);
+CREATE INDEX IF NOT EXISTS idx_v79_feedback_account_time
+    ON v79_job_feedback_v2(account_id, submitted_at DESC);
