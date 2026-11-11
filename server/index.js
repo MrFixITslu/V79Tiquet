@@ -1923,7 +1923,10 @@ app.put("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"), as
     });
     if (existingJob.status === "cancelled")
       return res.status(409).json({error:"Cancelled tickets are closed and cannot be changed"});
-    if (!validTicketDate(dueDate))
+    // Older records may contain an ISO timestamp. A separate edit must
+    // not fail solely because it re-sends an unchanged historical date.
+    if (dueDate !== undefined && dueDate !== existingJob.dueDate &&
+        !validTicketDate(dueDate))
       return badRequest(res, "Due date must be a real YYYY-MM-DD date");
     if (status !== undefined && !JOB_STATUSES.has(String(status))) {
       return badRequest(res, "Invalid job status");
