@@ -2185,6 +2185,23 @@ app.get("/api/invoices/email-capability", authenticateToken,
     res.setHeader("Cache-Control","no-store");
     res.json({enabled:process.env.V79_ECOSYSTEM_V2_INVOICE_SEND_ENABLED==="1"});
 });
+app.get("/api/invoices/email-deliveries", authenticateToken,
+  requireAnyPagePermission("invoices"), async (req,res) => {
+    res.setHeader("Cache-Control","no-store");
+    if(process.env.V79_ECOSYSTEM_V2_INVOICE_SEND_ENABLED!=="1")
+      return res.json({enabled:false,items:[]});
+    try{
+      const items=await db.prepare(`
+        SELECT job_id,request_id,status,created_at,sent_at
+          FROM v79_invoice_mail_v2 WHERE account_id=?
+         ORDER BY created_at DESC LIMIT 50
+      `).all(req.accountId);
+      return res.json({enabled:true,items});
+    }catch{
+      return res.status(503).json({error:"Invoice delivery evidence unavailable"});
+    }
+  });
+
 app.post("/api/jobs/:id/send-invoice", authenticateToken,
   requireAnyPagePermission("invoices"), async (req,res) => {
     if(process.env.V79_ECOSYSTEM_V2_INVOICE_SEND_ENABLED!=="1")
