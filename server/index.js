@@ -3982,6 +3982,18 @@ app.post("/api/portal/:token/accept-delivery", portalActionLimiter, async (req, 
          !["review","invoiced","completed","paid"].includes(current.status))
         return {status:409};
       if(current.deliveryAcceptedAt)return {status:200,already:true};
+      if(scopeEnabled()){
+        const latest=await tx.prepare(`
+          SELECT v.id,CASE WHEN a.id IS NULL THEN 0 ELSE 1 END AS accepted
+            FROM v79_job_scope_versions_v2 v
+            LEFT JOIN v79_job_scope_acceptances_v2 a
+              ON a.version_id=v.id AND a.account_id=v.account_id
+                 AND a.job_id=v.job_id
+            WHERE v.account_id=? AND v.job_id=?
+            ORDER BY v.version DESC LIMIT 1
+        `).get(job.account_id,job.id);
+        if(latest && !latest.accepted)return {status:409};
+      }
       const at=new Date().toISOString();
       await tx.prepare(`
         UPDATE jobs SET deliveryAcceptedAt=?
