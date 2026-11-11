@@ -718,6 +718,7 @@ function IntegrationsSection({ workspaceId }: { workspaceId: string }) {
           </div>
         </div>
         <IntakeAcknowledgementStatus />
+        <PlatformEventStatus />
       </div>
     </div>
   );
@@ -779,6 +780,107 @@ function IntakeAcknowledgementStatus() {
           </div>
         </>
       }
+    </section>
+  );
+}
+
+function PlatformEventStatus() {
+  type EventReceipt={
+    id:string;event_type:string;status:string;attempts:number;
+    created_at:string;next_attempt_at?:string|null;
+    correlation_id?:string|null;
+  };
+  const [events,setEvents]=useState<EventReceipt[]|null>(null);
+  const [delivery,setDelivery]=useState("unknown");
+  const [loading,setLoading]=useState(true);
+  const [retryId,setRetryId]=useState<string|null>(null);
+  const [reason,setReason]=useState("");
+  const [message,setMessage]=useState<string|null>(null);
+  const refresh=async()=>{
+    setLoading(true);
+    try{
+      const data=await api.get<{deliveryMode:string;events:EventReceipt[]}>(
+        "/integrations/platform-events");
+      setEvents(data.events);setDelivery(data.deliveryMode);
+    }catch{setEvents(null);setDelivery("unavailable");}
+    finally{setLoading(false);}
+  };
+  useEffect(()=>{void refresh();},[]);
+  const retry=async()=>{
+    if(!retryId || reason.trim().length<12)return;
+    try{
+      await api.post(`/integrations/platform-events/${encodeURIComponent(retryId)}/retry`,
+        {reason:reason.trim()});
+      setMessage("Retry queued for signed delivery. No delivery is confirmed yet.");
+      setRetryId(null);setReason("");
+      await refresh();
+    }catch{
+      setMessage("Retry could not be confirmed. Review the evidence before another attempt.");
+    }
+  };
+  if(loading && !events)return null;
+  if(delivery==="unavailable")return null;
+  return (
+    <section className="mt-5 rounded-2xl border border-slate-200 bg-white p-5 space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <h4 className="text-sm font-bold text-slate-900">Hub event delivery evidence</h4>
+        <button type="button" onClick={()=>void refresh()} disabled={loading}
+          className="border border-slate-200 rounded-lg px-3 py-2 text-xs font-semibold disabled:opacity-50">
+          Refresh
+        </button>
+      </div>
+      <p className="text-xs text-slate-600">
+        Signed Hub delivery: {delivery}. These are receipt statuses, not customer payments.
+      </p>
+      {events && (
+        <p className="text-xs text-slate-700">
+          Pending: {events.filter(x=>x.status==="pending").length} ·
+          Sent: {events.filter(x=>x.status==="sent").length} ·
+          Held: {events.filter(x=>x.status==="failed").length}
+          {" "}(latest {events.length} shown)
+        </p>
+      )}
+      {events?.some(x=>x.status==="failed") && (
+        <p role="alert" className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-3">
+          Rejected events need tenant mapping or contract review. A retry does not guarantee delivery.
+        </p>
+      )}
+      <div className="max-h-56 overflow-y-auto space-y-2">
+        {events?.slice(0,20).map(item=>(
+          <div key={item.id} className="flex items-center justify-between gap-2 py-2 border-b border-slate-100 text-xs">
+            <div>
+              <p className="font-semibold text-slate-800">{item.event_type}</p>
+              <p className="text-slate-500">{item.status} · attempts {item.attempts}</p>
+            </div>
+            {item.status==="failed" && delivery==="enabled" && (
+              <button type="button" onClick={()=>{setRetryId(item.id);setReason("");}}
+                className="text-amber-800 underline underline-offset-2">
+                Review retry
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+      {retryId && (
+        <div className="rounded-lg bg-slate-50 p-3 space-y-2">
+          <label htmlFor="event-retry-reason" className="text-xs font-semibold text-slate-800">
+            Explain the verified reason for retrying this rejected event
+          </label>
+          <textarea id="event-retry-reason" rows={2} maxLength={500} value={reason}
+            onChange={e=>setReason(e.target.value)}
+            className="w-full border border-slate-200 rounded-lg p-2 text-xs"
+            placeholder="Tenant mapping and contract have been corrected..." />
+          <div className="flex gap-2">
+            <button type="button" onClick={()=>void retry()} disabled={reason.trim().length<12}
+              className="bg-slate-900 text-white rounded-lg px-3 py-2 text-xs disabled:opacity-40">
+              Queue reviewed retry
+            </button>
+            <button type="button" onClick={()=>{setRetryId(null);setReason("");}}
+              className="border border-slate-200 rounded-lg px-3 py-2 text-xs">Cancel</button>
+          </div>
+        </div>
+      )}
+      {message && <p role="status" className="text-xs text-slate-700">{message}</p>}
     </section>
   );
 }
