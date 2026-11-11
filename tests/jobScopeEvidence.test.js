@@ -129,3 +129,20 @@ test("scope publisher checks persisted delivery acceptance before and after lock
  assert.match(route,/FOR UPDATE/);
  assert.match(route,/snapshotExistingJobScope\(/);
 });
+
+test("scope acknowledgement commits evidence, audit and outbound event atomically",()=>{
+ const start=index.indexOf('app.post("/api/portal/:token/accept-scope"');
+ const end=index.indexOf('app.post("/api/portal/:token/accept-delivery"',start);
+ assert.ok(start>0&&end>start,"Exact scope and delivery routes must be present");
+ const route=index.slice(start,end);
+ const transaction=route.indexOf("db.transaction(async tx");
+ const eventInsert=route.indexOf("INSERT INTO platform_event_outbox");
+ const returnCommit=route.indexOf("})()");
+ assert.ok(transaction>=0&&eventInsert>transaction&&returnCommit>eventInsert,
+   "The scope acceptance and Hub outbox must share the same transaction");
+ assert.match(route,/INSERT INTO v79_job_scope_acceptances_v2/);
+ assert.match(route,/INSERT INTO activity_logs/);
+ assert.match(route,/job.scope_acknowledged/);
+ assert.doesNotMatch(route,/safeQueuePlatformEvent/);
+ assert.match(route,/if\(written\)\{/);
+});
