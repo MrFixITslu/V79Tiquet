@@ -20,6 +20,10 @@ const SMTP_FROM    = process.env.SMTP_FROM || '"V79 TIQUET" <noreply@v79tickit.c
 const APP_BASE_URL = (process.env.APP_BASE_URL || 'http://localhost:3000').replace(/\/$/, '');
 
 const isSmtpConfigured = !!(SMTP_HOST && SMTP_USER && SMTP_PASS);
+// Transactional acknowledgements must have an explicitly selected sender.
+export function transactionalSmtpReady() {
+    return Boolean(isSmtpConfigured && process.env.SMTP_FROM);
+}
 
 let transporter = null;
 
@@ -47,14 +51,14 @@ if (isSmtpConfigured) {
 
 // ── Internal send helper ──────────────────────────────────────────────────────
 
-async function send(to, subject, html) {
+async function send(to, subject, html, { cc = null } = {}) {
     if (!isSmtpConfigured) {
         logger.info('Email skipped (SMTP not configured)', { to, subject });
         return { success: true, skipped: true, previewUrl: null };
     }
 
     try {
-        const info = await transporter.sendMail({ from: SMTP_FROM, to, subject, html });
+        const info = await transporter.sendMail({ from: SMTP_FROM, to, subject, html, ...(cc ? { cc } : {}) });
         const previewUrl = nodemailer.getTestMessageUrl(info) || null;
         logger.info('Email sent', { to, subject, messageId: info.messageId });
         return { success: true, previewUrl };
@@ -331,6 +335,26 @@ export function renderEmailFromPlainTemplate(subjectTemplate, bodyTemplate, vars
  */
 export async function sendTemplated(to, subject, html) {
     return send(to, subject, html);
+}
+
+/**
+ * Customer invoice notification, delivered as a private portal link.
+ * It is NOT a PDF attachment or payment settlement receipt.
+ * The optional CC is selected only by account-scoped server policy.
+ */
+export async function sendInvoiceNotice(to, job, secureToken, { cc = null, companyName = "V79 Digital" } = {}) {
+    const portalUrl = `${APP_BASE_URL}/portal/${secureToken}`;
+    const ticketRef = "V79-" + String(job.id).slice(0, 8).toUpperCase();
+    const { subject, html } = renderEmailFromPlainTemplate(
+        "Invoice available — {{ticket_ref}}",
+        "Hello {{client_name}},\n\nYour invoice is ready to review in your secure V79 Tiquet customer portal.\n\nReference: {{ticket_ref}}\n\nOpen your invoice: {{portal_url}}\n\nThis notice does not confirm a payment. Please contact us if the invoice details require correction.\n\nRegards,\n{{company_name}}",
+        {
+          client_name: job.client || "Customer", ticket_ref: ticketRef,
+          portal_url: portalUrl, company_name: companyName,
+          company_address: "", company_phone: "", company_email: ""
+        }
+    );
+    return send(to, subject, html, { cc });
 }
 
 /**

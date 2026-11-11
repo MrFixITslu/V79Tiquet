@@ -16,7 +16,13 @@ import cors from "cors";
 import http from "http";
 import { WebSocketServer } from "ws";
 import db, { dbDir, seedDefaultTemplatesForAccount } from "./db.js";
-import { sendPortalLink, sendStatusUpdate, sendTemplated, renderEmailFromPlainTemplate, sendPasswordReset, sendUserInvite } from "./email.js";
+import { sendPortalLink, sendStatusUpdate, sendTemplated, renderEmailFromPlainTemplate, sendPasswordReset, sendUserInvite, transactionalSmtpReady, sendInvoiceNotice } from "./email.js";
+import { createIntakeAcknowledgements } from "./intakeAcknowledgements.js";
+import { cancellationDecision, validTicketDate } from "./jobCancellation.js";
+import { invoiceDeliveryDecision, invoiceCcForAccount, invoicePortalTokenDecision } from "./invoiceDelivery.js";
+import { resolveJobFolder, resolveOwnedJobFile } from "./jobFileBoundary.js";
+import { validScopeUploadName, validateScopeAgreement, snapshotExistingJobScope, readScopeBuffer } from "./jobScopeEvidence.js";
+import { deriveJobTimeEvidence } from "./jobTimeEvidence.js";
 import { registerOAuthRoutes } from "./oauth.js";
 import { v4 as uuidv4 } from "uuid";
 import jwt from "jsonwebtoken";
@@ -37,7 +43,7 @@ import { sendPaidEvent, sendPaymentEvent, generateEventId } from "./gatewayClien
 import { logger } from "./logger.js";
 import platformRoutes from "./platform.js";
 import { createTiquetBillingReturnToken, createTiquetInvoiceOrder, getTiquetBillingCapabilities, getTiquetOrderStatus, tiquetBillingConfigured, verifyTiquetBillingReturnToken } from "./billingClient.js";
-import { queuePlatformEvent, startPlatformEventPump } from "./platformEvents.js";
+import { queuePlatformEvent, startPlatformEventPump, platformEventsConfigured } from "./platformEvents.js";
 import { consumeHubLaunchTicket, hubPublicUrl } from "./hubAccess.js";
 import { provisionHubIdentity } from "./hubProvisioning.js";
 import { sanitizeString, sanitizeObject, isValidEmail, isValidUUID, isNonEmptyString, secureFilePath, validatePassword, badRequest } from "./security.js";
@@ -58,6 +64,23 @@ const isProduction = process.env.NODE_ENV === "production";
 const PRIMARY_PORT = 3000;
 const SECONDARY_PORT = process.env.PORT && parseInt(process.env.PORT, 10) !== 3000 && parseInt(process.env.PORT, 10) !== 8080 ? parseInt(process.env.PORT, 10) : 3050;
 registerHealthCheck(app);
+// All V2 acknowledgement delivery remains disabled until SMTP, DNS and
+// a real customer mailbox are verified in isolated staging.
+const intakeAcks = createIntakeAcknowledgements({
+  db,
+  send: sendTemplated,
+  render: renderEmailFromPlainTemplate,
+  deliveryConfigured: transactionalSmtpReady,
+  enabled: () => process.env.V79_ECOSYSTEM_V2_INTAKE_ACK_ENABLED === "1",
+  log: logger,
+});
+async function safeEnqueueIntakeAck(accountId, jobId) {
+  try { return await intakeAcks.enqueue(accountId, jobId); }
+  catch {
+    logger.warn("[Intake Acknowledgement] Unable to record acknowledgement; review outbox");
+    return "unavailable";
+  }
+}
 
 // JWT secrets: strongly prefer an explicit JWT_SECRET / SUPER_ADMIN_JWT_SECRET
 // in the environment (documented in env.example). If one isn't set in
@@ -376,7 +399,7 @@ const sanitizeForPath = str => (str || 'unknown').replace(/[^a-zA-Z0-9_\-. ]/g, 
  * Pattern: uploads/<AccountId>/<ClientName>/<JobId>/
  */
 const getJobFolder = (accountId, clientName, jobId) => {
-  return path.join(UPLOADS_ROOT, sanitizeForPath(accountId), sanitizeForPath(clientName), jobId);
+  return resolveJobFolder(UPLOADS_ROOT, accountId, clientName, jobId);
 };
 
 /**
@@ -980,6 +1003,8 @@ const getJobMessages = async jobId => {
 
 const PORTAL_LINK_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const JOB_STATUSES = new Set(["request", "estimation", "in-progress", "review", "invoiced", "completed", "paid"]);
+const deliveryAcceptanceRequired = () =>
+  process.env.V79_ECOSYSTEM_V2_DELIVERY_ACCEPTANCE_REQUIRED === "1";
 
 
 function createPortalCredential() {
@@ -1095,6 +1120,17 @@ async function recordVerifiedWipayPayment(job, order) {
     "WiPay via V79 Billing",
     job.account_id
   );
+  // Real settled provider funds cannot be discarded because the customer
+  // cancelled while checkout was in flight. Preserve the actual receipt
+  // and add a finance exception; NEVER issue a refund automatically.
+  if (job.status === "cancelled") {
+    await db.prepare(
+      "INSERT INTO activity_logs (id, job_id, action, timestamp, user, account_id) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run(uuidv4(),job.id,
+      "FINANCE REVIEW REQUIRED: verified payment arrived after customer cancellation",
+      recordedAt,"V79 Billing",job.account_id);
+    logger.warn("[Tiquet Billing] Verified payment arrived on a cancelled service; manual reconciliation required");
+  }
 
   await safeQueuePlatformEvent({
     accountId: job.account_id,
@@ -1114,7 +1150,10 @@ async function recordVerifiedWipayPayment(job, order) {
     }
   });
 
-  if (totalPaid + 0.005 >= jobValue && ["invoiced", "completed"].includes(job.status)) {
+  if (totalPaid + 0.005 >= jobValue &&
+        (!deliveryAcceptanceRequired() || Boolean(job.deliveryAcceptedAt)) &&
+        (deliveryAcceptanceRequired() ? job.status === "completed" :
+         ["invoiced", "completed"].includes(job.status))) {
     await updateJobStage(job.id, "paid", job.account_id, "WiPay via V79 Billing");
   }
 
@@ -1161,6 +1200,13 @@ const updateJobStage = async (id, newStatus, accountId, userName = "System") => 
   const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(id, accountId);
   if (!job) return null;
 
+  if (newStatus === "paid" && job.status !== "paid" &&
+      deliveryAcceptanceRequired() && !job.deliveryAcceptedAt) {
+    const err = new Error("Delivery acceptance must be recorded before Paid status");
+    err.statusCode = 409;
+    err.code = "DELIVERY_ACCEPTANCE_REQUIRED";
+    throw err;
+  }
   if (newStatus === "paid" && job.status !== "paid" && Number(job.amount || 0) > 0) {
     const paidAmount = await recordedPaymentTotal(id, accountId);
     if (paidAmount + 0.005 < Number(job.amount || 0)) {
@@ -1420,6 +1466,7 @@ app.post("/api/jobs", authenticateToken, requireAnyPagePermission("jobs", "new-r
   try {
     const requestedStatus = String(status || "request").trim();
     if (!JOB_STATUSES.has(requestedStatus)) return badRequest(res, "Invalid job status");
+    if (!validTicketDate(dueDate)) return badRequest(res, "Due date must be a real YYYY-MM-DD date");
     if (requestedStatus === "paid") {
       return res.status(409).json({
         error: "A new job cannot start as paid. Record a payment after invoicing.",
@@ -1601,6 +1648,23 @@ const requireIntakeSecret = (req, res, next) => {
   }
   next();
 };
+// Owner-only health view: never includes email addresses or SMTP credentials.
+app.get("/api/intake/acknowledgements", authenticateToken, requireAdmin, async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  if (process.env.V79_ECOSYSTEM_V2_INTAKE_ACK_ENABLED !== "1")
+    return res.json({enabled:false, items:[]});
+  try {
+    const items=await db.prepare(`
+      SELECT job_id,status,created_at,claimed_at,sent_at,error_code
+        FROM v79_intake_ack_outbox WHERE account_id=?
+       ORDER BY created_at DESC LIMIT 100
+    `).all(req.accountId);
+    return res.json({enabled:true,smtpConfigured:transactionalSmtpReady(),items});
+  } catch {
+    return res.status(503).json({error:"Acknowledgement state unavailable"});
+  }
+});
+
 app.post("/api/public/intake", intakeLimiter, requireIntakeSecret, async (req, res) => {
   const accountId = process.env.INTAKE_ACCOUNT_ID || "default_account";
 
@@ -1645,27 +1709,20 @@ app.post("/api/public/intake", intakeLimiter, requireIntakeSecret, async (req, r
   // must not create a second job. website2026 generates this once per
   // submission attempt and reuses it on retry.
   if (eventId) {
-    const existingJob = await db.prepare("SELECT id FROM jobs WHERE intakeEventId = ? AND account_id = ?").get(String(eventId), accountId);
+    const existingJob = await db.prepare("SELECT id, clientId FROM jobs WHERE intakeEventId = ? AND account_id = ?").get(String(eventId), accountId);
     if (existingJob) {
-      // Look up the client the same way the create path below does —
-      // by email then phone, NOT by the job's stored client name
-      // string. Name-based lookup here would be wrong in two ways:
-      // it can match the wrong client if two clients share a name,
-      // and it returns nothing at all if staff have since renamed the
-      // client (e.g. fixed a typo), even though a real match exists.
-      let existingClient = null;
-      if (email) {
-        existingClient = await db.prepare("SELECT id FROM clients WHERE LOWER(email) = LOWER(?) AND account_id = ?").get(email, accountId);
-      }
-      if (!existingClient && phone) {
-        existingClient = await db.prepare("SELECT id FROM clients WHERE phone = ? AND account_id = ?").get(phone, accountId);
-      }
+      // Never rematch a lead to a different client by email/phone on retry.
+      const linkedClient = existingJob.clientId
+        ? await db.prepare("SELECT id FROM clients WHERE id = ? AND account_id = ?").get(existingJob.clientId, accountId)
+        : null;
+      const acknowledgementStatus = await safeEnqueueIntakeAck(accountId, existingJob.id);
       logger.info(`[Intake] Duplicate eventId ${eventId} — returning existing job ${existingJob.id} without creating another.`);
       return res.status(200).json({
         success: true,
         action: "already_processed",
         jobId: existingJob.id,
-        clientId: existingClient?.id || null
+        clientId: linkedClient?.id || null,
+        acknowledgementStatus
       });
     }
   }
@@ -1719,11 +1776,18 @@ app.post("/api/public/intake", intakeLimiter, requireIntakeSecret, async (req, r
     // can share a name, and the same person can spell theirs
     // differently between submissions.
     let existingClient = null;
-    if (email) {
-      existingClient = await db.prepare("SELECT id, notes, leadSource FROM clients WHERE LOWER(email) = LOWER(?) AND account_id = ?").get(email, accountId);
-    }
-    if (!existingClient && phone) {
-      existingClient = await db.prepare("SELECT id, notes, leadSource FROM clients WHERE phone = ? AND account_id = ?").get(phone, accountId);
+    // In v2, an unverified website form can NEVER merge customer profiles
+    // based on a shared business telephone, email alias or name. Repeated
+    // requests with the exact same signed intake event ID reuse the same
+    // stored job/client link above. Different enquiries require an explicit
+    // staff-reviewed customer association.
+    if (process.env.V79_ECOSYSTEM_V2_STRICT_INTAKE_IDENTITY !== "1") {
+      if (email) {
+        existingClient = await db.prepare("SELECT id, notes, leadSource FROM clients WHERE LOWER(email) = LOWER(?) AND account_id = ?").get(email, accountId);
+      }
+      if (!existingClient && phone) {
+        existingClient = await db.prepare("SELECT id, notes, leadSource FROM clients WHERE phone = ? AND account_id = ?").get(phone, accountId);
+      }
     }
     let clientId;
     let action;
@@ -1750,6 +1814,9 @@ app.post("/api/public/intake", intakeLimiter, requireIntakeSecret, async (req, r
       const initialNotes = trimNotes(`Lead Source: Website\nLead Status: New\n\n[${now}] Original inquiry:\n${(message || "(no message included)").trim()}`);
       await db.prepare("INSERT INTO clients (id, name, email, phone, company, notes, createdAt, account_id, leadSource, leadStatus) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(clientId, name, email, phone || null, company, initialNotes, now, accountId, "website", "New");
     }
+    // The link is explicit and tenant-scoped; never infer it from a company name.
+    await db.prepare("UPDATE jobs SET clientId = ? WHERE id = ? AND account_id = ?")
+      .run(clientId, id, accountId);
     try {
       const jobFolder = ensureJobFolder(accountId, name, id);
       fs.writeFileSync(path.join(jobFolder, 'README.md'), `# Project: ${title}\nClient: ${name}\nJob ID: ${id}\nCreated: ${now}\n\nThis folder contains all files, quotes, invoices, and logs for this project.\n`);
@@ -1774,12 +1841,14 @@ app.post("/api/public/intake", intakeLimiter, requireIntakeSecret, async (req, r
         payload: { company, origin: "website" }
       });
     }
+    const acknowledgementStatus = await safeEnqueueIntakeAck(accountId, id);
     logger.info(`[Intake] Job ${id} created from website contact form for account ${accountId}; client ${action}.`);
     res.status(201).json({
       success: true,
       action,
       jobId: id,
-      clientId
+      clientId,
+      acknowledgementStatus
     });
   } catch (error) {
     console.error("[Intake] Failed to create job:", error);
@@ -1788,6 +1857,73 @@ app.post("/api/public/intake", intakeLimiter, requireIntakeSecret, async (req, r
     });
   }
 });
+// Cancellation is a closed, auditable service state, never a refund or
+// invoice void. Disabled until payment-order checks pass in staging.
+app.get("/api/jobs/cancellation-capability", authenticateToken,
+  requireAnyPagePermission("jobs"), (_req, res) => {
+    res.setHeader("Cache-Control","no-store");
+    res.json({ enabled: process.env.V79_ECOSYSTEM_V2_CANCEL_ENABLED === "1" });
+});
+
+app.post("/api/jobs/:id/cancel", authenticateToken,
+  requireAnyPagePermission("jobs"), async (req, res) => {
+    if (process.env.V79_ECOSYSTEM_V2_CANCEL_ENABLED !== "1")
+      return res.status(404).json({error:"Not available"});
+    const id=String(req.params.id || "").trim();
+    const reason=req.body?.reason;
+    if (!/^[a-f0-9-]{36}$/i.test(id) || typeof reason!=="string" ||
+        reason.trim().length<10 || reason.trim().length>500)
+      return res.status(400).json({error:"A valid ticket and cancellation reason are required"});
+    try {
+      const result=await db.transaction(async tx => {
+        const job=await tx.prepare(
+          "SELECT * FROM jobs WHERE id = ? AND account_id = ? FOR UPDATE"
+        ).get(id,req.accountId);
+        if(!job)return {status:404,error:"Ticket not found"};
+        const payments=await tx.prepare(`
+          SELECT COALESCE(SUM(amount), 0) AS total
+            FROM payments WHERE jobId = ? AND account_id = ? AND status='recorded'
+        `).get(id,req.accountId);
+        const decision=cancellationDecision(job,Number(payments?.total ?? NaN));
+        if(!decision.allowed)
+          return {status:409,error:"Ticket requires a finance review before cancellation"};
+        if(decision.alreadyCancelled)
+          return {status:200,alreadyCancelled:true,jobId:id};
+        let logs=[];
+        try {logs=job.timeLogs?JSON.parse(job.timeLogs):[];} catch {logs=[];}
+        const at=new Date().toISOString();
+        if(job.timerStartedAt)logs.push({
+          id:uuidv4(),employeeId:job.assignedTo||"unassigned",
+          startTime:job.timerStartedAt,endTime:at,status:job.status
+        });
+        await tx.prepare(`
+          UPDATE jobs SET status='cancelled',timerStartedAt=NULL,timeLogs=?,
+                 secureTokenRevokedAt=?
+           WHERE id = ? AND account_id = ?
+        `).run(JSON.stringify(logs),at,id,req.accountId);
+        await tx.prepare(`
+          INSERT INTO activity_logs
+            (id, job_id, action, timestamp, "user", account_id)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(uuidv4(),id,
+          "Customer cancellation accepted: "+reason.trim(),at,
+          req.user?.email||"Authorised staff",req.accountId);
+        return {status:200,jobId:id,cancelled:true,previousStatus:job.status,at};
+      })();
+      if(result.status!==200)return res.status(result.status).json({error:result.error});
+      if(result.cancelled) {
+        await safeQueuePlatformEvent({
+          accountId:req.accountId,type:"job.status_changed",subjectId:id,
+          occurredAt:result.at,
+          payload:{status:"cancelled",previousStatus:result.previousStatus}
+        });
+      }
+      return res.json({success:true,status:"cancelled",alreadyCancelled:!!result.alreadyCancelled,jobId:id});
+    } catch {
+      return res.status(503).json({error:"Cancellation outcome uncertain; refresh ticket before retrying"});
+    }
+  });
+
 app.put("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"), async (req, res) => {
   const {
     id
@@ -1819,6 +1955,13 @@ app.put("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"), as
     if (!existingJob) return res.status(404).json({
       error: "Job not found"
     });
+    if (existingJob.status === "cancelled")
+      return res.status(409).json({error:"Cancelled tickets are closed and cannot be changed"});
+    // Older records may contain an ISO timestamp. A separate edit must
+    // not fail solely because it re-sends an unchanged historical date.
+    if (dueDate !== undefined && dueDate !== existingJob.dueDate &&
+        !validTicketDate(dueDate))
+      return badRequest(res, "Due date must be a real YYYY-MM-DD date");
     if (status !== undefined && !JOB_STATUSES.has(String(status))) {
       return badRequest(res, "Invalid job status");
     }
@@ -1843,7 +1986,8 @@ app.put("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"), as
     // stays Completed until a payment is recorded from the Invoices screen.
     if (finalStatus === "completed" && Number(existingJob.amount || 0) > 0) {
       const paidAmount = await recordedPaymentTotal(id, req.accountId);
-      if (paidAmount + 0.005 >= Number(existingJob.amount || 0)) {
+      if (paidAmount + 0.005 >= Number(existingJob.amount || 0) &&
+          (!deliveryAcceptanceRequired() || Boolean(existingJob.deliveryAcceptedAt))) {
         finalStatus = "paid";
       }
     }
@@ -2056,6 +2200,107 @@ app.post("/api/jobs/:id/send-quote", authenticateToken, requireAnyPagePermission
   }
 });
 
+// V2 invoice notice is a signed-in staff action, not a PDF attachment.
+// Its portal link is private; SMTP and the owner-account CC must be verified.
+// An ambiguous prior send remains held, never silently replayed.
+app.get("/api/invoices/email-capability", authenticateToken,
+  requireAnyPagePermission("invoices"), (_req,res) => {
+    res.setHeader("Cache-Control","no-store");
+    res.json({enabled:process.env.V79_ECOSYSTEM_V2_INVOICE_SEND_ENABLED==="1"});
+});
+app.get("/api/invoices/email-deliveries", authenticateToken,
+  requireAnyPagePermission("invoices"), async (req,res) => {
+    res.setHeader("Cache-Control","no-store");
+    if(process.env.V79_ECOSYSTEM_V2_INVOICE_SEND_ENABLED!=="1")
+      return res.json({enabled:false,items:[]});
+    try{
+      const items=await db.prepare(`
+        SELECT job_id,request_id,status,created_at,sent_at
+          FROM v79_invoice_mail_v2 WHERE account_id=?
+         ORDER BY created_at DESC LIMIT 50
+      `).all(req.accountId);
+      return res.json({enabled:true,items});
+    }catch{
+      return res.status(503).json({error:"Invoice delivery evidence unavailable"});
+    }
+  });
+
+app.post("/api/jobs/:id/send-invoice", authenticateToken,
+  requireAnyPagePermission("invoices"), async (req,res) => {
+    if(process.env.V79_ECOSYSTEM_V2_INVOICE_SEND_ENABLED!=="1")
+      return res.status(404).json({error:"Not available"});
+    const id=String(req.params.id||"").trim();
+    const requestId=String(req.body?.requestId||"").trim();
+    if(!isValidUUID(requestId)||!isValidUUID(id))
+      return res.status(400).json({error:"Valid ticket and request reference required"});
+    const job=await db.prepare("SELECT * FROM jobs WHERE id=? AND account_id=?")
+      .get(id,req.accountId);
+    const decision=invoiceDeliveryDecision(job);
+    if(!decision.ok)
+      return res.status(decision.reason==="job_not_found"?404:409).json({error:"Invoice is not ready to send"});
+    if(!transactionalSmtpReady())
+      return res.status(503).json({error:"Verified invoice email delivery is not configured"});
+    const ccPolicy=invoiceCcForAccount(req.accountId);
+    if(ccPolicy.error)
+      return res.status(503).json({error:"Required invoice copy address is not configured"});
+    let owned=false;
+    try{
+      const claim=await db.prepare(`
+        INSERT INTO v79_invoice_mail_v2(account_id,job_id,request_id,status,created_at)
+        VALUES (?,?,?,'sending',?)
+        ON CONFLICT (account_id,job_id,request_id) DO NOTHING
+        RETURNING request_id
+      `).get(req.accountId,id,requestId,new Date().toISOString());
+      owned=Boolean(claim);
+      if(!owned){
+        const prior=await db.prepare(`
+          SELECT status FROM v79_invoice_mail_v2
+           WHERE account_id=? AND job_id=? AND request_id=?
+        `).get(req.accountId,id,requestId);
+        if(prior?.status==="sent")return res.json({success:true,alreadySent:true});
+        return res.status(409).json({error:"Invoice delivery uncertain; review before any new send"});
+      }
+      const portalPolicy=invoicePortalTokenDecision(job);
+      const token=portalPolicy.mode==="reuse"
+        ? portalPolicy.token
+        : (await rotatePortalCredential(job.id,req.accountId))?.token;
+      if(!token)throw new Error("portal_credential_unavailable");
+      const settings=await db.prepare(
+        "SELECT name FROM settings WHERE account_id=? ORDER BY id LIMIT 1"
+      ).get(req.accountId);
+      const result=await sendInvoiceNotice(job.clientEmail,job,token,{
+        cc:ccPolicy.cc,
+        companyName:settings?.name||"V79 Digital"
+      });
+      if(!result?.success || result.skipped)
+        throw new Error("invoice_delivery_unconfirmed");
+      const at=new Date().toISOString();
+      await db.prepare(`
+        UPDATE v79_invoice_mail_v2 SET status='sent',sent_at=?
+        WHERE account_id=? AND job_id=? AND request_id=? AND status='sending'
+      `).run(at,req.accountId,id,requestId);
+      await db.prepare(`
+        INSERT INTO activity_logs (id,job_id,action,timestamp,"user",account_id)
+        VALUES (?,?,?,?,?,?)
+      `).run(uuidv4(),id,
+        "Invoice portal notice sent to customer"+(ccPolicy.cc?" with account-owner copy":""),
+        at,req.user?.email||"Authorised staff",req.accountId);
+      return res.json({success:true,alreadySent:false,copySent:Boolean(ccPolicy.cc)});
+    }catch{
+      if(owned){
+        try{
+          await db.prepare(`
+            UPDATE v79_invoice_mail_v2 SET status='requires_review'
+             WHERE account_id=? AND job_id=? AND request_id=? AND status='sending'
+          `).run(req.accountId,id,requestId);
+        }catch{
+          logger.warn("[Invoice Delivery] Outcome and audit uncertain; operator review needed");
+        }
+      }
+      return res.status(503).json({error:"Invoice delivery unconfirmed; verify mailbox before retrying"});
+    }
+  });
+
 app.post("/api/jobs/:id/revoke-portal", authenticateToken, requireAnyPagePermission("jobs", "invoices"), async (req, res) => {
   const { id } = req.params;
   try {
@@ -2143,6 +2388,11 @@ app.post("/api/payments", authenticateToken, requireAnyPagePermission("invoices"
   try {
     const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(jobId, req.accountId);
     if (!job) return res.status(404).json({ error: "Job not found" });
+    if (job.status === "cancelled")
+      return res.status(409).json({
+        error: "Cancelled service requires a manual finance review",
+        code: "CANCELLED_TICKET_FINANCE_REVIEW",
+      });
 
     const jobValue = Math.max(0, Number(job.amount || 0));
     if (jobValue <= 0) return res.status(409).json({
@@ -2218,7 +2468,10 @@ app.post("/api/payments", authenticateToken, requireAnyPagePermission("invoices"
       }
     });
 
-    if (totalPaid + 0.005 >= jobValue && ["invoiced", "completed"].includes(job.status)) {
+    if (totalPaid + 0.005 >= jobValue &&
+        (!deliveryAcceptanceRequired() || Boolean(job.deliveryAcceptedAt)) &&
+        (deliveryAcceptanceRequired() ? job.status === "completed" :
+         ["invoiced", "completed"].includes(job.status))) {
       await updateJobStage(job.id, "paid", req.accountId, req.user?.email || "Team");
     }
 
@@ -3307,6 +3560,86 @@ app.post("/api/jobs/:id/messages", authenticateToken, requireAnyPagePermission("
   }
 });
 
+// V2 operational evidence. No event payload, contact details or service
+// credentials are exposed. Retry is an audited human decision, not replay
+// of business transactions or an instruction to send customer email.
+app.get("/api/integrations/platform-events", authenticateToken,
+  requireAdmin, async(req,res)=>{
+  res.setHeader("Cache-Control","no-store");
+  if(process.env.V79_ECOSYSTEM_V2_EVENT_ADMIN_ENABLED!=="1")
+    return res.status(404).json({error:"Not available"});
+  try{
+    const summary=await db.prepare(`
+      SELECT status,COUNT(*)::INTEGER AS count FROM platform_event_outbox
+      WHERE account_id=? GROUP BY status
+    `).all(req.accountId);
+    const events=await db.prepare(`
+      SELECT id,event_type,subject_id,correlation_id,status,attempts,
+        created_at,next_attempt_at,sent_at
+      FROM platform_event_outbox WHERE account_id=?
+      ORDER BY created_at DESC,id DESC LIMIT 75
+    `).all(req.accountId);
+    return res.json({deliveryMode:platformEventsConfigured()?"enabled":"disabled",
+      summary,events});
+  }catch{
+    return res.status(503).json({error:"Platform event evidence unavailable"});
+  }
+});
+
+app.get("/api/integrations/platform-events/correlation/:id", authenticateToken,
+  requireAdmin, async(req,res)=>{
+  res.setHeader("Cache-Control","no-store");
+  if(process.env.V79_ECOSYSTEM_V2_EVENT_ADMIN_ENABLED!=="1")
+    return res.status(404).json({error:"Not available"});
+  if(!isValidUUID(req.params.id))
+    return res.status(400).json({error:"Invalid correlation identifier"});
+  const events=await db.prepare(`
+    SELECT id,event_type,subject_id,status,attempts,created_at,sent_at
+    FROM platform_event_outbox WHERE account_id=? AND correlation_id=?
+    ORDER BY created_at,id LIMIT 75
+  `).all(req.accountId,req.params.id);
+  return res.json({correlationId:req.params.id,events});
+});
+
+app.post("/api/integrations/platform-events/:id/retry", authenticateToken,
+  requireAdmin, async(req,res)=>{
+  res.setHeader("Cache-Control","no-store");
+  if(process.env.V79_ECOSYSTEM_V2_EVENT_ADMIN_ENABLED!=="1")
+    return res.status(404).json({error:"Not available"});
+  if(!isValidUUID(req.params.id)||typeof req.body?.reason!=="string" ||
+      req.body.reason.trim().length<12||req.body.reason.length>500)
+    return res.status(400).json({error:"Valid event and 12–500 character reason required"});
+  if(!platformEventsConfigured())
+    return res.status(503).json({error:"Signed Hub event delivery is not enabled"});
+  try{
+    const outcome=await db.transaction(async tx=>{
+      const item=await tx.prepare(`
+        SELECT id,event_type,status FROM platform_event_outbox
+        WHERE id=? AND account_id=? FOR UPDATE
+      `).get(req.params.id,req.accountId);
+      if(!item||item.status!=="failed")return null;
+      const at=new Date().toISOString();
+      await tx.prepare(`
+        UPDATE platform_event_outbox SET status='pending',
+          next_attempt_at=NULL,last_error=NULL
+        WHERE id=? AND account_id=? AND status='failed'
+      `).run(item.id,req.accountId);
+      await tx.prepare(`
+        INSERT INTO activity_logs (id,job_id,action,timestamp,"user",account_id)
+        VALUES (?,?,?,?,?,?)
+      `).run(uuidv4(),null,"Admin queued signed event "+item.event_type+
+        " for reviewed retry: "+req.body.reason.trim(),at,
+        req.user?.email||"Admin",req.accountId);
+      return {id:item.id,status:"pending"};
+    })();
+    if(!outcome)return res.status(409).json({error:"Only failed events may be retried after review"});
+    return res.status(202).json({queued:true,eventId:outcome.id,
+      delivered:false});
+  }catch{
+    return res.status(503).json({error:"Event retry could not be confirmed"});
+  }
+});
+
 // --- FILE REPOSITORY ENDPOINTS ---
 
 // Dynamic multer storage — destination is set per-job folder
@@ -3430,15 +3763,12 @@ app.delete("/api/jobs/:id/files/:filename", authenticateToken, requireAnyPagePer
       error: 'Job not found'
     });
     const folder = getJobFolder(req.accountId, job.client, jobId);
-    const filePath = path.join(folder, filename);
-
-    // Security: ensure file is inside the job folder (prevent path traversal)
-    if (!filePath.startsWith(folder)) return res.status(403).json({
-      error: 'Forbidden'
-    });
-    if (!fs.existsSync(filePath)) return res.status(404).json({
-      error: 'File not found'
-    });
+    const filePath = resolveOwnedJobFile(folder, filename);
+    if (!filePath) return res.status(403).json({ error: 'Invalid file path' });
+    // Do not follow symlinks outside the tenant-owned job folder.
+    if (!fs.existsSync(filePath) || !fs.lstatSync(filePath).isFile()) {
+      return res.status(404).json({ error: 'File not found' });
+    }
     fs.unlinkSync(filePath);
     appendProjectLog(req.accountId, job.client, jobId, {
       type: 'file_deleted',
@@ -3454,6 +3784,129 @@ app.delete("/api/jobs/:id/files/:filename", authenticateToken, requireAnyPagePer
     });
   }
 });
+
+// Versioned scope evidence belongs to Tiquet's existing job/file system;
+// it is not a separate document service or an e-signature certification.
+const scopeEnabled = () => process.env.V79_ECOSYSTEM_V2_SCOPE_ENABLED === "1";
+const scopeArchiveRoot = (accountId,jobId) =>
+  resolveJobFolder(UPLOADS_ROOT,"scope-v2",accountId,jobId);
+async function latestJobScope(accountId,jobId) {
+  return db.prepare(`
+    SELECT v.id,v.version,v.sha256,v.byte_count,v.original_filename,
+           v.published_at,v.published_by,
+           CASE WHEN a.id IS NULL THEN 0 ELSE 1 END AS accepted
+    FROM v79_job_scope_versions_v2 v
+    LEFT JOIN v79_job_scope_acceptances_v2 a
+      ON a.version_id=v.id AND a.account_id=v.account_id AND a.job_id=v.job_id
+    WHERE v.account_id=? AND v.job_id=?
+    ORDER BY v.version DESC LIMIT 1
+  `).get(accountId,jobId);
+}
+
+// Read-only duration evidence never claims actual labour expense, payroll or
+// margin. Historical employee hourly rates are not captured per time entry.
+app.get("/api/jobs/:id/work-evidence", authenticateToken,
+  requireAnyPagePermission("jobs","invoices"), async (req,res)=>{
+    res.setHeader("Cache-Control","no-store");
+    if(process.env.V79_ECOSYSTEM_V2_WORK_EVIDENCE_ENABLED!=="1")
+      return res.status(404).json({error:"Not available"});
+    const job=await db.prepare(
+      "SELECT id,timeLogs,timerStartedAt FROM jobs WHERE id=? AND account_id=?"
+    ).get(req.params.id,req.accountId);
+    if(!job)return res.status(404).json({error:"Ticket not found"});
+    try{return res.json(deriveJobTimeEvidence(job));}
+    catch{
+      return res.status(409).json({error:"Job duration evidence cannot be verified"});
+    }
+  });
+
+app.get("/api/jobs/:id/scope", authenticateToken,
+  requireAnyPagePermission("jobs","files"), async (req,res) => {
+    res.setHeader("Cache-Control","no-store");
+    if(!scopeEnabled())return res.status(404).json({error:"Not available"});
+    const job=await db.prepare("SELECT id FROM jobs WHERE id=? AND account_id=?")
+      .get(req.params.id,req.accountId);
+    if(!job)return res.status(404).json({error:"Ticket not found"});
+    const rows=await db.prepare(`
+      SELECT v.id,v.version,v.sha256,v.byte_count,v.original_filename,
+        v.published_at,CASE WHEN a.id IS NULL THEN 0 ELSE 1 END AS accepted
+      FROM v79_job_scope_versions_v2 v
+      LEFT JOIN v79_job_scope_acceptances_v2 a
+        ON a.version_id=v.id AND a.account_id=v.account_id AND a.job_id=v.job_id
+      WHERE v.account_id=? AND v.job_id=? ORDER BY v.version DESC LIMIT 30
+    `).all(req.accountId,job.id);
+    return res.json({scopeVersions:rows});
+  });
+
+app.post("/api/jobs/:id/scope", authenticateToken,
+  requireAnyPagePermission("jobs","files"), async (req,res) => {
+    if(!scopeEnabled())return res.status(404).json({error:"Not available"});
+    const filename=req.body?.filename;
+    if(!validScopeUploadName(filename))
+      return res.status(400).json({error:"Choose an uploaded PDF belonging to this ticket"});
+    const job=await db.prepare(
+      "SELECT id,client,status,deliveryAcceptedAt FROM jobs WHERE id=? AND account_id=?"
+    ).get(req.params.id,req.accountId);
+    if(!job)return res.status(404).json({error:"Ticket not found"});
+    if(!["request","estimation","in-progress"].includes(job.status) ||
+       job.deliveryAcceptedAt)
+      return res.status(409).json({
+        error:"An accepted delivery cannot have its scope replaced; open a change request"
+      });
+    const folder=getJobFolder(req.accountId,job.client,job.id);
+    const archive=scopeArchiveRoot(req.accountId,job.id);
+    const id=uuidv4();
+    let snapshot;
+    try {
+      snapshot=await snapshotExistingJobScope(folder,filename,archive,id);
+    }catch{
+      return res.status(400).json({error:"Uploaded PDF is missing or cannot be verified"});
+    }
+    try {
+      const output=await db.transaction(async tx=>{
+        const locked=await tx.prepare(
+          "SELECT id,status,deliveryAcceptedAt FROM jobs WHERE id=? AND account_id=? FOR UPDATE"
+        ).get(job.id,req.accountId);
+        if(!locked||locked.deliveryAcceptedAt ||
+           !["request","estimation","in-progress"].includes(locked.status))
+          return {conflict:true};
+        const last=await tx.prepare(`
+          SELECT COALESCE(MAX(version),0) AS current_version
+          FROM v79_job_scope_versions_v2 WHERE account_id=? AND job_id=?
+        `).get(req.accountId,job.id);
+        const version=Number(last?.current_version||0)+1;
+        if(!Number.isSafeInteger(version)||version>1000000)
+          return {conflict:true};
+        const at=new Date().toISOString();
+        await tx.prepare(`
+          INSERT INTO v79_job_scope_versions_v2
+          (id,account_id,job_id,version,original_filename,sha256,byte_count,
+           published_at,published_by) VALUES (?,?,?,?,?,?,?,?,?)
+        `).run(id,req.accountId,job.id,version,filename,
+          snapshot.sha256,snapshot.bytes,at,req.user?.email||"Authorised staff");
+        await tx.prepare(`
+          INSERT INTO activity_logs (id,job_id,action,timestamp,"user",account_id)
+          VALUES (?,?,?,?,?,?)
+        `).run(uuidv4(),job.id,"Published scope PDF version "+version+
+          " (SHA-256 "+snapshot.sha256.slice(0,12)+")",at,
+          req.user?.email||"Authorised staff",req.accountId);
+        return {id,version,sha256:snapshot.sha256,bytes:snapshot.bytes};
+      })();
+      if(output.conflict){
+        await fs.promises.unlink(snapshot.storedPath).catch(()=>{});
+        return res.status(409).json({error:"Ticket status changed during scope publication"});
+      }
+      res.setHeader("Cache-Control","no-store");
+      return res.status(201).json({scope:output,requiresClientAcknowledgement:true});
+    }catch{
+      // PostgreSQL may have committed before the response was lost. Never
+      // delete the immutable PDF on an uncertain commit outcome: a valid
+      // scope-version row might already refer to its digest. Retain for
+      // operator reconciliation rather than destroy contractual evidence.
+      logger.warn("[V79 Scope] Publication outcome uncertain; retained immutable evidence for review");
+      return res.status(503).json({error:"Scope publication outcome uncertain; refresh ticket and review before retrying"});
+    }
+  });
 
 // --- CLIENT PORTAL PUBLIC SECURE ROUTES ---
 
@@ -3505,10 +3958,230 @@ app.get("/api/portal/:token", async (req, res) => {
       }
     }
     res.setHeader("Cache-Control", "no-store");
-    res.json({ job: populatedJob, settings, payments: summary, billing });
+    const feedbackEnabled = process.env.V79_ECOSYSTEM_V2_FEEDBACK_ENABLED === "1";
+    const previousFeedback = feedbackEnabled ? await db.prepare(
+      "SELECT id FROM v79_job_feedback_v2 WHERE account_id = ? AND job_id = ?"
+    ).get(job.account_id, job.id) : null;
+    const scope = scopeEnabled() ? await latestJobScope(job.account_id,job.id) : null;
+    res.json({ job: populatedJob, settings, payments: summary, billing,
+      scopeEvidence: {
+        enabled:scopeEnabled(),
+        current:scope ? {version:Number(scope.version),sha256:scope.sha256,
+          filename:scope.original_filename,accepted:Boolean(scope.accepted)} : null,
+      },
+      deliveryAcceptance: {
+        enabled:deliveryAcceptanceRequired(), accepted:Boolean(job.deliveryAcceptedAt),
+      },
+      feedback: { enabled:feedbackEnabled,submitted:Boolean(previousFeedback) } });
   } catch (error) {
     res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
   }
+});
+
+// Feedback is customer-initiated and opt-in. Never auto-create a CRM
+// opportunity, reveal the free text to Hub, or close a job on submission.
+// Customer delivery acceptance is NOT the quote approval or payment event.
+// This customer acknowledgement proves the latest scope PDF was offered
+// via a valid portal credential. It is not a certified e-signature.
+app.get("/api/portal/:token/scope-document", async (req,res) => {
+  res.setHeader("Cache-Control","no-store");
+  res.setHeader("X-Content-Type-Options","nosniff");
+  if(!scopeEnabled())return res.status(404).json({error:"Not available"});
+  try{
+    const job=await getActivePortalJob(req.params.token);
+    if(!job)return res.status(404).json({error:"Invalid or expired link"});
+    const scope=await latestJobScope(job.account_id,job.id);
+    if(!scope)return res.status(404).json({error:"No scope document has been published"});
+    const pdf=await readScopeBuffer(scopeArchiveRoot(job.account_id,job.id),
+      scope.id,scope.sha256);
+    res.setHeader("Content-Type","application/pdf");
+    res.setHeader("Content-Disposition",`inline; filename="V79-scope-v${Number(scope.version)}.pdf"`);
+    return res.status(200).send(pdf);
+  }catch{
+    return res.status(503).json({error:"Scope document integrity cannot be verified"});
+  }
+});
+
+app.post("/api/portal/:token/accept-scope", portalActionLimiter, async (req,res)=>{
+  res.setHeader("Cache-Control","no-store");
+  if(!scopeEnabled())return res.status(404).json({error:"Not available"});
+  if(!validateScopeAgreement(req.body))
+    return res.status(400).json({error:"Read the published scope and confirm its exact version"});
+  try {
+    const job=await getActivePortalJob(req.params.token);
+    if(!job)return res.status(404).json({error:"Invalid or expired link"});
+    const result=await db.transaction(async tx=>{
+      const current=await tx.prepare(`
+        SELECT id,account_id,status,secureToken,secureTokenExpires,
+               secureTokenRevokedAt FROM jobs
+        WHERE id=? AND account_id=? FOR UPDATE
+      `).get(job.id,job.account_id);
+      if(!current || current.secureToken!==req.params.token ||
+         current.secureTokenRevokedAt ||
+         !Number.isFinite(Date.parse(current.secureTokenExpires||"")) ||
+         Date.parse(current.secureTokenExpires)<=Date.now() ||
+         !["request","estimation","in-progress","review","invoiced","completed"].includes(current.status))
+        return {state:"forbidden"};
+      const scope=await tx.prepare(`
+        SELECT id,version,sha256 FROM v79_job_scope_versions_v2
+        WHERE account_id=? AND job_id=? ORDER BY version DESC LIMIT 1
+        FOR UPDATE
+      `).get(job.account_id,job.id);
+      if(!scope || Number(scope.version)!==req.body.version ||
+         scope.sha256!==req.body.sha256) return {state:"stale"};
+      // A missing or replaced archive cannot be acknowledged as valid.
+      await readScopeBuffer(scopeArchiveRoot(job.account_id,job.id),scope.id,scope.sha256);
+      const at=new Date().toISOString();
+      const written=await tx.prepare(`
+        INSERT INTO v79_job_scope_acceptances_v2
+        (id,account_id,job_id,version_id,sha256,accepted_at,portal_token_fingerprint,method)
+        VALUES (?,?,?,?,?,?,?,'portal_acknowledgement')
+        ON CONFLICT (version_id) DO NOTHING RETURNING id
+      `).get(uuidv4(),job.account_id,job.id,scope.id,scope.sha256,
+        at,tokenFingerprint(req.params.token));
+      if(written){
+        await tx.prepare(`
+          INSERT INTO activity_logs (id,job_id,action,timestamp,"user",account_id)
+          VALUES (?,?,?,?,?,?)
+        `).run(uuidv4(),job.id,
+          "Client acknowledged scope version "+scope.version+
+          " (SHA-256 "+scope.sha256.slice(0,12)+")",at,
+          "Client",job.account_id);
+        // Atomic outbox: the acknowledgement, its audit and its future Hub
+        // event MUST commit together, or all fail. Delivery is separately
+        // retried from the durable outbox; never replay the customer action.
+        await tx.prepare(`
+          INSERT INTO platform_event_outbox
+            (id,account_id,event_type,subject_id,correlation_id,
+             occurred_at,payload_json,status,attempts,next_attempt_at,created_at)
+          VALUES (?,?, 'job.scope_acknowledged', ?, NULL, ?,
+                  ?::text,'pending',0,?,?)
+        `).run(uuidv4(),job.account_id,job.id,at,
+          JSON.stringify({version:String(scope.version)}),at,at);
+      }
+      return {state:"accepted",alreadyAccepted:!written,
+        version:Number(scope.version),at};
+    })();
+    if(result.state!=="accepted")
+      return res.status(409).json({error:"Scope changed or portal access was revoked"});
+    return res.json({accepted:true,alreadyAccepted:result.alreadyAccepted,
+      version:result.version});
+  }catch{
+    return res.status(503).json({error:"Scope acknowledgement uncertain; refresh before retrying"});
+  }
+});
+
+app.post("/api/portal/:token/accept-delivery", portalActionLimiter, async (req, res) => {
+  if (!deliveryAcceptanceRequired())
+    return res.status(404).json({error:"Not available"});
+  if (req.body?.accept !== true)
+    return res.status(400).json({error:"Explicit acceptance is required"});
+  try {
+    const job=await getActivePortalJob(req.params.token);
+    if(!job)return res.status(404).json({error:"Invalid or expired link"});
+    if(!["review","invoiced","completed","paid"].includes(job.status))
+      return res.status(409).json({error:"Delivery is not ready for acceptance"});
+    const commit=await db.transaction(async tx=>{
+      // Recheck token and status under a real PostgreSQL row lock:
+      // concurrent cancellation, revocation or expiry must fail closed.
+      const current=await tx.prepare(`
+        SELECT id,status,secureToken,secureTokenExpires,secureTokenRevokedAt,deliveryAcceptedAt
+          FROM jobs WHERE id=? AND account_id=? FOR UPDATE
+      `).get(job.id,job.account_id);
+      if(!current || current.secureToken!==req.params.token ||
+         current.secureTokenRevokedAt ||
+         Date.parse(current.secureTokenExpires||"")<=Date.now() ||
+         !["review","invoiced","completed","paid"].includes(current.status))
+        return {status:409};
+      if(current.deliveryAcceptedAt)return {status:200,already:true};
+      if(scopeEnabled()){
+        const latest=await tx.prepare(`
+          SELECT v.id,CASE WHEN a.id IS NULL THEN 0 ELSE 1 END AS accepted
+            FROM v79_job_scope_versions_v2 v
+            LEFT JOIN v79_job_scope_acceptances_v2 a
+              ON a.version_id=v.id AND a.account_id=v.account_id
+                 AND a.job_id=v.job_id
+            WHERE v.account_id=? AND v.job_id=?
+            ORDER BY v.version DESC LIMIT 1
+        `).get(job.account_id,job.id);
+        if(latest && !latest.accepted)return {status:409};
+      }
+      const at=new Date().toISOString();
+      await tx.prepare(`
+        UPDATE jobs SET deliveryAcceptedAt=?
+          WHERE id=? AND account_id=? AND deliveryAcceptedAt IS NULL
+      `).run(at,job.id,job.account_id);
+      await tx.prepare(`
+        INSERT INTO activity_logs (id,job_id,action,timestamp,"user",account_id)
+        VALUES (?,?,?,?,?,?)
+      `).run(uuidv4(),job.id,"Customer confirmed delivery acceptance",
+        at,"Client",job.account_id);
+      return {status:200,already:false};
+    })();
+    if(commit.status!==200)
+      return res.status(409).json({error:"Delivery status or portal access changed; refresh the job"});
+    return res.json({accepted:true,alreadyAccepted:commit.already});
+  }catch{
+    return res.status(503).json({error:"Delivery acceptance uncertain; refresh before retrying"});
+  }
+});
+
+app.post("/api/portal/:token/feedback", portalActionLimiter, async (req, res) => {
+  if (process.env.V79_ECOSYSTEM_V2_FEEDBACK_ENABLED !== "1")
+    return res.status(404).json({error:"Not available"});
+  try {
+    const job = await getActivePortalJob(req.params.token);
+    if (!job) return res.status(404).json({ error: "Invalid or expired link" });
+    if (!["review","completed","paid"].includes(job.status))
+      return res.status(409).json({ error: "Feedback opens during client review or after delivery" });
+    const rating = req.body?.rating, raw = req.body?.comment;
+    if (!Number.isInteger(rating) || rating < 1 || rating > 5 ||
+        typeof raw !== "string" || raw.length > 1000 ||
+        typeof req.body?.contactAllowed !== "boolean")
+      return res.status(400).json({ error: "Valid rating, comment and contact choice required" });
+    const now = new Date().toISOString();
+    const saved = await db.prepare(`
+      INSERT INTO v79_job_feedback_v2
+        (id, account_id, job_id, rating, comment, contact_allowed, submitted_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (account_id, job_id) DO NOTHING
+      RETURNING id
+    `).get(uuidv4(), job.account_id, job.id, rating, raw.trim(),
+      req.body.contactAllowed, now);
+    if (!saved) return res.json({ submitted: true, alreadySubmitted: true });
+    await db.prepare(
+      "INSERT INTO activity_logs (id, job_id, action, timestamp, user, account_id) VALUES (?, ?, ?, ?, ?, ?)"
+    ).run(uuidv4(), job.id, "Client feedback received", now, "Client", job.account_id);
+    await safeQueuePlatformEvent({
+      accountId: job.account_id,
+      type: "customer.feedback_submitted",
+      subjectId: job.id,
+      occurredAt: now,
+      payload: {
+        rating: String(rating),
+        contactAllowed: req.body.contactAllowed ? "yes" : "no",
+      },
+    });
+    return res.status(201).json({ submitted: true, alreadySubmitted: false });
+  } catch (error) {
+    return res.status(503).json({ error: "Feedback outcome uncertain; refresh the portal before retrying" });
+  }
+});
+
+// Customer words remain accessible only in tenant-scoped, authenticated Tiquet.
+app.get("/api/jobs/:id/feedback", authenticateToken,
+  requireAnyPagePermission("jobs", "clients"), async (req, res) => {
+  if (process.env.V79_ECOSYSTEM_V2_FEEDBACK_ENABLED !== "1")
+    return res.status(404).json({error:"Not available"});
+  const job=await db.prepare("SELECT id FROM jobs WHERE id = ? AND account_id = ?")
+    .get(req.params.id, req.accountId);
+  if(!job)return res.status(404).json({error:"Job not found"});
+  const feedback=await db.prepare(`
+    SELECT id, rating, comment, contact_allowed, submitted_at
+      FROM v79_job_feedback_v2 WHERE account_id = ? AND job_id = ?
+  `).get(req.accountId,job.id);
+  res.setHeader("Cache-Control","no-store");
+  return res.json({ feedback:feedback||null });
 });
 
 app.post("/api/portal/:token/approve-quote", portalActionLimiter, async (req, res) => {
@@ -4118,6 +4791,14 @@ if (process.env.INTAKE_SECRET) {
   })();
 }
 startPlatformEventPump();
+if (process.env.V79_ECOSYSTEM_V2_INTAKE_ACK_ENABLED === "1") {
+  const pump = async () => {
+    try { await intakeAcks.processBatch(5); }
+    catch { logger.warn("[Intake Acknowledgement] Queue processing unavailable; awaiting operator review"); }
+  };
+  void pump();
+  setInterval(pump, 60_000).unref();
+}
 
 server.listen(PRIMARY_PORT, '0.0.0.0', () => {
   logger.info(`Backend server running on primary port ${PRIMARY_PORT} in ${isProduction ? 'production' : 'development'} mode (HTTP + WS)`);

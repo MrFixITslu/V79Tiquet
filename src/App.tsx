@@ -143,7 +143,7 @@ export default function App() {
   const canReadClients = authenticated && (
     canAccess("clients") || canAccess("jobs") || canAccess("new-request")
   );
-  const { items: jobs, setItems: setJobs } = useSyncedCollection<Job>("/jobs", canReadJobs);
+  const { items: jobs, setItems: setJobs, reload: reloadJobs } = useSyncedCollection<Job>("/jobs", canReadJobs);
   const { items: clients, setItems: setClients } = useSyncedCollection<Client>("/clients", canReadClients);
 
   // Surfaces whether the welcome email on a newly-created client actually
@@ -401,7 +401,7 @@ export default function App() {
         <div className="flex-1 overflow-auto p-4 sm:p-5 xl:p-6 bg-[#07111f]">
           {activeTab === "dashboard" && <Dashboard jobs={jobs} currency={settings.currency} />}
           {activeTab === "jobs" && (
-            <JobBoard jobs={jobs} setJobs={setJobs} employees={employees} clients={clients} settings={settings} />
+            <JobBoard jobs={jobs} setJobs={setJobs} employees={employees} clients={clients} settings={settings} onReload={reloadJobs} />
           )}
           {activeTab === "clients" && <Clients clients={clients} setClients={setClients} jobs={jobs} industries={industries} currency={settings.currency} />}
           {activeTab === "payroll" && (

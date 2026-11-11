@@ -79,6 +79,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_intake_event ON jobs(intakeEventId) W
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS clientId TEXT;
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS secureTokenExpires TEXT;
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS secureTokenRevokedAt TEXT;
+-- Customer acknowledgement of delivered work, distinct from quote approval/payment.
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS deliveryAcceptedAt TEXT;
 CREATE INDEX IF NOT EXISTS idx_jobs_client_account ON jobs(account_id, clientId);
 CREATE INDEX IF NOT EXISTS idx_jobs_secure_token ON jobs(secureToken) WHERE secureToken IS NOT NULL;
 UPDATE jobs
@@ -379,3 +381,85 @@ CREATE TABLE IF NOT EXISTS sentinel_ticket_approvals (
   recorded_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_sentinel_approvals_incident ON sentinel_ticket_approvals(source_incident_id);
+
+
+-- V79 Ecosystem v2: tenant-scoped, single-submission client feedback.
+-- Free-text stays inside Tiquet; only consented, minimal event categories
+-- may reach Hub. Never use client feedback to auto-close jobs or send ads.
+CREATE TABLE IF NOT EXISTS v79_job_feedback_v2 (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    job_id TEXT NOT NULL REFERENCES jobs(id),
+    rating INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
+    comment TEXT NOT NULL,
+    contact_allowed BOOLEAN NOT NULL DEFAULT FALSE,
+    submitted_at TEXT NOT NULL,
+    UNIQUE (account_id, job_id)
+);
+CREATE INDEX IF NOT EXISTS idx_v79_feedback_account_time
+    ON v79_job_feedback_v2(account_id, submitted_at DESC);
+
+
+-- Additive, opt-in website acknowledgement queue. Status 'sending' after
+-- a crash is ambiguous and requires operator review; never replay blindly.
+CREATE TABLE IF NOT EXISTS v79_intake_ack_outbox (
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    job_id TEXT NOT NULL REFERENCES jobs(id),
+    status TEXT NOT NULL DEFAULT 'pending'
+       CHECK (status IN ('pending','sending','sent','requires_review')),
+    created_at TEXT NOT NULL,
+    claimed_at TEXT,
+    sent_at TEXT,
+    error_code TEXT,
+    PRIMARY KEY (account_id,job_id)
+);
+CREATE INDEX IF NOT EXISTS idx_v79_intake_ack_status
+    ON v79_intake_ack_outbox(status, created_at);
+
+
+-- Invoice notification idempotency. A 'sending' record following a crash is
+-- ambiguous and may NOT be automatically resent. The tenant owns all data.
+CREATE TABLE IF NOT EXISTS v79_invoice_mail_v2 (
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    job_id TEXT NOT NULL REFERENCES jobs(id),
+    request_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('sending','sent','requires_review')),
+    created_at TEXT NOT NULL,
+    sent_at TEXT,
+    PRIMARY KEY (account_id,job_id,request_id)
+);
+CREATE INDEX IF NOT EXISTS idx_v79_invoice_mail_review
+    ON v79_invoice_mail_v2(account_id,status,created_at);
+
+
+-- V2: existing Tiquet job folders are the document system of record.
+-- Scope publication snapshots an uploaded PDF by immutable version ID.
+-- A later revision invalidates any previous version's acknowledgement.
+CREATE TABLE IF NOT EXISTS v79_job_scope_versions_v2 (
+  id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL REFERENCES accounts(id),
+  job_id TEXT NOT NULL REFERENCES jobs(id),
+  version INTEGER NOT NULL CHECK (version BETWEEN 1 AND 1000000),
+  original_filename TEXT NOT NULL,
+  sha256 CHAR(64) NOT NULL,
+  byte_count BIGINT NOT NULL CHECK (byte_count BETWEEN 1 AND 20971520),
+  published_at TEXT NOT NULL,
+  published_by TEXT NOT NULL,
+  UNIQUE (account_id,job_id,version)
+);
+CREATE INDEX IF NOT EXISTS idx_v79_scope_job_v2
+  ON v79_job_scope_versions_v2(account_id,job_id,version DESC);
+CREATE TABLE IF NOT EXISTS v79_job_scope_acceptances_v2 (
+  id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL REFERENCES accounts(id),
+  job_id TEXT NOT NULL REFERENCES jobs(id),
+  version_id TEXT NOT NULL UNIQUE REFERENCES v79_job_scope_versions_v2(id),
+  sha256 CHAR(64) NOT NULL,
+  accepted_at TEXT NOT NULL,
+  portal_token_fingerprint CHAR(64) NOT NULL,
+  method TEXT NOT NULL DEFAULT 'portal_acknowledgement'
+    CHECK (method = 'portal_acknowledgement'),
+  UNIQUE (account_id,job_id,version_id)
+);
+CREATE INDEX IF NOT EXISTS idx_v79_scope_acceptance_v2
+  ON v79_job_scope_acceptances_v2(account_id,job_id,accepted_at DESC);

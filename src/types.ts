@@ -5,7 +5,8 @@ export type JobStatus =
   | "review"
   | "invoiced"
   | "completed"
-  | "paid";
+  | "paid"
+  | "cancelled";
 
 export const COLUMNS: { id: JobStatus; label: string; color: string }[] = [
   {
@@ -143,10 +144,12 @@ export interface Job {
   title: string;
   client: string; // Keeping for backward compatibility or display name
   clientId?: string; // Link to Client entity
+  clientEmail?: string; // Stored email for invoice/portal delivery
   description: string;
   status: JobStatus;
   createdAt: string;
   dueDate?: string;
+  deliveryAcceptedAt?: string | null; // Separate customer acceptance evidence
   amount?: number;
   priority: "low" | "medium" | "high";
   invoiceNotes?: string;

@@ -5,6 +5,7 @@ import { Plus, Search, Filter, Clock, DollarSign, ArrowRight, ArrowLeft, User, S
 import { JobModal } from "./JobModal";
 import { JobDetailModal } from "./JobDetailModal";
 import { formatMoney } from "../currency";
+import { api } from "../api";
 
 export function JobBoard({
   jobs,
@@ -12,12 +13,14 @@ export function JobBoard({
   employees,
   clients,
   settings,
+  onReload,
 }: {
   jobs: Job[];
   setJobs: React.Dispatch<React.SetStateAction<Job[]>>;
   employees: Employee[];
   clients: Client[];
   settings: BusinessSettings;
+  onReload: () => Promise<void>;
 }) {
   const [isNewModalOpen, setIsNewModalOpen] = useState(false);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(() => readTiquetJobId(window.location.search));
@@ -32,6 +35,19 @@ export function JobBoard({
   const [searchQuery, setSearchQuery] = useState("");
   const [priorityFilter, setPriorityFilter] = useState<string>("all");
   const [assignedFilter, setAssignedFilter] = useState<string>("all");
+  const [cancellationEnabled, setCancellationEnabled] = useState(false);
+  useEffect(() => {
+    let active=true;
+    api.get<{enabled:boolean}>("/jobs/cancellation-capability")
+      .then(result=>{if(active)setCancellationEnabled(result.enabled===true)})
+      .catch(()=>{if(active)setCancellationEnabled(false)});
+    return ()=>{active=false};
+  }, []);
+  const cancelJob = async (jobId:string, reason:string) => {
+    await api.post(`/jobs/${encodeURIComponent(jobId)}/cancel`, {reason});
+    await onReload(); // fetch from server; no optimistic PUT or stage replay
+    setSelectedJobId(null);
+  };
 
   const moveJob = (jobId: string, newStatus: JobStatus) => {
     setJobs(
@@ -178,6 +194,26 @@ export function JobBoard({
         })}
       </div>
 
+      {/* Cancelled tickets are retained for audit, not silently deleted or
+          accidentally re-advanced through the paid stage. */}
+      {filteredJobs.some(job=>job.status==="cancelled") && (
+        <section className="border border-slate-200 rounded-2xl bg-slate-50 p-4">
+          <h3 className="text-sm font-bold text-slate-800 mb-3">
+            Cancelled tickets ({filteredJobs.filter(j=>j.status==="cancelled").length})
+          </h3>
+          <div className="flex flex-col gap-2">
+            {filteredJobs.filter(j=>j.status==="cancelled").map(job=>(
+              <button key={job.id} type="button"
+                onClick={()=>setSelectedJobId(job.id)}
+                className="text-left rounded-xl bg-white border border-slate-200 px-4 py-3 hover:border-slate-400">
+                <span className="text-sm font-semibold text-slate-700">{job.title}</span>
+                <span className="ml-2 text-xs text-slate-500">{job.client}</span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+
       {/* New Job Modal */}
       <JobModal
         isOpen={isNewModalOpen}
@@ -194,6 +230,8 @@ export function JobBoard({
           employees={employees}
           clients={clients}
           settings={settings}
+          cancellationEnabled={cancellationEnabled}
+          onCancel={cancelJob}
           onClose={() => setSelectedJobId(null)}
           onUpdate={(updatedJob) => {
             setJobs(jobs.map((j) => (j.id === updatedJob.id ? updatedJob : j)));

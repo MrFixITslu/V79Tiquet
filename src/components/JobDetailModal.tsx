@@ -1,4 +1,5 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
+import { api } from "../api";
 import { Job, Employee, JobNote, Client, BusinessSettings } from "../types";
 import { formatMoney } from "../currency";
 import { AgentReplyDraftPanel } from "./AgentReplyDraftPanel";
@@ -31,6 +32,8 @@ export function JobDetailModal({
   settings,
   onClose,
   onUpdate,
+  cancellationEnabled = false,
+  onCancel,
 }: {
   job: Job;
   employees: Employee[];
@@ -38,6 +41,8 @@ export function JobDetailModal({
   settings: BusinessSettings;
   onClose: () => void;
   onUpdate: (updatedJob: Job) => void;
+  cancellationEnabled?: boolean;
+  onCancel?: (jobId: string, reason: string) => Promise<void>;
 }) {
   const [invoiceNotes, setInvoiceNotes] = useState(job.invoiceNotes || "");
   const [showDocPreview, setShowDocPreview] = useState(false);
@@ -45,6 +50,76 @@ export function JobDetailModal({
   const [newNote, setNewNote] = useState("");
   const [editingAmount, setEditingAmount] = useState(false);
   const [amountDraft, setAmountDraft] = useState(job.amount != null ? String(job.amount) : "");
+  const [showCancel, setShowCancel] = useState(false);
+  const [cancelReason, setCancelReason] = useState("");
+  const [cancelBusy, setCancelBusy] = useState(false);
+  const [cancelError, setCancelError] = useState<string | null>(null);
+  type PublishedScope = {
+    id:string;version:number;sha256:string;original_filename:string;accepted:boolean;
+  };
+  const [scopeEnabled,setScopeEnabled]=useState(false);
+  const [scopeVersions,setScopeVersions]=useState<PublishedScope[]>([]);
+  const [scopeSelected,setScopeSelected]=useState<File|null>(null);
+  const [scopeBusy,setScopeBusy]=useState(false);
+  const [scopeError,setScopeError]=useState<string|null>(null);
+  const [scopeMessage,setScopeMessage]=useState<string|null>(null);
+  const loadScope = async()=>{
+    try{
+      const result=await api.get<{scopeVersions:PublishedScope[]}>(
+        `/jobs/${encodeURIComponent(job.id)}/scope`);
+      setScopeEnabled(true);setScopeVersions(result.scopeVersions);
+    }catch{
+      setScopeEnabled(false);setScopeVersions([]);
+    }
+  };
+  useEffect(()=>{
+    setScopeSelected(null);setScopeError(null);setScopeMessage(null);
+    void loadScope();
+  },[job.id]);
+  const publishScope=async()=>{
+    if(!scopeSelected || scopeBusy)return;
+    setScopeBusy(true);setScopeError(null);setScopeMessage(null);
+    try{
+      if(scopeSelected.size>20*1024*1024 || scopeSelected.size<5 ||
+         !scopeSelected.name.toLowerCase().endsWith(".pdf"))
+        throw new Error("Choose a PDF document smaller than 20 MB.");
+      const form=new FormData();
+      form.append("files",scopeSelected);
+      const uploaded=await api.post<{files:Array<{filename:string}>}>(
+        `/jobs/${encodeURIComponent(job.id)}/files`,form);
+      const filename=uploaded.files?.[0]?.filename;
+      if(!filename)throw new Error("File upload was not confirmed.");
+      const published=await api.post<{scope:{version:number}}> (
+        `/jobs/${encodeURIComponent(job.id)}/scope`,{filename});
+      setScopeMessage(`Version ${published.scope.version} published. The client must acknowledge this version.`);
+      setScopeSelected(null);
+      await loadScope();
+    }catch(error:any){
+      setScopeError(error?.message || "Scope publication was not confirmed. Refresh before retrying.");
+    }finally{setScopeBusy(false);}
+  };
+
+  const handleCancellation = async () => {
+    if (!onCancel || cancelBusy || cancelReason.trim().length < 10) return;
+    setCancelBusy(true);
+    setCancelError(null);
+    try { await onCancel(job.id, cancelReason.trim()); }
+    catch (error: any) {
+      setCancelError(error?.message || "Cancellation could not be confirmed.");
+    }
+    finally { setCancelBusy(false); }
+  };
+  const [clientFeedback, setClientFeedback] = useState<{
+    rating: number; comment: string; contact_allowed: boolean; submitted_at: string;
+  } | null>(null);
+  useEffect(() => {
+    let active = true;
+    setClientFeedback(null);
+    api.get<{feedback: typeof clientFeedback}>(`/jobs/${encodeURIComponent(job.id)}/feedback`)
+      .then(result => { if(active) setClientFeedback(result.feedback ?? null); })
+      .catch(() => { if(active) setClientFeedback(null); });
+    return () => { active = false; };
+  }, [job.id]);
 
   const handleSaveAmount = () => {
     const trimmed = amountDraft.trim();
@@ -80,16 +155,13 @@ export function JobDetailModal({
     setNewNote("");
   };
 
-  // Find full client details. Client.company can legitimately be null (a
-  // client with no company name on file) even though the type says
-  // `string` — the DB stores an empty company as NULL. Without the `?.`
-  // here, any job with no directly-linked clientId (common for jobs still
-  // in Estimation, created before a client is picked) would throw trying
-  // to call .toLowerCase() on that null for every non-matching client in
-  // the list, crashing the whole modal to a blank screen.
-  const clientDetails = clients.find(
-    (c) => c.id === job.clientId || c.company?.toLowerCase() === job.client?.toLowerCase()
-  );
+  // Link customer details ONLY through the explicitly stored clientId.
+  // Company/name matching can expose the wrong person's contact details
+  // when two customers use the same business name. Unlinked enquiries
+  // correctly show "No additional client contact details registered".
+  const clientDetails = job.clientId
+    ? clients.find((c) => c.id === job.clientId)
+    : undefined;
 
   const getDocTitle = () => {
     switch (docType) {
@@ -187,11 +259,14 @@ export function JobDetailModal({
               <p className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-1 flex items-center gap-1">
                 <Calendar className="w-3 h-3" /> Due Date
               </p>
-              <p className="font-semibold text-slate-900">
-                {job.dueDate
-                  ? new Date(job.dueDate).toLocaleDateString()
-                  : "Not set"}
-              </p>
+              <input type="date" aria-label="Edit ticket due date"
+                value={job.dueDate ? String(job.dueDate).slice(0, 10) : ""}
+                disabled={job.status === "cancelled"}
+                onChange={event => onUpdate({
+                  ...job, dueDate: event.target.value || undefined,
+                })}
+                className="w-full bg-white rounded-lg border border-slate-200 px-2 py-1 text-sm font-semibold text-slate-800 disabled:bg-slate-100 disabled:text-slate-500"
+              />
             </div>
           </div>
 
@@ -242,6 +317,103 @@ export function JobDetailModal({
               {job.description || "No description provided."}
             </div>
           </div>
+
+          {clientFeedback && (
+            <section className="border border-teal-200 bg-teal-50 rounded-xl p-4 space-y-2">
+              <h4 className="text-sm font-semibold text-slate-900">
+                Customer feedback • {clientFeedback.rating} of 5
+              </h4>
+              {clientFeedback.comment && (
+                <p className="text-sm text-slate-700 whitespace-pre-wrap">{clientFeedback.comment}</p>
+              )}
+              <p className="text-xs text-slate-500">
+                Contact about this feedback: {clientFeedback.contact_allowed ? "Permitted" : "Not permitted"}
+              </p>
+            </section>
+          )}
+          {job.status === "cancelled" && (
+            <div role="status" className="rounded-xl border border-slate-300 bg-slate-100 p-4 text-sm text-slate-700">
+              This ticket was cancelled and is closed. Its history is retained for audit.
+              Contact an administrator to open a new request.
+            </div>
+          )}
+          {cancellationEnabled && onCancel &&
+             ["request", "estimation", "in-progress", "review"].includes(job.status) && (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+              {!showCancel ? (
+                <button type="button" onClick={()=>setShowCancel(true)}
+                  className="rounded-lg border border-rose-200 bg-white px-3 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-50">
+                  Close as customer cancelled
+                </button>
+              ) : (
+                <div className="space-y-3">
+                  <p className="text-sm font-semibold text-slate-800">Confirm customer cancellation</p>
+                  <p className="text-xs text-slate-600">
+                    This closes the ticket but never refunds or reverses payments. Tickets with payments or invoices require a separate finance review.
+                  </p>
+                  <label htmlFor="cancel-reason" className="text-xs text-slate-600">Reason (at least 10 characters)</label>
+                  <textarea id="cancel-reason" value={cancelReason} maxLength={500}
+                    onChange={event=>setCancelReason(event.target.value)}
+                    className="w-full rounded-lg border border-slate-300 bg-white p-3 text-sm"
+                    rows={3} placeholder="Customer confirmed cancellation by phone…" />
+                  {cancelError && <p role="alert" className="text-xs text-rose-700">{cancelError}</p>}
+                  <div className="flex gap-2">
+                    <button type="button" disabled={cancelBusy || cancelReason.trim().length < 10}
+                      onClick={handleCancellation}
+                      className="rounded-lg bg-rose-700 px-3 py-2 text-sm font-semibold text-white disabled:opacity-50">
+                      {cancelBusy ? "Closing…" : "Confirm cancellation"}
+                    </button>
+                    <button type="button" disabled={cancelBusy}
+                      onClick={()=>{setShowCancel(false);setCancelReason("");setCancelError(null)}}
+                      className="rounded-lg border border-slate-300 px-3 py-2 text-sm">Keep ticket open</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {scopeEnabled && (
+            <section className="rounded-xl border border-teal-200 bg-teal-50/50 p-4 space-y-3">
+              <h4 className="text-sm font-bold text-slate-900">Versioned scope of work</h4>
+              <p className="text-xs text-slate-600">
+                Publish a final PDF for customer review. New revisions require a new acknowledgement.
+                Published versions are retained for audit; approval is not a certified signature.
+              </p>
+              {scopeVersions[0] && (
+                <div className="rounded-lg bg-white border border-teal-100 p-3 text-xs">
+                  <p className="font-semibold text-slate-800">
+                    Latest: v{scopeVersions[0].version} · {scopeVersions[0].original_filename}
+                  </p>
+                  <p className={scopeVersions[0].accepted?"text-emerald-700":"text-amber-700"}>
+                    {scopeVersions[0].accepted?"Acknowledged by client":"Awaiting client acknowledgement"}
+                  </p>
+                </div>
+              )}
+              {["request","estimation","in-progress"].includes(job.status) &&
+               !job.deliveryAcceptedAt && (
+                <div className="space-y-2">
+                  <label htmlFor="job-scope-upload" className="block text-xs font-semibold text-slate-700">
+                    New scope PDF (maximum 20 MB)
+                  </label>
+                  <input id="job-scope-upload" type="file" accept="application/pdf,.pdf"
+                    disabled={scopeBusy} onChange={event=>setScopeSelected(event.target.files?.[0]||null)}
+                    className="block w-full text-xs text-slate-700"/>
+                  <button type="button" disabled={scopeBusy||!scopeSelected}
+                    onClick={()=>void publishScope()}
+                    className="rounded-lg bg-teal-700 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50">
+                    {scopeBusy?"Publishing…":"Publish scope for customer"}
+                  </button>
+                </div>
+              )}
+              {job.deliveryAcceptedAt && (
+                <p className="text-xs text-slate-600">
+                  Delivery was already accepted. Use a new ticket or approved change order.
+                </p>
+              )}
+              {scopeError && <p role="alert" className="text-xs text-rose-700">{scopeError}</p>}
+              {scopeMessage && <p role="status" className="text-xs text-emerald-700">{scopeMessage}</p>}
+            </section>
+          )}
 
           {/* Document Generation Options - 100% Automated, non-AI */}
           <div className="border-t border-slate-100 pt-6">

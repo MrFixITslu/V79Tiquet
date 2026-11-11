@@ -29,6 +29,7 @@ interface PortalData {
     priority?: string;
     amount?: number;
     quoteApproved?: number;
+    deliveryAcceptedAt?: string | null;
     depositPaid?: number;
     dueDate?: string;
     createdAt: string;
@@ -51,6 +52,12 @@ interface PortalData {
     paidAmount: number;
     outstandingAmount: number;
     fullyPaid: boolean;
+  };
+  feedback?: { enabled: boolean; submitted: boolean };
+  deliveryAcceptance?: { enabled: boolean; accepted: boolean };
+  scopeEvidence?: {
+    enabled: boolean;
+    current: {version:number;sha256:string;filename:string;accepted:boolean}|null;
   };
   billing?: {
     available: boolean;
@@ -79,6 +86,16 @@ export function ClientPortal({ token }: { token: string }) {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [successToast, setSuccessToast] = useState<string | null>(null);
   const [paymentError, setPaymentError] = useState<string | null>(null);
+  const [feedbackRating, setFeedbackRating] = useState(5);
+  const [feedbackComment, setFeedbackComment] = useState("");
+  const [feedbackContactAllowed, setFeedbackContactAllowed] = useState(false);
+  const [feedbackSending, setFeedbackSending] = useState(false);
+  const [feedbackError, setFeedbackError] = useState<string | null>(null);
+  const [acceptingDelivery,setAcceptingDelivery] = useState(false);
+  const [deliveryError,setDeliveryError] = useState<string | null>(null);
+  const [scopeReviewed,setScopeReviewed]=useState(false);
+  const [scopeBusy,setScopeBusy]=useState(false);
+  const [scopeError,setScopeError]=useState<string|null>(null);
   const paymentReturnHandled = useRef(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -293,6 +310,70 @@ export function ClientPortal({ token }: { token: string }) {
       </div>
     );
   }
+
+  const submitFeedback = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (feedbackSending || data?.feedback?.submitted) return;
+    setFeedbackSending(true);
+    setFeedbackError(null);
+    try {
+      const response = await fetch(`/api/portal/${token}/feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          rating: feedbackRating,
+          comment: feedbackComment,
+          contactAllowed: feedbackContactAllowed,
+        }),
+      });
+      if (!response.ok) throw new Error("We could not confirm your feedback. Please check and try again.");
+      setData(previous => previous ? { ...previous, feedback: { enabled:true,submitted:true } } : previous);
+      setSuccessToast("Thank you. Your feedback has been received.");
+    } catch (error: any) {
+      setFeedbackError(error.message || "Unable to confirm feedback.");
+    } finally {
+      setFeedbackSending(false);
+    }
+  };
+
+  const acknowledgeScope=async()=>{
+    const current=data?.scopeEvidence?.current;
+    if(!current||!scopeReviewed||scopeBusy||current.accepted)return;
+    setScopeBusy(true);setScopeError(null);
+    try{
+      const response=await fetch(`/api/portal/${token}/accept-scope`,{
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({agree:true,version:current.version,sha256:current.sha256}),
+      });
+      if(!response.ok)throw new Error(
+        "Scope approval could not be confirmed. Refresh to check the latest version.");
+      setData(previous=>previous?.scopeEvidence?.current ? {
+        ...previous,scopeEvidence:{enabled:true,
+          current:{...previous.scopeEvidence.current,accepted:true}}
+      }:previous);
+      setSuccessToast("Your scope acknowledgement has been recorded.");
+    }catch(error:any){
+      setScopeError(error.message||"Scope acknowledgement uncertain.");
+    }finally{setScopeBusy(false);}
+  };
+
+  const acceptDelivery=async()=>{
+    if(acceptingDelivery || data?.deliveryAcceptance?.accepted)return;
+    setAcceptingDelivery(true);setDeliveryError(null);
+    try{
+      const response=await fetch(`/api/portal/${token}/accept-delivery`,{
+        method:"POST",headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({accept:true}),
+      });
+      if(!response.ok)throw new Error("We could not confirm acceptance. Please refresh before retrying.");
+      setData(previous=>previous ? {
+        ...previous,deliveryAcceptance:{enabled:true,accepted:true}
+      }:previous);
+      setSuccessToast("Your delivery acceptance has been recorded.");
+    }catch(error:any){
+      setDeliveryError(error.message||"Delivery acceptance cannot be confirmed");
+    }finally{setAcceptingDelivery(false);}
+  };
 
   const { job, settings, payments } = data;
   const billingAvailable = Boolean(data.billing?.available);
@@ -670,6 +751,116 @@ export function ClientPortal({ token }: { token: string }) {
             </form>
           </div>
         </div>
+
+        {data.scopeEvidence?.enabled && (
+          <section className="rounded-2xl border border-slate-700 bg-slate-900/80 p-5 md:p-6 space-y-3">
+            <h3 className="font-bold text-base text-white">Agreed work and scope</h3>
+            {!data.scopeEvidence.current ? (
+              <p className="text-sm text-slate-300">
+                No versioned scope document has been published for this ticket.
+              </p>
+            ) : (
+              <>
+                <p className="text-sm text-slate-300">
+                  Scope version {data.scopeEvidence.current.version} — review the exact
+                  document before acknowledging it. A later revision requires a new acknowledgement.
+                </p>
+                <a href={`/api/portal/${token}/scope-document`} target="_blank"
+                  rel="noreferrer" className="inline-flex items-center gap-2 text-teal-300 font-semibold underline underline-offset-4 text-sm">
+                  <FileText className="w-4 h-4"/> View scope PDF
+                </a>
+                {data.scopeEvidence.current.accepted ? (
+                  <p role="status" className="text-sm text-emerald-300">
+                    You acknowledged this version of the scope. This is not a certified electronic signature.
+                  </p>
+                ) : (
+                  <>
+                    <label className="flex gap-2 items-start text-sm text-slate-200">
+                      <input type="checkbox" checked={scopeReviewed}
+                        onChange={event=>setScopeReviewed(event.target.checked)}
+                        className="mt-1"/>
+                      I have reviewed and acknowledge this exact version of the scope of work.
+                    </label>
+                    {scopeError && <p role="alert" className="text-sm text-rose-300">{scopeError}</p>}
+                    <button type="button" disabled={!scopeReviewed||scopeBusy}
+                      onClick={()=>void acknowledgeScope()}
+                      className="rounded-lg bg-teal-600 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50">
+                      {scopeBusy ? "Recording…" : "Acknowledge scope"}
+                    </button>
+                  </>
+                )}
+              </>
+            )}
+          </section>
+        )}
+
+        {/* Delivery acceptance is not consent to pay, marketing, or a quote. */}
+        {data.deliveryAcceptance?.enabled &&
+          ["review","invoiced","completed","paid"].includes(job.status) && (
+          <section className="rounded-2xl border border-slate-700 bg-slate-900/80 p-5 md:p-6 space-y-3">
+            <h3 className="font-bold text-base text-white">Confirm delivered work</h3>
+            {data.deliveryAcceptance.accepted ? (
+              <p role="status" className="text-sm text-emerald-300">
+                You have accepted delivery. Any outstanding invoice remains payable separately.
+              </p>
+            ) : (
+              <>
+                <p className="text-sm text-slate-300">
+                  Confirm that the agreed work has been delivered and reviewed.
+                  This does not authorise a payment or subscribe you to marketing.
+                </p>
+                {deliveryError && <p role="alert" className="text-sm text-rose-300">{deliveryError}</p>}
+                <button type="button" onClick={()=>void acceptDelivery()}
+                  disabled={acceptingDelivery}
+                  className="rounded-lg bg-teal-600 hover:bg-teal-500 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50">
+                  {acceptingDelivery?"Confirming…":"I accept the delivered work"}
+                </button>
+              </>
+            )}
+          </section>
+        )}
+
+        {/* Customer feedback: visible only after review or completed delivery. */}
+        {data.feedback?.enabled && ["review","completed","paid"].includes(job.status) && (
+          <section className="rounded-2xl border border-slate-700 bg-slate-900/80 p-5 md:p-6">
+            <h3 className="font-bold text-base text-white">How did we do?</h3>
+            {data.feedback?.submitted ? (
+              <p className="text-sm text-emerald-300 mt-2">
+                Your feedback has been recorded. Thank you for helping us improve.
+              </p>
+            ) : (
+              <form className="space-y-4 mt-4" onSubmit={submitFeedback}>
+                <label className="block text-xs text-slate-300" htmlFor="feedback-rating">
+                  Your experience
+                </label>
+                <select id="feedback-rating" value={feedbackRating}
+                  onChange={e => setFeedbackRating(Number(e.target.value))}
+                  className="bg-slate-800 text-white rounded-lg border border-slate-600 px-3 py-2 text-sm w-full max-w-xs">
+                  {[5,4,3,2,1].map(n=>(
+                    <option key={n} value={n}>{n} of 5</option>
+                  ))}
+                </select>
+                <label className="block text-xs text-slate-300" htmlFor="feedback-comment">
+                  Anything we should know? (optional)
+                </label>
+                <textarea id="feedback-comment" value={feedbackComment} maxLength={1000}
+                  onChange={e=>setFeedbackComment(e.target.value)}
+                  className="w-full bg-slate-800 text-slate-100 rounded-lg border border-slate-600 p-3 text-sm"
+                  rows={3} placeholder="Share a suggestion or tell us what went well." />
+                <label className="flex gap-2 items-center text-xs text-slate-300">
+                  <input type="checkbox" checked={feedbackContactAllowed}
+                    onChange={e=>setFeedbackContactAllowed(e.target.checked)} />
+                  You may contact me about this feedback. This is not marketing consent.
+                </label>
+                {feedbackError && <p role="alert" className="text-rose-300 text-xs">{feedbackError}</p>}
+                <button type="submit" disabled={feedbackSending}
+                  className="bg-teal-600 hover:bg-teal-500 disabled:opacity-50 rounded-lg text-sm font-semibold px-5 py-2.5">
+                  {feedbackSending ? "Submitting…" : "Send feedback"}
+                </button>
+              </form>
+            )}
+          </section>
+        )}
 
         {/* Footer Contact Details */}
         <footer className="pt-8 border-t border-slate-800/80 text-center text-xs text-slate-500 space-y-2">
