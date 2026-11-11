@@ -46,3 +46,10 @@ test("feedback UI asks contact permission, not marketing consent",()=>{
   assert.match(portal,/\/api\/portal\/\$\{token\}\/feedback/);
   assert.match(portal,/\["review","completed","paid"\]\.includes\(job\.status\)/);
 });
+
+test("feedback stays inaccessible until explicit environment approval",()=>{
+  const route=server.slice(server.indexOf('app.post("/api/portal/:token/feedback"'),
+    server.indexOf('app.post("/api/portal/:token/approve-quote"'));
+  assert.match(route,/V79_ECOSYSTEM_V2_FEEDBACK_ENABLED/);
+  assert.match(portal,/data.feedback\?\.enabled/);
+});
