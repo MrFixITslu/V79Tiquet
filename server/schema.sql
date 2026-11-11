@@ -430,3 +430,36 @@ CREATE TABLE IF NOT EXISTS v79_invoice_mail_v2 (
 );
 CREATE INDEX IF NOT EXISTS idx_v79_invoice_mail_review
     ON v79_invoice_mail_v2(account_id,status,created_at);
+
+
+-- V2: existing Tiquet job folders are the document system of record.
+-- Scope publication snapshots an uploaded PDF by immutable version ID.
+-- A later revision invalidates any previous version's acknowledgement.
+CREATE TABLE IF NOT EXISTS v79_job_scope_versions_v2 (
+  id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL REFERENCES accounts(id),
+  job_id TEXT NOT NULL REFERENCES jobs(id),
+  version INTEGER NOT NULL CHECK (version BETWEEN 1 AND 1000000),
+  original_filename TEXT NOT NULL,
+  sha256 CHAR(64) NOT NULL,
+  byte_count BIGINT NOT NULL CHECK (byte_count BETWEEN 1 AND 20971520),
+  published_at TEXT NOT NULL,
+  published_by TEXT NOT NULL,
+  UNIQUE (account_id,job_id,version)
+);
+CREATE INDEX IF NOT EXISTS idx_v79_scope_job_v2
+  ON v79_job_scope_versions_v2(account_id,job_id,version DESC);
+CREATE TABLE IF NOT EXISTS v79_job_scope_acceptances_v2 (
+  id TEXT PRIMARY KEY,
+  account_id TEXT NOT NULL REFERENCES accounts(id),
+  job_id TEXT NOT NULL REFERENCES jobs(id),
+  version_id TEXT NOT NULL UNIQUE REFERENCES v79_job_scope_versions_v2(id),
+  sha256 CHAR(64) NOT NULL,
+  accepted_at TEXT NOT NULL,
+  portal_token_fingerprint CHAR(64) NOT NULL,
+  method TEXT NOT NULL DEFAULT 'portal_acknowledgement'
+    CHECK (method = 'portal_acknowledgement'),
+  UNIQUE (account_id,job_id,version_id)
+);
+CREATE INDEX IF NOT EXISTS idx_v79_scope_acceptance_v2
+  ON v79_job_scope_acceptances_v2(account_id,job_id,accepted_at DESC);
