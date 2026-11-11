@@ -16,7 +16,8 @@ import cors from "cors";
 import http from "http";
 import { WebSocketServer } from "ws";
 import db, { dbDir, seedDefaultTemplatesForAccount } from "./db.js";
-import { sendPortalLink, sendStatusUpdate, sendTemplated, renderEmailFromPlainTemplate, sendPasswordReset, sendUserInvite } from "./email.js";
+import { sendPortalLink, sendStatusUpdate, sendTemplated, renderEmailFromPlainTemplate, sendPasswordReset, sendUserInvite, transactionalSmtpReady } from "./email.js";
+import { createIntakeAcknowledgements } from "./intakeAcknowledgements.js";
 import { registerOAuthRoutes } from "./oauth.js";
 import { v4 as uuidv4 } from "uuid";
 import jwt from "jsonwebtoken";
@@ -58,6 +59,23 @@ const isProduction = process.env.NODE_ENV === "production";
 const PRIMARY_PORT = 3000;
 const SECONDARY_PORT = process.env.PORT && parseInt(process.env.PORT, 10) !== 3000 && parseInt(process.env.PORT, 10) !== 8080 ? parseInt(process.env.PORT, 10) : 3050;
 registerHealthCheck(app);
+// All V2 acknowledgement delivery remains disabled until SMTP, DNS and
+// a real customer mailbox are verified in isolated staging.
+const intakeAcks = createIntakeAcknowledgements({
+  db,
+  send: sendTemplated,
+  render: renderEmailFromPlainTemplate,
+  deliveryConfigured: transactionalSmtpReady,
+  enabled: () => process.env.V79_ECOSYSTEM_V2_INTAKE_ACK_ENABLED === "1",
+  log: logger,
+});
+async function safeEnqueueIntakeAck(accountId, jobId) {
+  try { return await intakeAcks.enqueue(accountId, jobId); }
+  catch {
+    logger.warn("[Intake Acknowledgement] Unable to record acknowledgement; review outbox");
+    return "unavailable";
+  }
+}
 
 // JWT secrets: strongly prefer an explicit JWT_SECRET / SUPER_ADMIN_JWT_SECRET
 // in the environment (documented in env.example). If one isn't set in
@@ -1601,6 +1619,23 @@ const requireIntakeSecret = (req, res, next) => {
   }
   next();
 };
+// Owner-only health view: never includes email addresses or SMTP credentials.
+app.get("/api/intake/acknowledgements", authenticateToken, requireAdmin, async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  if (process.env.V79_ECOSYSTEM_V2_INTAKE_ACK_ENABLED !== "1")
+    return res.json({enabled:false, items:[]});
+  try {
+    const items=await db.prepare(`
+      SELECT job_id,status,created_at,claimed_at,sent_at,error_code
+        FROM v79_intake_ack_outbox WHERE account_id=?
+       ORDER BY created_at DESC LIMIT 100
+    `).all(req.accountId);
+    return res.json({enabled:true,smtpConfigured:transactionalSmtpReady(),items});
+  } catch {
+    return res.status(503).json({error:"Acknowledgement state unavailable"});
+  }
+});
+
 app.post("/api/public/intake", intakeLimiter, requireIntakeSecret, async (req, res) => {
   const accountId = process.env.INTAKE_ACCOUNT_ID || "default_account";
 
@@ -1651,12 +1686,14 @@ app.post("/api/public/intake", intakeLimiter, requireIntakeSecret, async (req, r
       const linkedClient = existingJob.clientId
         ? await db.prepare("SELECT id FROM clients WHERE id = ? AND account_id = ?").get(existingJob.clientId, accountId)
         : null;
+      const acknowledgementStatus = await safeEnqueueIntakeAck(accountId, existingJob.id);
       logger.info(`[Intake] Duplicate eventId ${eventId} — returning existing job ${existingJob.id} without creating another.`);
       return res.status(200).json({
         success: true,
         action: "already_processed",
         jobId: existingJob.id,
-        clientId: linkedClient?.id || null
+        clientId: linkedClient?.id || null,
+        acknowledgementStatus
       });
     }
   }
@@ -1768,12 +1805,14 @@ app.post("/api/public/intake", intakeLimiter, requireIntakeSecret, async (req, r
         payload: { company, origin: "website" }
       });
     }
+    const acknowledgementStatus = await safeEnqueueIntakeAck(accountId, id);
     logger.info(`[Intake] Job ${id} created from website contact form for account ${accountId}; client ${action}.`);
     res.status(201).json({
       success: true,
       action,
       jobId: id,
-      clientId
+      clientId,
+      acknowledgementStatus
     });
   } catch (error) {
     console.error("[Intake] Failed to create job:", error);
@@ -4172,6 +4211,14 @@ if (process.env.INTAKE_SECRET) {
   })();
 }
 startPlatformEventPump();
+if (process.env.V79_ECOSYSTEM_V2_INTAKE_ACK_ENABLED === "1") {
+  const pump = async () => {
+    try { await intakeAcks.processBatch(5); }
+    catch { logger.warn("[Intake Acknowledgement] Queue processing unavailable; awaiting operator review"); }
+  };
+  void pump();
+  setInterval(pump, 60_000).unref();
+}
 
 server.listen(PRIMARY_PORT, '0.0.0.0', () => {
   logger.info(`Backend server running on primary port ${PRIMARY_PORT} in ${isProduction ? 'production' : 'development'} mode (HTTP + WS)`);
