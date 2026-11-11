@@ -43,6 +43,9 @@ export function Invoices({
   const [invoiceMailEnabled, setInvoiceMailEnabled] = useState(false);
   const [sendingInvoiceId, setSendingInvoiceId] = useState<string | null>(null);
   const [invoiceMailMessage, setInvoiceMailMessage] = useState<string | null>(null);
+  const [invoiceDeliveryAudit,setInvoiceDeliveryAudit] = useState<{
+    job_id:string;request_id:string;status:string;created_at:string;sent_at?:string|null;
+  }[] | null>(null);
   const [invoiceMailRequests, setInvoiceMailRequests] = useState<Record<string,string>>({});
   const currency = settings.currency || "USD";
 
@@ -62,6 +65,18 @@ export function Invoices({
       .catch(()=>setInvoiceMailEnabled(false));
   }, []);
 
+  const loadInvoiceAudit = async () => {
+    try {
+      const audit=await api.get<{items:{
+        job_id:string;request_id:string;status:string;created_at:string;sent_at?:string|null;
+      }[]}>("/invoices/email-deliveries");
+      setInvoiceDeliveryAudit(audit.items);
+    }catch {setInvoiceDeliveryAudit(null);}
+  };
+  useEffect(()=>{
+    if(invoiceMailEnabled)void loadInvoiceAudit();
+  },[invoiceMailEnabled]);
+
   const sendInvoiceLink = async (jobId: string) => {
     if (sendingInvoiceId) return;
     const requestId = invoiceMailRequests[jobId] || crypto.randomUUID();
@@ -77,6 +92,7 @@ export function Invoices({
       setInvoiceMailRequests(current=>{
         const next={...current};delete next[jobId];return next;
       });
+      await loadInvoiceAudit();
     }catch(error:any) {
       // Keep the same idempotency ID after an uncertain result. The server
       // will refuse a blind resend and require mailbox reconciliation.
@@ -138,6 +154,23 @@ export function Invoices({
         <p role="status" className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
           {invoiceMailMessage}
         </p>
+      )}
+
+      {invoiceMailEnabled && (
+        <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm">
+          <p className="font-bold text-slate-800">Invoice delivery evidence</p>
+          {invoiceDeliveryAudit === null ? (
+            <p className="mt-1 text-amber-700">
+              Delivery history unavailable. Do not assume an invoice email was sent.
+            </p>
+          ) : (
+            <p className="mt-1 text-slate-600">
+              Sent: {invoiceDeliveryAudit.filter(row=>row.status==="sent").length} ·
+              Needs manual review: {invoiceDeliveryAudit.filter(row=>row.status!=="sent").length}
+              {" "}(latest 50 requests)
+            </p>
+          )}
+        </div>
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
