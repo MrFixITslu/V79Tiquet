@@ -144,6 +144,7 @@ export interface Job {
   title: string;
   client: string; // Keeping for backward compatibility or display name
   clientId?: string; // Link to Client entity
+  clientEmail?: string; // Stored email for invoice/portal delivery
   description: string;
   status: JobStatus;
   createdAt: string;
