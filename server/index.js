@@ -3830,8 +3830,11 @@ app.post("/api/jobs/:id/scope", authenticateToken,
       "SELECT id,client,status FROM jobs WHERE id=? AND account_id=?"
     ).get(req.params.id,req.accountId);
     if(!job)return res.status(404).json({error:"Ticket not found"});
-    if(!["request","estimation","in-progress"].includes(job.status))
-      return res.status(409).json({error:"Scope revisions require an active service ticket"});
+    if(!["request","estimation","in-progress"].includes(job.status) ||
+       job.deliveryAcceptedAt)
+      return res.status(409).json({
+        error:"An accepted delivery cannot have its scope replaced; open a change request"
+      });
     const folder=getJobFolder(req.accountId,job.client,job.id);
     const archive=scopeArchiveRoot(req.accountId,job.id);
     const id=uuidv4();
@@ -3844,9 +3847,10 @@ app.post("/api/jobs/:id/scope", authenticateToken,
     try {
       const output=await db.transaction(async tx=>{
         const locked=await tx.prepare(
-          "SELECT id,status FROM jobs WHERE id=? AND account_id=? FOR UPDATE"
+          "SELECT id,status,deliveryAcceptedAt FROM jobs WHERE id=? AND account_id=? FOR UPDATE"
         ).get(job.id,req.accountId);
-        if(!locked||!["request","estimation","in-progress"].includes(locked.status))
+        if(!locked||locked.deliveryAcceptedAt ||
+           !["request","estimation","in-progress"].includes(locked.status))
           return {conflict:true};
         const last=await tx.prepare(`
           SELECT COALESCE(MAX(version),0) AS current_version
