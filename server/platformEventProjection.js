@@ -44,6 +44,10 @@ export function makeHubEventProjection(row, raw) {
       organizationRef:row.hub_organization_id,
       accountRef:row.account_id,
       subjectId:row.subject_id,
+      // Website event UUID connects the lead to its Tiquet request without
+      // copying the customer's name, email or free-text enquiry into Hub.
+      ...(UUID.test(String(row.correlation_id || "")) ?
+        { correlationId:row.correlation_id } : {}),
       payload,
     },
   };
