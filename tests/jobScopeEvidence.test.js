@@ -107,3 +107,25 @@ test("scope receipt to Hub cannot contain arbitrary filenames or customer detail
  assert.deepEqual(result.event.payload,{version:"2"});
  assert.equal(makeHubEventProjection(row,{version:"not-an-integer"}).ok,false);
 });
+
+test("ticket detail can publish PDF via existing file upload without inventing a second storage service",()=>{
+ const ui=readFileSync(new URL("../src/components/JobDetailModal.tsx",import.meta.url),"utf8");
+ for(const marker of [
+   "Versioned scope of work",
+   "Publish scope for customer",
+   "Awaiting client acknowledgement",
+   "New scope PDF (maximum 20 MB)",
+   'form.append("files",scopeSelected)',
+   "uploaded.files?.[0]?.filename",
+   "published.scope.version",
+   "job.deliveryAcceptedAt",
+ ])assert.ok(ui.includes(marker),"Missing scope UI marker: "+marker);
+});
+test("scope publisher checks persisted delivery acceptance before and after locking job",()=>{
+ const route=index.slice(index.indexOf('app.post("/api/jobs/:id/scope"'),
+   index.indexOf("// --- CLIENT PORTAL PUBLIC SECURE ROUTES ---"));
+ assert.match(route,/SELECT id,client,status,deliveryAcceptedAt FROM jobs/);
+ assert.match(route,/locked\.deliveryAcceptedAt/);
+ assert.match(route,/FOR UPDATE/);
+ assert.match(route,/snapshotExistingJobScope\(/);
+});
