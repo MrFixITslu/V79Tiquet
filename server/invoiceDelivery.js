@@ -24,3 +24,15 @@ export function invoiceCcForAccount(accountId,config=process.env) {
   if(!MAIL.test(cc))return {cc:null,required:true,error:"cc_not_configured"};
   return {cc,required:true};
 }
+
+/**
+ * Invoice email must not silently invalidate an existing working portal
+ * link. Rotate only when the prior credential is missing, expired or revoked.
+ */
+export function invoicePortalTokenDecision(job,nowMs=Date.now()) {
+  const token=job?.secureToken,expires=Date.parse(job?.secureTokenExpires||"");
+  if(typeof token==="string" && /^[A-Za-z0-9_-]{32,180}$/.test(token) &&
+     !job.secureTokenRevokedAt && Number.isFinite(expires) && expires>nowMs)
+    return {mode:"reuse",token};
+  return {mode:"rotate",token:null};
+}
