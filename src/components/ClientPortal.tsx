@@ -52,7 +52,7 @@ interface PortalData {
     outstandingAmount: number;
     fullyPaid: boolean;
   };
-  feedback?: { submitted: boolean };
+  feedback?: { enabled: boolean; submitted: boolean };
   billing?: {
     available: boolean;
     provider: string;
@@ -703,7 +703,7 @@ export function ClientPortal({ token }: { token: string }) {
         </div>
 
         {/* Customer feedback: visible only after review or completed delivery. */}
-        {["review","completed","paid"].includes(job.status) && (
+        {data.feedback?.enabled && ["review","completed","paid"].includes(job.status) && (
           <section className="rounded-2xl border border-slate-700 bg-slate-900/80 p-5 md:p-6">
             <h3 className="font-bold text-base text-white">How did we do?</h3>
             {data.feedback?.submitted ? (
