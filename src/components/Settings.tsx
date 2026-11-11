@@ -717,7 +717,68 @@ function IntegrationsSection({ workspaceId }: { workspaceId: string }) {
             </button>
           </div>
         </div>
+        <IntakeAcknowledgementStatus />
       </div>
     </div>
+  );
+}
+
+function IntakeAcknowledgementStatus() {
+  type Ack = {
+    job_id:string;status:string;created_at:string;
+    claimed_at?:string|null;sent_at?:string|null;error_code?:string|null;
+  };
+  const [result,setResult]=useState<{
+    enabled:boolean;smtpConfigured?:boolean;items:Ack[];
+  }|null>(null);
+  const [loading,setLoading]=useState(true);
+  const [error,setError]=useState(false);
+  const refresh=async()=>{
+    setLoading(true);setError(false);
+    try {
+      const response=await api.get<{enabled:boolean;smtpConfigured?:boolean;items:Ack[]}>(
+        "/intake/acknowledgements"
+      );
+      setResult(response);
+    }catch {setResult(null);setError(true);}
+    finally {setLoading(false);}
+  };
+  useEffect(()=>{void refresh();},[]);
+  const review=result?.items.filter(x=>x.status==="requires_review"||x.status==="sending")||[];
+  return (
+    <section className="mt-5 rounded-2xl border border-slate-200 bg-white p-5 space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h4 className="text-sm font-bold text-slate-900">Customer ticket acknowledgements</h4>
+        <button type="button" onClick={()=>void refresh()} disabled={loading}
+          className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:opacity-50">
+          {loading?"Checking…":"Refresh status"}
+        </button>
+      </div>
+      {error ? <p role="alert" className="text-sm text-rose-700">Delivery status unavailable — no success can be assumed.</p> :
+        !result ? <p className="text-sm text-slate-500">Checking delivery status…</p> :
+        !result.enabled ? <p className="text-sm text-slate-500">Acknowledgement automation is not enabled.</p> :
+        <>
+          <p className="text-xs text-slate-600">
+            SMTP: {result.smtpConfigured ? "configured" : "not configured"} ·
+            Pending: {result.items.filter(x=>x.status==="pending").length} ·
+            Sent: {result.items.filter(x=>x.status==="sent").length} ·
+            Requires review: {review.length}
+          </p>
+          {review.length>0 && (
+            <p role="alert" className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">
+              Some messages may have been delivered but not confirmed. Verify delivery externally before any manual resend.
+            </p>
+          )}
+          <div className="max-h-52 overflow-y-auto space-y-2">
+            {result.items.slice(0,12).map(item=>(
+              <div key={item.job_id} className="flex justify-between gap-3 border-b border-slate-100 py-2 text-xs">
+                <span className="font-mono text-slate-700">V79-{item.job_id.slice(0,8).toUpperCase()}</span>
+                <span className="text-slate-500">{item.status.replaceAll("_"," ")}</span>
+              </div>
+            ))}
+          </div>
+        </>
+      }
+    </section>
   );
 }
