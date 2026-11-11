@@ -18,6 +18,7 @@ import { WebSocketServer } from "ws";
 import db, { dbDir, seedDefaultTemplatesForAccount } from "./db.js";
 import { sendPortalLink, sendStatusUpdate, sendTemplated, renderEmailFromPlainTemplate, sendPasswordReset, sendUserInvite, transactionalSmtpReady } from "./email.js";
 import { createIntakeAcknowledgements } from "./intakeAcknowledgements.js";
+import { cancellationDecision, validTicketDate } from "./jobCancellation.js";
 import { registerOAuthRoutes } from "./oauth.js";
 import { v4 as uuidv4 } from "uuid";
 import jwt from "jsonwebtoken";
@@ -1438,6 +1439,7 @@ app.post("/api/jobs", authenticateToken, requireAnyPagePermission("jobs", "new-r
   try {
     const requestedStatus = String(status || "request").trim();
     if (!JOB_STATUSES.has(requestedStatus)) return badRequest(res, "Invalid job status");
+    if (!validTicketDate(dueDate)) return badRequest(res, "Due date must be a real YYYY-MM-DD date");
     if (requestedStatus === "paid") {
       return res.status(409).json({
         error: "A new job cannot start as paid. Record a payment after invoicing.",
@@ -1821,6 +1823,73 @@ app.post("/api/public/intake", intakeLimiter, requireIntakeSecret, async (req, r
     });
   }
 });
+// Cancellation is a closed, auditable service state, never a refund or
+// invoice void. Disabled until payment-order checks pass in staging.
+app.get("/api/jobs/cancellation-capability", authenticateToken,
+  requireAnyPagePermission("jobs"), (_req, res) => {
+    res.setHeader("Cache-Control","no-store");
+    res.json({ enabled: process.env.V79_ECOSYSTEM_V2_CANCEL_ENABLED === "1" });
+});
+
+app.post("/api/jobs/:id/cancel", authenticateToken,
+  requireAnyPagePermission("jobs"), async (req, res) => {
+    if (process.env.V79_ECOSYSTEM_V2_CANCEL_ENABLED !== "1")
+      return res.status(404).json({error:"Not available"});
+    const id=String(req.params.id || "").trim();
+    const reason=req.body?.reason;
+    if (!/^[a-f0-9-]{36}$/i.test(id) || typeof reason!=="string" ||
+        reason.trim().length<10 || reason.trim().length>500)
+      return res.status(400).json({error:"A valid ticket and cancellation reason are required"});
+    try {
+      const result=await db.transaction(async tx => {
+        const job=await tx.prepare(
+          "SELECT * FROM jobs WHERE id = ? AND account_id = ? FOR UPDATE"
+        ).get(id,req.accountId);
+        if(!job)return {status:404,error:"Ticket not found"};
+        const payments=await tx.prepare(`
+          SELECT COALESCE(SUM(amount), 0) AS total
+            FROM payments WHERE jobId = ? AND account_id = ? AND status='recorded'
+        `).get(id,req.accountId);
+        const decision=cancellationDecision(job,Number(payments?.total ?? NaN));
+        if(!decision.allowed)
+          return {status:409,error:"Ticket requires a finance review before cancellation"};
+        if(decision.alreadyCancelled)
+          return {status:200,alreadyCancelled:true,jobId:id};
+        let logs=[];
+        try {logs=job.timeLogs?JSON.parse(job.timeLogs):[];} catch {logs=[];}
+        const at=new Date().toISOString();
+        if(job.timerStartedAt)logs.push({
+          id:uuidv4(),employeeId:job.assignedTo||"unassigned",
+          startTime:job.timerStartedAt,endTime:at,status:job.status
+        });
+        await tx.prepare(`
+          UPDATE jobs SET status='cancelled',timerStartedAt=NULL,timeLogs=?,
+                 secureTokenRevokedAt=?
+           WHERE id = ? AND account_id = ?
+        `).run(JSON.stringify(logs),at,id,req.accountId);
+        await tx.prepare(`
+          INSERT INTO activity_logs
+            (id, job_id, action, timestamp, "user", account_id)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(uuidv4(),id,
+          "Customer cancellation accepted: "+reason.trim(),at,
+          req.user?.email||"Authorised staff",req.accountId);
+        return {status:200,jobId:id,cancelled:true,previousStatus:job.status,at};
+      })();
+      if(result.status!==200)return res.status(result.status).json({error:result.error});
+      if(result.cancelled) {
+        await safeQueuePlatformEvent({
+          accountId:req.accountId,type:"job.status_changed",subjectId:id,
+          occurredAt:result.at,
+          payload:{status:"cancelled",previousStatus:result.previousStatus}
+        });
+      }
+      return res.json({success:true,status:"cancelled",alreadyCancelled:!!result.alreadyCancelled,jobId:id});
+    } catch {
+      return res.status(503).json({error:"Cancellation outcome uncertain; refresh ticket before retrying"});
+    }
+  });
+
 app.put("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"), async (req, res) => {
   const {
     id
@@ -1852,6 +1921,10 @@ app.put("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"), as
     if (!existingJob) return res.status(404).json({
       error: "Job not found"
     });
+    if (existingJob.status === "cancelled")
+      return res.status(409).json({error:"Cancelled tickets are closed and cannot be changed"});
+    if (!validTicketDate(dueDate))
+      return badRequest(res, "Due date must be a real YYYY-MM-DD date");
     if (status !== undefined && !JOB_STATUSES.has(String(status))) {
       return badRequest(res, "Invalid job status");
     }
