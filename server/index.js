@@ -3827,7 +3827,7 @@ app.post("/api/jobs/:id/scope", authenticateToken,
     if(!validScopeUploadName(filename))
       return res.status(400).json({error:"Choose an uploaded PDF belonging to this ticket"});
     const job=await db.prepare(
-      "SELECT id,client,status FROM jobs WHERE id=? AND account_id=?"
+      "SELECT id,client,status,deliveryAcceptedAt FROM jobs WHERE id=? AND account_id=?"
     ).get(req.params.id,req.accountId);
     if(!job)return res.status(404).json({error:"Ticket not found"});
     if(!["request","estimation","in-progress"].includes(job.status) ||
