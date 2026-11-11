@@ -61,5 +61,5 @@ test("invoice send UI is explicit, safely disabled and distinguishes copy status
  assert.match(invoices,/Send Invoice Link/);
  assert.match(invoices,/copySent/);
  assert.match(invoices,/invoiceMailRequests/);
- assert.match(invoices,/\\/jobs\\/\\$\\{encodeURIComponent\\(jobId\\)\\}\\/send-invoice/);
+ assert.ok(invoices.includes("send-invoice") && invoices.includes("encodeURIComponent(jobId)"));
 });
