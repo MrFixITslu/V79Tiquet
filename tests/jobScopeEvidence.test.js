@@ -88,6 +88,8 @@ test("scope API is gated and document archive stored under immutable tenant/job 
  assert.match(schema,/UNIQUE \(account_id,job_id,version\)/);
  assert.match(schema,/UNIQUE \(account_id,job_id,version_id\)/);
  assert.match(index,/!latest\.accepted\)return \{status:409\}/);
+ assert.match(index,/locked\.deliveryAcceptedAt/);
+ assert.match(index,/open a change request/);
 });
 
 test("scope receipt to Hub cannot contain arbitrary filenames or customer details",()=>{
