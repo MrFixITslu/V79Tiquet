@@ -74,3 +74,11 @@ test("currency is strict ISO format",()=>{
   assert.equal(makeHubEventProjection({...row,event_type:"payment.recorded"},{currency}).ok,false);
  }
 });
+
+test("website lead correlation is opaque and only forwarded when a UUID",()=>{
+  const valid="44444444-4444-4444-8444-444444444444";
+  const good=makeHubEventProjection({...row,correlation_id:valid},{status:"request"});
+  assert.equal(good.event.correlationId,valid);
+  const rejected=makeHubEventProjection({...row,correlation_id:"jane@example.com"},{status:"request"});
+  assert.equal(Object.hasOwn(rejected.event,"correlationId"),false);
+});
