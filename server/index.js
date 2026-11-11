@@ -4043,17 +4043,23 @@ app.post("/api/portal/:token/accept-scope", portalActionLimiter, async (req,res)
           "Client acknowledged scope version "+scope.version+
           " (SHA-256 "+scope.sha256.slice(0,12)+")",at,
           "Client",job.account_id);
+        // Atomic outbox: the acknowledgement, its audit and its future Hub
+        // event MUST commit together, or all fail. Delivery is separately
+        // retried from the durable outbox; never replay the customer action.
+        await tx.prepare(`
+          INSERT INTO platform_event_outbox
+            (id,account_id,event_type,subject_id,correlation_id,
+             occurred_at,payload_json,status,attempts,next_attempt_at,created_at)
+          VALUES (?,?, 'job.scope_acknowledged', ?, NULL, ?,
+                  ?::text,'pending',0,?,?)
+        `).run(uuidv4(),job.account_id,job.id,at,
+          JSON.stringify({version:String(scope.version)}),at,at);
       }
       return {state:"accepted",alreadyAccepted:!written,
         version:Number(scope.version),at};
     })();
     if(result.state!=="accepted")
       return res.status(409).json({error:"Scope changed or portal access was revoked"});
-    if(!result.alreadyAccepted){
-      await safeQueuePlatformEvent({accountId:job.account_id,
-        type:"job.scope_acknowledged",subjectId:job.id,
-        occurredAt:result.at,payload:{version:String(result.version)}});
-    }
     return res.json({accepted:true,alreadyAccepted:result.alreadyAccepted,
       version:result.version});
   }catch{
