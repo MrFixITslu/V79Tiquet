@@ -149,6 +149,7 @@ export interface Job {
   status: JobStatus;
   createdAt: string;
   dueDate?: string;
+  deliveryAcceptedAt?: string | null; // Separate customer acceptance evidence
   amount?: number;
   priority: "low" | "medium" | "high";
   invoiceNotes?: string;
