@@ -15,6 +15,10 @@ function config() {
 }
 
 export function platformEventsConfigured() {
+  // Do not drain the durable outbox before the new, independently signed
+  // Hub receiver has passed staging. Inactive configuration never turns a
+  // Hub 404 into a permanent lost event.
+  if (process.env.V79_ECOSYSTEM_V2_EVENT_DELIVERY !== "1") return false;
   const { url, secret } = config();
   return Boolean(url && secret.length >= 32);
 }
