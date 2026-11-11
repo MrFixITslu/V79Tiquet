@@ -61,12 +61,12 @@ export function createIntakeAcknowledgements({
            WHERE j.id = ? AND j.account_id = ?
            ORDER BY s.id LIMIT 1
         `).get(claim.job_id,claim.account_id);
-        if (!job || !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(job.clientEmail || ""))
+        if (!job || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(job.clientEmail || ""))
           throw new Error("recipient_unavailable");
         const ticketRef="V79-"+String(job.id).slice(0,8).toUpperCase();
         const message=render(
           "We have received your enquiry — {{ticket_ref}}",
-          "Hello {{client_name}},\\n\\nThank you for contacting {{company_name}}. We have received your request and will contact you to confirm the details before any work begins.\\n\\nYour reference: {{ticket_ref}}\\n\\nPlease quote this reference when you contact our team. This acknowledgement does not mean work has been approved or a payment is due.\\n\\nRegards,\\n{{company_name}}",
+          "Hello {{client_name}},\n\nThank you for contacting {{company_name}}. We have received your request and will contact you to confirm the details before any work begins.\n\nYour reference: {{ticket_ref}}\n\nPlease quote this reference when you contact our team. This acknowledgement does not mean work has been approved or a payment is due.\n\nRegards,\n{{company_name}}",
           {
             client_name:job.client || "Customer",
             company_name:job.company_name || "V79 Digital",
