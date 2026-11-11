@@ -42,7 +42,7 @@ import { sendPaidEvent, sendPaymentEvent, generateEventId } from "./gatewayClien
 import { logger } from "./logger.js";
 import platformRoutes from "./platform.js";
 import { createTiquetBillingReturnToken, createTiquetInvoiceOrder, getTiquetBillingCapabilities, getTiquetOrderStatus, tiquetBillingConfigured, verifyTiquetBillingReturnToken } from "./billingClient.js";
-import { queuePlatformEvent, startPlatformEventPump } from "./platformEvents.js";
+import { queuePlatformEvent, startPlatformEventPump, platformEventsConfigured } from "./platformEvents.js";
 import { consumeHubLaunchTicket, hubPublicUrl } from "./hubAccess.js";
 import { provisionHubIdentity } from "./hubProvisioning.js";
 import { sanitizeString, sanitizeObject, isValidEmail, isValidUUID, isNonEmptyString, secureFilePath, validatePassword, badRequest } from "./security.js";
