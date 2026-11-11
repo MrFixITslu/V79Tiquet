@@ -21,6 +21,7 @@ import { createIntakeAcknowledgements } from "./intakeAcknowledgements.js";
 import { cancellationDecision, validTicketDate } from "./jobCancellation.js";
 import { invoiceDeliveryDecision, invoiceCcForAccount, invoicePortalTokenDecision } from "./invoiceDelivery.js";
 import { resolveJobFolder, resolveOwnedJobFile } from "./jobFileBoundary.js";
+import { validScopeUploadName, validateScopeAgreement, snapshotExistingJobScope, readScopeBuffer } from "./jobScopeEvidence.js";
 import { registerOAuthRoutes } from "./oauth.js";
 import { v4 as uuidv4 } from "uuid";
 import jwt from "jsonwebtoken";
@@ -3702,6 +3703,104 @@ app.delete("/api/jobs/:id/files/:filename", authenticateToken, requireAnyPagePer
     });
   }
 });
+
+// Versioned scope evidence belongs to Tiquet's existing job/file system;
+// it is not a separate document service or an e-signature certification.
+const scopeEnabled = () => process.env.V79_ECOSYSTEM_V2_SCOPE_ENABLED === "1";
+const scopeArchiveRoot = (accountId,jobId) =>
+  resolveJobFolder(UPLOADS_ROOT,"scope-v2",accountId,jobId);
+async function latestJobScope(accountId,jobId) {
+  return db.prepare(`
+    SELECT v.id,v.version,v.sha256,v.byte_count,v.original_filename,
+           v.published_at,v.published_by,
+           CASE WHEN a.id IS NULL THEN 0 ELSE 1 END AS accepted
+    FROM v79_job_scope_versions_v2 v
+    LEFT JOIN v79_job_scope_acceptances_v2 a
+      ON a.version_id=v.id AND a.account_id=v.account_id AND a.job_id=v.job_id
+    WHERE v.account_id=? AND v.job_id=?
+    ORDER BY v.version DESC LIMIT 1
+  `).get(accountId,jobId);
+}
+
+app.get("/api/jobs/:id/scope", authenticateToken,
+  requireAnyPagePermission("jobs","files"), async (req,res) => {
+    res.setHeader("Cache-Control","no-store");
+    if(!scopeEnabled())return res.status(404).json({error:"Not available"});
+    const job=await db.prepare("SELECT id FROM jobs WHERE id=? AND account_id=?")
+      .get(req.params.id,req.accountId);
+    if(!job)return res.status(404).json({error:"Ticket not found"});
+    const rows=await db.prepare(`
+      SELECT v.id,v.version,v.sha256,v.byte_count,v.original_filename,
+        v.published_at,CASE WHEN a.id IS NULL THEN 0 ELSE 1 END AS accepted
+      FROM v79_job_scope_versions_v2 v
+      LEFT JOIN v79_job_scope_acceptances_v2 a
+        ON a.version_id=v.id AND a.account_id=v.account_id AND a.job_id=v.job_id
+      WHERE v.account_id=? AND v.job_id=? ORDER BY v.version DESC LIMIT 30
+    `).all(req.accountId,job.id);
+    return res.json({scopeVersions:rows});
+  });
+
+app.post("/api/jobs/:id/scope", authenticateToken,
+  requireAnyPagePermission("jobs","files"), async (req,res) => {
+    if(!scopeEnabled())return res.status(404).json({error:"Not available"});
+    const filename=req.body?.filename;
+    if(!validScopeUploadName(filename))
+      return res.status(400).json({error:"Choose an uploaded PDF belonging to this ticket"});
+    const job=await db.prepare(
+      "SELECT id,client,status FROM jobs WHERE id=? AND account_id=?"
+    ).get(req.params.id,req.accountId);
+    if(!job)return res.status(404).json({error:"Ticket not found"});
+    if(!["request","estimation","in-progress"].includes(job.status))
+      return res.status(409).json({error:"Scope revisions require an active service ticket"});
+    const folder=getJobFolder(req.accountId,job.client,job.id);
+    const archive=scopeArchiveRoot(req.accountId,job.id);
+    const id=uuidv4();
+    let snapshot;
+    try {
+      snapshot=await snapshotExistingJobScope(folder,filename,archive,id);
+    }catch{
+      return res.status(400).json({error:"Uploaded PDF is missing or cannot be verified"});
+    }
+    try {
+      const output=await db.transaction(async tx=>{
+        const locked=await tx.prepare(
+          "SELECT id,status FROM jobs WHERE id=? AND account_id=? FOR UPDATE"
+        ).get(job.id,req.accountId);
+        if(!locked||!["request","estimation","in-progress"].includes(locked.status))
+          return {conflict:true};
+        const last=await tx.prepare(`
+          SELECT COALESCE(MAX(version),0) AS current_version
+          FROM v79_job_scope_versions_v2 WHERE account_id=? AND job_id=?
+        `).get(req.accountId,job.id);
+        const version=Number(last?.current_version||0)+1;
+        if(!Number.isSafeInteger(version)||version>1000000)
+          return {conflict:true};
+        const at=new Date().toISOString();
+        await tx.prepare(`
+          INSERT INTO v79_job_scope_versions_v2
+          (id,account_id,job_id,version,original_filename,sha256,byte_count,
+           published_at,published_by) VALUES (?,?,?,?,?,?,?,?,?)
+        `).run(id,req.accountId,job.id,version,filename,
+          snapshot.sha256,snapshot.bytes,at,req.user?.email||"Authorised staff");
+        await tx.prepare(`
+          INSERT INTO activity_logs (id,job_id,action,timestamp,"user",account_id)
+          VALUES (?,?,?,?,?,?)
+        `).run(uuidv4(),job.id,"Published scope PDF version "+version+
+          " (SHA-256 "+snapshot.sha256.slice(0,12)+")",at,
+          req.user?.email||"Authorised staff",req.accountId);
+        return {id,version,sha256:snapshot.sha256,bytes:snapshot.bytes};
+      })();
+      if(output.conflict){
+        await fs.promises.unlink(snapshot.storedPath).catch(()=>{});
+        return res.status(409).json({error:"Ticket status changed during scope publication"});
+      }
+      res.setHeader("Cache-Control","no-store");
+      return res.status(201).json({scope:output,requiresClientAcknowledgement:true});
+    }catch{
+      await fs.promises.unlink(snapshot.storedPath).catch(()=>{});
+      return res.status(503).json({error:"Scope publication could not be confirmed"});
+    }
+  });
 
 // --- CLIENT PORTAL PUBLIC SECURE ROUTES ---
 
