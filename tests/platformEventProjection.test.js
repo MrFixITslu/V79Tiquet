@@ -82,3 +82,12 @@ test("website lead correlation is opaque and only forwarded when a UUID",()=>{
   const rejected=makeHubEventProjection({...row,correlation_id:"jane@example.com"},{status:"request"});
   assert.equal(Object.hasOwn(rejected.event,"correlationId"),false);
 });
+
+test("event dispatch SQL qualifies fields when joined to accounts", async()=>{
+  const {readFileSync}=await import("node:fs");
+  const source=readFileSync(new URL("../server/platformEvents.js",import.meta.url),"utf8");
+  assert.match(source,/WHERE o\.status = 'pending'/);
+  assert.match(source,/o\.next_attempt_at/);
+  assert.match(source,/ORDER BY o\.created_at ASC/);
+  assert.doesNotMatch(source,/WHERE status = 'pending'/);
+});
