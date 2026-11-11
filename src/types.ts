@@ -5,7 +5,8 @@ export type JobStatus =
   | "review"
   | "invoiced"
   | "completed"
-  | "paid";
+  | "paid"
+  | "cancelled";
 
 export const COLUMNS: { id: JobStatus; label: string; color: string }[] = [
   {
