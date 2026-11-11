@@ -146,3 +146,14 @@ test("scope acknowledgement commits evidence, audit and outbound event atomicall
  assert.doesNotMatch(route,/safeQueuePlatformEvent/);
  assert.match(route,/if\(written\)\{/);
 });
+
+test("uncertain database commit preserves immutable scope snapshot for reconciliation",()=>{
+ const route=index.slice(index.indexOf('app.post("/api/jobs/:id/scope"'),
+   index.indexOf("// --- CLIENT PORTAL PUBLIC SECURE ROUTES ---"));
+ const p=route.indexOf('}catch{\n      // PostgreSQL may have committed');
+ assert.ok(p>0);
+ const tail=route.slice(p);
+ assert.doesNotMatch(tail,/unlink\(snapshot\.storedPath\)/);
+ assert.match(tail,/retained immutable evidence/);
+ assert.match(tail,/publication outcome uncertain/);
+});
