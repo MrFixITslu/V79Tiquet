@@ -413,3 +413,18 @@ CREATE TABLE IF NOT EXISTS v79_intake_ack_outbox (
 );
 CREATE INDEX IF NOT EXISTS idx_v79_intake_ack_status
     ON v79_intake_ack_outbox(status, created_at);
+
+
+-- Invoice notification idempotency. A 'sending' record following a crash is
+-- ambiguous and may NOT be automatically resent. The tenant owns all data.
+CREATE TABLE IF NOT EXISTS v79_invoice_mail_v2 (
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    job_id TEXT NOT NULL REFERENCES jobs(id),
+    request_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('sending','sent','requires_review')),
+    created_at TEXT NOT NULL,
+    sent_at TEXT,
+    PRIMARY KEY (account_id,job_id,request_id)
+);
+CREATE INDEX IF NOT EXISTS idx_v79_invoice_mail_review
+    ON v79_invoice_mail_v2(account_id,status,created_at);
