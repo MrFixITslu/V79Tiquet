@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
-import {invoiceDeliveryDecision,invoiceCcForAccount} from "../server/invoiceDelivery.js";
+import {invoiceDeliveryDecision,invoiceCcForAccount,invoicePortalTokenDecision} from "../server/invoiceDelivery.js";
 import {renderEmailFromPlainTemplate} from "../server/email.js";
 
 const job={status:"invoiced",clientEmail:"customer@example.com",amount:250,id:"11111111-1111-4111-8111-111111111111"};
@@ -62,4 +62,17 @@ test("invoice send UI is explicit, safely disabled and distinguishes copy status
  assert.match(invoices,/copySent/);
  assert.match(invoices,/invoiceMailRequests/);
  assert.ok(invoices.includes("send-invoice") && invoices.includes("encodeURIComponent(jobId)"));
+});
+
+test("invoice email never rotates an active customer portal token",()=>{
+ const at=Date.parse("2026-11-11T11:00:00Z");
+ const active={secureToken:"A".repeat(43),secureTokenExpires:"2026-11-15T00:00:00Z",secureTokenRevokedAt:null};
+ assert.deepEqual(invoicePortalTokenDecision(active,at),{mode:"reuse",token:"A".repeat(43)});
+ assert.deepEqual(invoicePortalTokenDecision({...active,secureTokenRevokedAt:"2026-11-10T00:00:00Z"},at),
+  {mode:"rotate",token:null});
+ assert.deepEqual(invoicePortalTokenDecision({...active,secureTokenExpires:"2026-11-09T00:00:00Z"},at),
+  {mode:"rotate",token:null});
+ const route=server.slice(server.indexOf('app.post("/api/jobs/:id/send-invoice"'),
+  server.indexOf('app.post("/api/jobs/:id/revoke-portal"'));
+ assert.ok(route.includes("invoicePortalTokenDecision(job)"));
 });
