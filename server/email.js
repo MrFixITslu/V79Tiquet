@@ -347,7 +347,7 @@ export async function sendInvoiceNotice(to, job, secureToken, { cc = null, compa
     const ticketRef = "V79-" + String(job.id).slice(0, 8).toUpperCase();
     const { subject, html } = renderEmailFromPlainTemplate(
         "Invoice available — {{ticket_ref}}",
-        "Hello {{client_name}},\\n\\nYour invoice is ready to review in your secure V79 Tiquet customer portal.\\n\\nReference: {{ticket_ref}}\\n\\nOpen your invoice: {{portal_url}}\\n\\nThis notice does not confirm a payment. Please contact us if the invoice details require correction.\\n\\nRegards,\\n{{company_name}}",
+        "Hello {{client_name}},\n\nYour invoice is ready to review in your secure V79 Tiquet customer portal.\n\nReference: {{ticket_ref}}\n\nOpen your invoice: {{portal_url}}\n\nThis notice does not confirm a payment. Please contact us if the invoice details require correction.\n\nRegards,\n{{company_name}}",
         {
           client_name: job.client || "Customer", ticket_ref: ticketRef,
           portal_url: portalUrl, company_name: companyName,
