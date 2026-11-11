@@ -1761,11 +1761,18 @@ app.post("/api/public/intake", intakeLimiter, requireIntakeSecret, async (req, r
     // can share a name, and the same person can spell theirs
     // differently between submissions.
     let existingClient = null;
-    if (email) {
-      existingClient = await db.prepare("SELECT id, notes, leadSource FROM clients WHERE LOWER(email) = LOWER(?) AND account_id = ?").get(email, accountId);
-    }
-    if (!existingClient && phone) {
-      existingClient = await db.prepare("SELECT id, notes, leadSource FROM clients WHERE phone = ? AND account_id = ?").get(phone, accountId);
+    // In v2, an unverified website form can NEVER merge customer profiles
+    // based on a shared business telephone, email alias or name. Repeated
+    // requests with the exact same signed intake event ID reuse the same
+    // stored job/client link above. Different enquiries require an explicit
+    // staff-reviewed customer association.
+    if (process.env.V79_ECOSYSTEM_V2_STRICT_INTAKE_IDENTITY !== "1") {
+      if (email) {
+        existingClient = await db.prepare("SELECT id, notes, leadSource FROM clients WHERE LOWER(email) = LOWER(?) AND account_id = ?").get(email, accountId);
+      }
+      if (!existingClient && phone) {
+        existingClient = await db.prepare("SELECT id, notes, leadSource FROM clients WHERE phone = ? AND account_id = ?").get(phone, accountId);
+      }
     }
     let clientId;
     let action;
