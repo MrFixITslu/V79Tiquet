@@ -52,6 +52,7 @@ interface PortalData {
     outstandingAmount: number;
     fullyPaid: boolean;
   };
+  feedback?: { submitted: boolean };
   billing?: {
     available: boolean;
     provider: string;
@@ -79,6 +80,11 @@ export function ClientPortal({ token }: { token: string }) {
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [successToast, setSuccessToast] = useState<string | null>(null);
   const [paymentError, setPaymentError] = useState<string | null>(null);
+  const [feedbackRating, setFeedbackRating] = useState(5);
+  const [feedbackComment, setFeedbackComment] = useState("");
+  const [feedbackContactAllowed, setFeedbackContactAllowed] = useState(false);
+  const [feedbackSending, setFeedbackSending] = useState(false);
+  const [feedbackError, setFeedbackError] = useState<string | null>(null);
   const paymentReturnHandled = useRef(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -293,6 +299,31 @@ export function ClientPortal({ token }: { token: string }) {
       </div>
     );
   }
+
+  const submitFeedback = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (feedbackSending || data?.feedback?.submitted) return;
+    setFeedbackSending(true);
+    setFeedbackError(null);
+    try {
+      const response = await fetch(`/api/portal/${token}/feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          rating: feedbackRating,
+          comment: feedbackComment,
+          contactAllowed: feedbackContactAllowed,
+        }),
+      });
+      if (!response.ok) throw new Error("We could not confirm your feedback. Please check and try again.");
+      setData(previous => previous ? { ...previous, feedback: { submitted: true } } : previous);
+      setSuccessToast("Thank you. Your feedback has been received.");
+    } catch (error: any) {
+      setFeedbackError(error.message || "Unable to confirm feedback.");
+    } finally {
+      setFeedbackSending(false);
+    }
+  };
 
   const { job, settings, payments } = data;
   const billingAvailable = Boolean(data.billing?.available);
@@ -670,6 +701,48 @@ export function ClientPortal({ token }: { token: string }) {
             </form>
           </div>
         </div>
+
+        {/* Customer feedback: visible only after review or completed delivery. */}
+        {["review","completed","paid"].includes(job.status) && (
+          <section className="rounded-2xl border border-slate-700 bg-slate-900/80 p-5 md:p-6">
+            <h3 className="font-bold text-base text-white">How did we do?</h3>
+            {data.feedback?.submitted ? (
+              <p className="text-sm text-emerald-300 mt-2">
+                Your feedback has been recorded. Thank you for helping us improve.
+              </p>
+            ) : (
+              <form className="space-y-4 mt-4" onSubmit={submitFeedback}>
+                <label className="block text-xs text-slate-300" htmlFor="feedback-rating">
+                  Your experience
+                </label>
+                <select id="feedback-rating" value={feedbackRating}
+                  onChange={e => setFeedbackRating(Number(e.target.value))}
+                  className="bg-slate-800 text-white rounded-lg border border-slate-600 px-3 py-2 text-sm w-full max-w-xs">
+                  {[5,4,3,2,1].map(n=>(
+                    <option key={n} value={n}>{n} of 5</option>
+                  ))}
+                </select>
+                <label className="block text-xs text-slate-300" htmlFor="feedback-comment">
+                  Anything we should know? (optional)
+                </label>
+                <textarea id="feedback-comment" value={feedbackComment} maxLength={1000}
+                  onChange={e=>setFeedbackComment(e.target.value)}
+                  className="w-full bg-slate-800 text-slate-100 rounded-lg border border-slate-600 p-3 text-sm"
+                  rows={3} placeholder="Share a suggestion or tell us what went well." />
+                <label className="flex gap-2 items-center text-xs text-slate-300">
+                  <input type="checkbox" checked={feedbackContactAllowed}
+                    onChange={e=>setFeedbackContactAllowed(e.target.checked)} />
+                  You may contact me about this feedback. This is not marketing consent.
+                </label>
+                {feedbackError && <p role="alert" className="text-rose-300 text-xs">{feedbackError}</p>}
+                <button type="submit" disabled={feedbackSending}
+                  className="bg-teal-600 hover:bg-teal-500 disabled:opacity-50 rounded-lg text-sm font-semibold px-5 py-2.5">
+                  {feedbackSending ? "Submitting…" : "Send feedback"}
+                </button>
+              </form>
+            )}
+          </section>
+        )}
 
         {/* Footer Contact Details */}
         <footer className="pt-8 border-t border-slate-800/80 text-center text-xs text-slate-500 space-y-2">
