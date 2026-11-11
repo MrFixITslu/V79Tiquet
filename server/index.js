@@ -3899,8 +3899,12 @@ app.post("/api/jobs/:id/scope", authenticateToken,
       res.setHeader("Cache-Control","no-store");
       return res.status(201).json({scope:output,requiresClientAcknowledgement:true});
     }catch{
-      await fs.promises.unlink(snapshot.storedPath).catch(()=>{});
-      return res.status(503).json({error:"Scope publication could not be confirmed"});
+      // PostgreSQL may have committed before the response was lost. Never
+      // delete the immutable PDF on an uncertain commit outcome: a valid
+      // scope-version row might already refer to its digest. Retain for
+      // operator reconciliation rather than destroy contractual evidence.
+      logger.warn("[V79 Scope] Publication outcome uncertain; retained immutable evidence for review");
+      return res.status(503).json({error:"Scope publication outcome uncertain; refresh ticket and review before retrying"});
     }
   });
 
