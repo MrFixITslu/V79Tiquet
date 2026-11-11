@@ -3782,22 +3782,34 @@ app.post("/api/portal/:token/accept-delivery", portalActionLimiter, async (req, 
     if(!job)return res.status(404).json({error:"Invalid or expired link"});
     if(!["review","invoiced","completed","paid"].includes(job.status))
       return res.status(409).json({error:"Delivery is not ready for acceptance"});
-    if(job.deliveryAcceptedAt)
-      return res.json({accepted:true,alreadyAccepted:true});
-    const at=new Date().toISOString();
-    const claim=await db.prepare(`
-      UPDATE jobs SET deliveryAcceptedAt=?
-       WHERE id=? AND account_id=? AND deliveryAcceptedAt IS NULL
-       RETURNING id
-    `).get(at,job.id,job.account_id);
-    if(claim){
-      await db.prepare(`
+    const commit=await db.transaction(async tx=>{
+      // Recheck token and status under a real PostgreSQL row lock:
+      // concurrent cancellation, revocation or expiry must fail closed.
+      const current=await tx.prepare(`
+        SELECT id,status,secureToken,secureTokenExpires,secureTokenRevokedAt,deliveryAcceptedAt
+          FROM jobs WHERE id=? AND account_id=? FOR UPDATE
+      `).get(job.id,job.account_id);
+      if(!current || current.secureToken!==req.params.token ||
+         current.secureTokenRevokedAt ||
+         Date.parse(current.secureTokenExpires||"")<=Date.now() ||
+         !["review","invoiced","completed","paid"].includes(current.status))
+        return {status:409};
+      if(current.deliveryAcceptedAt)return {status:200,already:true};
+      const at=new Date().toISOString();
+      await tx.prepare(`
+        UPDATE jobs SET deliveryAcceptedAt=?
+          WHERE id=? AND account_id=? AND deliveryAcceptedAt IS NULL
+      `).run(at,job.id,job.account_id);
+      await tx.prepare(`
         INSERT INTO activity_logs (id,job_id,action,timestamp,"user",account_id)
         VALUES (?,?,?,?,?,?)
       `).run(uuidv4(),job.id,"Customer confirmed delivery acceptance",
         at,"Client",job.account_id);
-    }
-    return res.json({accepted:true,alreadyAccepted:!claim});
+      return {status:200,already:false};
+    })();
+    if(commit.status!==200)
+      return res.status(409).json({error:"Delivery status or portal access changed; refresh the job"});
+    return res.json({accepted:true,alreadyAccepted:commit.already});
   }catch{
     return res.status(503).json({error:"Delivery acceptance uncertain; refresh before retrying"});
   }
