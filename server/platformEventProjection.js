@@ -9,6 +9,7 @@ const TYPE_FIELDS = Object.freeze({
   "customer.created": ["origin"],
   "payment.recorded": ["currency", "method", "provider"],
   "customer.feedback_submitted": ["rating", "contactAllowed"],
+  "job.scope_acknowledged": ["version"],
 });
 const SAFE = /^[A-Za-z0-9_ .:-]{1,64}$/;
 const ID = /^[A-Za-z0-9._:@-]{4,180}$/;
@@ -37,6 +38,9 @@ export function makeHubEventProjection(row, raw) {
       (!/^[1-5]$/.test(payload.rating || "") ||
        !["yes","no"].includes(payload.contactAllowed))) 
     return {ok:false,reason:"invalid_feedback_category"};
+  if (row.event_type === "job.scope_acknowledged" &&
+      !/^[1-9][0-9]{0,6}$/.test(payload.version || ""))
+    return {ok:false,reason:"invalid_scope_version"};
   if (payload.currency && !/^[A-Z]{3}$/.test(payload.currency))
     return {ok:false,reason:"invalid_currency"};
   return {
