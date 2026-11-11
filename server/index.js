@@ -1000,6 +1000,8 @@ const getJobMessages = async jobId => {
 
 const PORTAL_LINK_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const JOB_STATUSES = new Set(["request", "estimation", "in-progress", "review", "invoiced", "completed", "paid"]);
+const deliveryAcceptanceRequired = () =>
+  process.env.V79_ECOSYSTEM_V2_DELIVERY_ACCEPTANCE_REQUIRED === "1";
 
 
 function createPortalCredential() {
@@ -1145,7 +1147,10 @@ async function recordVerifiedWipayPayment(job, order) {
     }
   });
 
-  if (totalPaid + 0.005 >= jobValue && ["invoiced", "completed"].includes(job.status)) {
+  if (totalPaid + 0.005 >= jobValue &&
+        (!deliveryAcceptanceRequired() || Boolean(job.deliveryAcceptedAt)) &&
+        (deliveryAcceptanceRequired() ? job.status === "completed" :
+         ["invoiced", "completed"].includes(job.status))) {
     await updateJobStage(job.id, "paid", job.account_id, "WiPay via V79 Billing");
   }
 
@@ -1192,6 +1197,13 @@ const updateJobStage = async (id, newStatus, accountId, userName = "System") => 
   const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(id, accountId);
   if (!job) return null;
 
+  if (newStatus === "paid" && job.status !== "paid" &&
+      deliveryAcceptanceRequired() && !job.deliveryAcceptedAt) {
+    const err = new Error("Delivery acceptance must be recorded before Paid status");
+    err.statusCode = 409;
+    err.code = "DELIVERY_ACCEPTANCE_REQUIRED";
+    throw err;
+  }
   if (newStatus === "paid" && job.status !== "paid" && Number(job.amount || 0) > 0) {
     const paidAmount = await recordedPaymentTotal(id, accountId);
     if (paidAmount + 0.005 < Number(job.amount || 0)) {
@@ -1971,7 +1983,8 @@ app.put("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"), as
     // stays Completed until a payment is recorded from the Invoices screen.
     if (finalStatus === "completed" && Number(existingJob.amount || 0) > 0) {
       const paidAmount = await recordedPaymentTotal(id, req.accountId);
-      if (paidAmount + 0.005 >= Number(existingJob.amount || 0)) {
+      if (paidAmount + 0.005 >= Number(existingJob.amount || 0) &&
+          (!deliveryAcceptanceRequired() || Boolean(existingJob.deliveryAcceptedAt))) {
         finalStatus = "paid";
       }
     }
@@ -2449,7 +2462,10 @@ app.post("/api/payments", authenticateToken, requireAnyPagePermission("invoices"
       }
     });
 
-    if (totalPaid + 0.005 >= jobValue && ["invoiced", "completed"].includes(job.status)) {
+    if (totalPaid + 0.005 >= jobValue &&
+        (!deliveryAcceptanceRequired() || Boolean(job.deliveryAcceptedAt)) &&
+        (deliveryAcceptanceRequired() ? job.status === "completed" :
+         ["invoiced", "completed"].includes(job.status))) {
       await updateJobStage(job.id, "paid", req.accountId, req.user?.email || "Team");
     }
 
@@ -3741,6 +3757,9 @@ app.get("/api/portal/:token", async (req, res) => {
       "SELECT id FROM v79_job_feedback_v2 WHERE account_id = ? AND job_id = ?"
     ).get(job.account_id, job.id) : null;
     res.json({ job: populatedJob, settings, payments: summary, billing,
+      deliveryAcceptance: {
+        enabled:deliveryAcceptanceRequired(), accepted:Boolean(job.deliveryAcceptedAt),
+      },
       feedback: { enabled:feedbackEnabled,submitted:Boolean(previousFeedback) } });
   } catch (error) {
     res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
@@ -3749,6 +3768,38 @@ app.get("/api/portal/:token", async (req, res) => {
 
 // Feedback is customer-initiated and opt-in. Never auto-create a CRM
 // opportunity, reveal the free text to Hub, or close a job on submission.
+// Customer delivery acceptance is NOT the quote approval or payment event.
+app.post("/api/portal/:token/accept-delivery", portalActionLimiter, async (req, res) => {
+  if (!deliveryAcceptanceRequired())
+    return res.status(404).json({error:"Not available"});
+  if (req.body?.accept !== true)
+    return res.status(400).json({error:"Explicit acceptance is required"});
+  try {
+    const job=await getActivePortalJob(req.params.token);
+    if(!job)return res.status(404).json({error:"Invalid or expired link"});
+    if(!["review","invoiced","completed","paid"].includes(job.status))
+      return res.status(409).json({error:"Delivery is not ready for acceptance"});
+    if(job.deliveryAcceptedAt)
+      return res.json({accepted:true,alreadyAccepted:true});
+    const at=new Date().toISOString();
+    const claim=await db.prepare(`
+      UPDATE jobs SET deliveryAcceptedAt=?
+       WHERE id=? AND account_id=? AND deliveryAcceptedAt IS NULL
+       RETURNING id
+    `).get(at,job.id,job.account_id);
+    if(claim){
+      await db.prepare(`
+        INSERT INTO activity_logs (id,job_id,action,timestamp,"user",account_id)
+        VALUES (?,?,?,?,?,?)
+      `).run(uuidv4(),job.id,"Customer confirmed delivery acceptance",
+        at,"Client",job.account_id);
+    }
+    return res.json({accepted:true,alreadyAccepted:!claim});
+  }catch{
+    return res.status(503).json({error:"Delivery acceptance uncertain; refresh before retrying"});
+  }
+});
+
 app.post("/api/portal/:token/feedback", portalActionLimiter, async (req, res) => {
   if (process.env.V79_ECOSYSTEM_V2_FEEDBACK_ENABLED !== "1")
     return res.status(404).json({error:"Not available"});
