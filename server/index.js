@@ -3856,7 +3856,13 @@ app.get("/api/portal/:token", async (req, res) => {
     const previousFeedback = feedbackEnabled ? await db.prepare(
       "SELECT id FROM v79_job_feedback_v2 WHERE account_id = ? AND job_id = ?"
     ).get(job.account_id, job.id) : null;
+    const scope = scopeEnabled() ? await latestJobScope(job.account_id,job.id) : null;
     res.json({ job: populatedJob, settings, payments: summary, billing,
+      scopeEvidence: {
+        enabled:scopeEnabled(),
+        current:scope ? {version:Number(scope.version),sha256:scope.sha256,
+          filename:scope.original_filename,accepted:Boolean(scope.accepted)} : null,
+      },
       deliveryAcceptance: {
         enabled:deliveryAcceptanceRequired(), accepted:Boolean(job.deliveryAcceptedAt),
       },
@@ -3869,6 +3875,90 @@ app.get("/api/portal/:token", async (req, res) => {
 // Feedback is customer-initiated and opt-in. Never auto-create a CRM
 // opportunity, reveal the free text to Hub, or close a job on submission.
 // Customer delivery acceptance is NOT the quote approval or payment event.
+// This customer acknowledgement proves the latest scope PDF was offered
+// via a valid portal credential. It is not a certified e-signature.
+app.get("/api/portal/:token/scope-document", async (req,res) => {
+  res.setHeader("Cache-Control","no-store");
+  res.setHeader("X-Content-Type-Options","nosniff");
+  if(!scopeEnabled())return res.status(404).json({error:"Not available"});
+  try{
+    const job=await getActivePortalJob(req.params.token);
+    if(!job)return res.status(404).json({error:"Invalid or expired link"});
+    const scope=await latestJobScope(job.account_id,job.id);
+    if(!scope)return res.status(404).json({error:"No scope document has been published"});
+    const pdf=await readScopeBuffer(scopeArchiveRoot(job.account_id,job.id),
+      scope.id,scope.sha256);
+    res.setHeader("Content-Type","application/pdf");
+    res.setHeader("Content-Disposition",`inline; filename="V79-scope-v${Number(scope.version)}.pdf"`);
+    return res.status(200).send(pdf);
+  }catch{
+    return res.status(503).json({error:"Scope document integrity cannot be verified"});
+  }
+});
+
+app.post("/api/portal/:token/accept-scope", portalActionLimiter, async (req,res)=>{
+  res.setHeader("Cache-Control","no-store");
+  if(!scopeEnabled())return res.status(404).json({error:"Not available"});
+  if(!validateScopeAgreement(req.body))
+    return res.status(400).json({error:"Read the published scope and confirm its exact version"});
+  try {
+    const job=await getActivePortalJob(req.params.token);
+    if(!job)return res.status(404).json({error:"Invalid or expired link"});
+    const result=await db.transaction(async tx=>{
+      const current=await tx.prepare(`
+        SELECT id,account_id,status,secureToken,secureTokenExpires,
+               secureTokenRevokedAt FROM jobs
+        WHERE id=? AND account_id=? FOR UPDATE
+      `).get(job.id,job.account_id);
+      if(!current || current.secureToken!==req.params.token ||
+         current.secureTokenRevokedAt ||
+         !Number.isFinite(Date.parse(current.secureTokenExpires||"")) ||
+         Date.parse(current.secureTokenExpires)<=Date.now() ||
+         !["request","estimation","in-progress","review","invoiced","completed"].includes(current.status))
+        return {state:"forbidden"};
+      const scope=await tx.prepare(`
+        SELECT id,version,sha256 FROM v79_job_scope_versions_v2
+        WHERE account_id=? AND job_id=? ORDER BY version DESC LIMIT 1
+        FOR UPDATE
+      `).get(job.account_id,job.id);
+      if(!scope || Number(scope.version)!==req.body.version ||
+         scope.sha256!==req.body.sha256) return {state:"stale"};
+      // A missing or replaced archive cannot be acknowledged as valid.
+      await readScopeBuffer(scopeArchiveRoot(job.account_id,job.id),scope.id,scope.sha256);
+      const at=new Date().toISOString();
+      const written=await tx.prepare(`
+        INSERT INTO v79_job_scope_acceptances_v2
+        (id,account_id,job_id,version_id,sha256,accepted_at,portal_token_fingerprint,method)
+        VALUES (?,?,?,?,?,?,?,'portal_acknowledgement')
+        ON CONFLICT (version_id) DO NOTHING RETURNING id
+      `).get(uuidv4(),job.account_id,job.id,scope.id,scope.sha256,
+        at,tokenFingerprint(req.params.token));
+      if(written){
+        await tx.prepare(`
+          INSERT INTO activity_logs (id,job_id,action,timestamp,"user",account_id)
+          VALUES (?,?,?,?,?,?)
+        `).run(uuidv4(),job.id,
+          "Client acknowledged scope version "+scope.version+
+          " (SHA-256 "+scope.sha256.slice(0,12)+")",at,
+          "Client",job.account_id);
+      }
+      return {state:"accepted",alreadyAccepted:!written,
+        version:Number(scope.version),at};
+    })();
+    if(result.state!=="accepted")
+      return res.status(409).json({error:"Scope changed or portal access was revoked"});
+    if(!result.alreadyAccepted){
+      await safeQueuePlatformEvent({accountId:job.account_id,
+        type:"job.scope_acknowledged",subjectId:job.id,
+        occurredAt:result.at,payload:{version:String(result.version)}});
+    }
+    return res.json({accepted:true,alreadyAccepted:result.alreadyAccepted,
+      version:result.version});
+  }catch{
+    return res.status(503).json({error:"Scope acknowledgement uncertain; refresh before retrying"});
+  }
+});
+
 app.post("/api/portal/:token/accept-delivery", portalActionLimiter, async (req, res) => {
   if (!deliveryAcceptanceRequired())
     return res.status(404).json({error:"Not available"});
