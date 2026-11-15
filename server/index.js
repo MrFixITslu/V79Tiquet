@@ -40,6 +40,12 @@ import multer from "multer";
 import { registerStripeRoutes } from "./stripe.js";
 import { registerHealthCheck } from "./healthcheck.js";
 import { sendPaidEvent, sendPaymentEvent, generateEventId } from "./gatewayClient.js";
+import {queueTiquetPlanningApproval} from "./tiquetPlanningOutbox.js";
+import {sweepTiquetPlanning} from "./tiquetPlanningSweep.js";
+import {queueTiquetPlanningClosure,sweepTiquetPlanningClosure} from "./tiquetPlanningClosure.js";
+import {proxyPlanningFiles,PlanningFileProxyError} from "./tiquetPlanningFilesProxy.js";
+import {depositTerms,setReviewDepositPolicy,DepositPolicyError} from "./tiquetDepositPolicy.js";
+import {safeCallbackSecret,parsePlanningCallback,applyTiquetReviewCallback,ReviewCallbackError} from "./tiquetReviewCallback.js";
 import { logger } from "./logger.js";
 import platformRoutes from "./platform.js";
 import { createTiquetBillingReturnToken, createTiquetInvoiceOrder, getTiquetBillingCapabilities, getTiquetOrderStatus, tiquetBillingConfigured, verifyTiquetBillingReturnToken } from "./billingClient.js";
@@ -599,6 +605,30 @@ app.use(SENTINEL_PATH, createSentinelIngestRouter({
   authorizeApprover:sentinelNocApproverChecker
 }));
 app.use("/api/platform", platformRoutes);
+
+// FFPRO planning-ready callback: an authenticated and tenant-bound transition.
+app.post("/api/gateway/ffpro/planning/ready", async (req, res) => {
+  if (!safeCallbackSecret(req.get("X-FFPRO-Planning-Secret"),
+      process.env.FFPRO_PLANNING_CALLBACK_SECRET))
+    return res.status(401).json({error:"Unauthorised planning callback"});
+  try {
+    const event = parsePlanningCallback(req.body);
+    const result = await applyTiquetReviewCallback({
+      db, event,
+      afterCommit: ({accountId,jobId,title,occurredAt}) => safeQueuePlatformEvent({
+        accountId, type:"job.status_changed", subjectId:jobId,
+        occurredAt, payload:{title,previousStatus:"in-progress",status:"review"}
+      })
+    });
+    return res.status(200).json(result);
+  } catch(error) {
+    if(error instanceof ReviewCallbackError)
+      return res.status(error.status).json({error:error.code});
+    logger.error("[Tiquet Planning] Review callback failed:", error?.code || error?.name || "unknown");
+    return res.status(503).json({error:"Planning callback unavailable"});
+  }
+});
+
 app.use(HUB_HELP_PATH, createHubHelpRouter({db}));
 
 // --- AUTHENTICATION ROUTES ---
@@ -1104,8 +1134,9 @@ async function recordVerifiedWipayPayment(job, order) {
   );
 
   const totalPaid = alreadyPaid + amount;
-  const depositThreshold = jobValue * 0.3;
-  if (totalPaid + 0.005 >= depositThreshold && !job.depositPaid) {
+      const terms = depositTerms(job);
+    const depositThreshold = terms.amount;
+  if (depositThreshold > 0 && totalPaid + 0.005 >= depositThreshold && !job.depositPaid) {
     await db.prepare("UPDATE jobs SET depositPaid = 1 WHERE id = ? AND account_id = ?").run(job.id, job.account_id);
   }
 
@@ -1201,6 +1232,14 @@ const updateJobStage = async (id, newStatus, accountId, userName = "System") => 
     }
   }
 
+  if (newStatus === "invoiced" && job.status === "review" &&
+      job.depositPolicy === "review_pending") {
+    const err = new Error("Choose a 20% deposit or waive it before invoicing.");
+    err.code = "DEPOSIT_POLICY_PENDING";
+    err.statusCode = 409;
+    throw err;
+  }
+
   let timeLogs = job.timeLogs ? JSON.parse(job.timeLogs) : [];
   const now = new Date().toISOString();
 
@@ -1230,6 +1269,24 @@ const updateJobStage = async (id, newStatus, accountId, userName = "System") => 
   const timerStartedAt = isFinished ? null : now;
 
   // 4. Update DB
+  if (newStatus === "invoiced" && job.status === "review") {
+    // Stage and durable closure event commit atomically, without fake payment.
+    await db.transaction(async (tx) => {
+      const update = await tx.prepare(`
+        UPDATE jobs SET status = ?, timeLogs = ?, timerStartedAt = ?, assignedTo = ?
+        WHERE id = ? AND account_id = ? AND status = ?
+      `).run(newStatus, JSON.stringify(timeLogs), timerStartedAt,
+        assignedTo, id, accountId, "review");
+      if (update.changes !== 1) {
+        const err = new Error("Ticket stage changed; refresh before invoicing.");
+        err.statusCode = 409;
+        throw err;
+      }
+      await queueTiquetPlanningClosure(tx,{
+        jobId:id,accountId,invoicedAt:now
+      });
+    })();
+  } else {
   await db.prepare(`
         UPDATE jobs SET 
             status = ?, 
@@ -1238,6 +1295,7 @@ const updateJobStage = async (id, newStatus, accountId, userName = "System") => 
             assignedTo = ?
         WHERE id = ? AND account_id = ?
     `).run(newStatus, JSON.stringify(timeLogs), timerStartedAt, assignedTo, id, accountId);
+  }
 
   // FFPRO cash sync is payment-ledger driven. A job status transition must
   // never manufacture revenue on its own.
@@ -1342,6 +1400,30 @@ async function triggerFfproPaymentSync(paymentId, accountId) {
 // the inline retries in gatewayClient.js (e.g. FFPRO2 was down for longer
 // than those cover). Mirrors the existing wsHeartbeat setInterval pattern
 // elsewhere in this file rather than introducing a queue/worker system.
+// Independent, tenant-checked planning outbox. It remains inert until
+// separately configured with the FFPRO planning URL and 32+ byte secret.
+setInterval(async () => {
+  try {
+    await sweepTiquetPlanning({
+      db,
+      baseUrl: process.env.FFPRO_PLANNING_GATEWAY_URL,
+      secret: process.env.FFPRO_PLANNING_GATEWAY_SECRET
+    });
+  } catch (error) {
+    logger.warn("[Tiquet Planning] Delivery sweep failed: " + (error?.code || error?.name || "unknown"));
+  }
+}, 60 * 1000);
+
+setInterval(() => {
+  sweepTiquetPlanningClosure({
+    db,
+    baseUrl:process.env.FFPRO_PLANNING_GATEWAY_URL,
+    secret:process.env.FFPRO_PLANNING_GATEWAY_SECRET
+  }).catch(error => logger.warn("[Tiquet Planning] Close sweep failed", {
+    code:error?.code||error?.name||"unknown"
+  }));
+}, 60 * 1000).unref();
+
 const FFPRO_SWEEP_INTERVAL_MS = 5 * 60 * 1000; // every 5 minutes
 setInterval(async () => {
   try {
@@ -2455,6 +2537,49 @@ app.get("/api/payments/summary", authenticateToken, requireAnyPagePermission("da
   }
 });
 
+// Authorised reviewer sets the deposit terms for a linked FFPRO plan.
+// Staff invoice queue includes only approved, linked FFPRO planning projects.
+// Unrelated legacy jobs must not be offered the new deposit policy.
+app.get("/api/planning/review-deposits",
+  authenticateToken, requireAnyPagePermission("invoices"), async (req,res) => {
+  try {
+    const result=await db.query(
+      'SELECT j.id,j.title,j.client,j.amount,j.depositPolicy AS "depositPolicy" '+
+      'FROM jobs j JOIN tiquet_planning_outbox o ON '+
+      'o.job_id=j.id AND o.account_id=j.account_id '+
+      'WHERE j.account_id=$1 AND j.status=$2 AND '+
+      "o.status='sent' AND o.project_id IS NOT NULL ORDER BY j.createdAt DESC LIMIT 150",
+      [req.accountId,'review']
+    );
+    return res.json(result.rows);
+  } catch(error) {
+    logger.warn("[Tiquet Deposit] Cannot load Review queue", {
+      code:error?.code||error?.name||"unknown"
+    });
+    return res.status(503).json({error:"Review queue temporarily unavailable"});
+  }
+});
+
+app.post("/api/jobs/:id/review-deposit-policy",
+  authenticateToken, requireAnyPagePermission("invoices"), async (req, res) => {
+  try {
+    const result = await setReviewDepositPolicy({
+      db, accountId:req.accountId, jobId:req.params.id,
+      policy:req.body?.policy, actor:req.user?.email || req.user?.id
+    });
+    const job = await db.prepare("SELECT amount,depositPolicy FROM jobs WHERE id=? AND account_id=?")
+      .get(req.params.id,req.accountId);
+    return res.json({success:true,...result,terms:depositTerms(job)});
+  } catch(error) {
+    if(error instanceof DepositPolicyError)
+      return res.status(error.status).json({error:error.code,code:error.code});
+    logger.error("[Tiquet Deposit] Review selection failed",{
+      code:error?.code||error?.name||"unknown"
+    });
+    return res.status(503).json({error:"Deposit terms temporarily unavailable."});
+  }
+});
+
 app.post("/api/payments", authenticateToken, requireAnyPagePermission("invoices"), async (req, res) => {
   const body = sanitizeObject(req.body || {});
   const jobId = String(body.jobId || "").trim();
@@ -2521,8 +2646,9 @@ app.post("/api/payments", authenticateToken, requireAnyPagePermission("invoices"
     );
 
     const totalPaid = alreadyPaid + amount;
-    const depositThreshold = jobValue * 0.3;
-    if (totalPaid + 0.005 >= depositThreshold && !job.depositPaid) {
+        const terms = depositTerms(job);
+    const depositThreshold = terms.amount;
+    if (depositThreshold > 0 && totalPaid + 0.005 >= depositThreshold && !job.depositPaid) {
       await db.prepare("UPDATE jobs SET depositPaid = 1 WHERE id = ? AND account_id = ?")
         .run(job.id, req.accountId);
     }
@@ -3817,6 +3943,42 @@ function isHubHelpPortalJob(job) {
   return typeof job?.intakeEventId === "string" && /^hub-help:[a-f0-9]{64}$/.test(job.intakeEventId);
 }
 
+// Only holders of a valid, unexpired Tiquet client portal link may access
+// the FFPRO-approved subset. Project and organisation IDs come from SQL,
+// never from the client's URL or query string.
+async function sendApprovedPlanningFiles(req,res,fileId=null) {
+  res.setHeader("Cache-Control","private, no-store");
+  res.setHeader("Referrer-Policy","no-referrer");
+  res.setHeader("X-Content-Type-Options","nosniff");
+  res.setHeader("Content-Security-Policy","sandbox; default-src 'none'; frame-ancestors 'none'");
+  try {
+    const job=await getActivePortalJob(req.params.token);
+    if(!job||isHubHelpPortalJob(job))
+      return res.status(404).json({error:"Shared documents not found"});
+    const result=await proxyPlanningFiles({
+      db,job,fileId,
+      baseUrl:process.env.FFPRO_PLANNING_GATEWAY_URL,
+      secret:process.env.FFPRO_PLANNING_GATEWAY_SECRET
+    });
+    if(result.kind==="list")return res.json({files:result.files});
+    const name=result.fileName.replace(/[^A-Za-z0-9._ -]/g,"_").slice(0,120);
+    res.setHeader("Content-Type","application/octet-stream");
+    res.setHeader("Content-Disposition",'attachment; filename="'+name+'"');
+    res.setHeader("Content-Length",String(result.data.length));
+    return res.end(result.data);
+  }catch(error) {
+    if(error instanceof PlanningFileProxyError)
+      return res.status(error.status).json({error:"Shared document unavailable"});
+    logger.warn("[Tiquet Portal] Planning-file gateway error",{
+      code:error?.code||error?.name||"unknown"
+    });
+    return res.status(503).json({error:"Shared documents temporarily unavailable"});
+  }
+}
+app.get("/api/portal/:token/planning/files",(req,res)=>sendApprovedPlanningFiles(req,res));
+app.get("/api/portal/:token/planning/files/:fileId",
+  (req,res)=>sendApprovedPlanningFiles(req,res,req.params.fileId));
+
 app.get("/api/portal/:token", async (req, res) => {
   try {
     const job = await getActivePortalJob(req.params.token);
@@ -3901,8 +4063,22 @@ app.post("/api/portal/:token/approve-quote", portalActionLimiter, async (req, re
       if (job.status === "request" || job.status === "estimation") {
         await updateJobStage(job.id, "in-progress", job.account_id, "Client Portal");
       }
-      await db.prepare("UPDATE jobs SET quoteApproved = 1 WHERE id = ? AND account_id = ?")
-        .run(job.id, job.account_id);
+      // Approval and durable planning event are committed together. The
+      // FFPRO project may be created later by the retry worker.
+      await db.transaction(async (tx) => {
+        const planningConfigured = Boolean(
+          process.env.FFPRO_PLANNING_GATEWAY_URL &&
+          String(process.env.FFPRO_PLANNING_GATEWAY_SECRET || "").length >= 32
+        );
+        await tx.prepare(
+          "UPDATE jobs SET quoteApproved = 1, depositPolicy = CASE " +
+          "WHEN ? = 1 THEN COALESCE(depositPolicy,'review_pending') ELSE depositPolicy END " +
+          "WHERE id = ? AND account_id = ?"
+        ).run(planningConfigured ? 1 : 0, job.id, job.account_id);
+        await queueTiquetPlanningApproval(tx, {
+          jobId: job.id, accountId: job.account_id, approvedAt: new Date().toISOString()
+        });
+      })();
       await db.prepare(
         "INSERT INTO activity_logs (id, job_id, action, timestamp, user, account_id) VALUES (?, ?, ?, ?, ?, ?)"
       ).run(uuidv4(), job.id, "Quote approved by client", new Date().toISOString(), "Client", job.account_id);
@@ -3938,7 +4114,16 @@ async function startPortalWipayCheckout(req, res, paymentKind) {
 
     let amount = summary.outstandingAmount;
     if (paymentKind === "deposit") {
-      const depositTarget = Math.round(Math.max(0, Number(job.amount || 0)) * 0.3 * 100) / 100;
+      const terms = depositTerms(job);
+      if (terms.pending) return res.status(409).json({
+        error: "Deposit terms must be selected in Review.",
+        code: "DEPOSIT_POLICY_PENDING"
+      });
+      if (terms.waived) return res.status(409).json({
+        error: "The reviewer waived the deposit requirement.",
+        code: "DEPOSIT_WAIVED"
+      });
+      const depositTarget = terms.amount;
       amount = Math.max(0, Math.min(summary.outstandingAmount, depositTarget - summary.paidAmount));
       if (amount <= 0.005) return res.status(409).json({ error: "The required deposit is already recorded.", code: "DEPOSIT_ALREADY_PAID" });
     }

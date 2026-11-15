@@ -87,6 +87,62 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS idx_jobs_account ON jobs(account_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_ffpro_sync_status ON jobs(ffproSyncStatus) WHERE ffproSyncStatus = 'pending';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_intake_event ON jobs(intakeEventId) WHERE intakeEventId IS NOT NULL;
+
+-- Legacy jobs retain their existing 30% deposit until a reviewer selects an
+-- explicit new policy for an FFPRO-linked service project.
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS depositPolicy TEXT;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='jobs_deposit_policy_valid') THEN
+    ALTER TABLE jobs ADD CONSTRAINT jobs_deposit_policy_valid
+      CHECK (depositPolicy IS NULL OR depositPolicy IN
+        ('review_pending','twenty_percent','waived'));
+  END IF;
+END $$;
+
+
+-- Durable Tiquet -> FFPRO planning delivery; no effect on the payment ledger.
+CREATE TABLE IF NOT EXISTS tiquet_planning_outbox (
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  event_id TEXT NOT NULL UNIQUE,
+  approved_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TIMESTAMPTZ,
+  lease_until TIMESTAMPTZ,
+  project_id TEXT,
+  delivered_at TIMESTAMPTZ,
+  last_error TEXT,
+  PRIMARY KEY(account_id,job_id),
+  CONSTRAINT chk_tiquet_planning_status CHECK
+    (status IN ('pending','sending','retry','sent','permanent'))
+);
+CREATE INDEX IF NOT EXISTS idx_tiquet_plan_delivery
+ ON tiquet_planning_outbox(status,next_attempt_at);
+
+-- Durable close request; created atomically on Review -> Invoiced.
+CREATE TABLE IF NOT EXISTS tiquet_planning_closure_outbox (
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  event_id TEXT NOT NULL UNIQUE,
+  project_id TEXT NOT NULL,
+  invoiced_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TIMESTAMPTZ,
+  lease_until TIMESTAMPTZ,
+  delivered_at TIMESTAMPTZ,
+  last_error TEXT,
+  PRIMARY KEY(account_id,job_id),
+  CONSTRAINT chk_tiquet_close_status CHECK
+    (status IN ('pending','sending','retry','sent','permanent'))
+);
+CREATE INDEX IF NOT EXISTS idx_tiquet_close_delivery
+ ON tiquet_planning_closure_outbox(status,next_attempt_at);
+
+
+
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS clientId TEXT;
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS secureTokenExpires TEXT;
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS secureTokenRevokedAt TEXT;

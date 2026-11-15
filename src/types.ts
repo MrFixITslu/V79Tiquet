@@ -150,6 +150,7 @@ export interface Job {
   amount?: number;
   priority: "low" | "medium" | "high";
   invoiceNotes?: string;
+  depositPolicy?:'review_pending'|'twenty_percent'|'waived'|null;
   assignedTo?: string;
   tags?: string[];
   activityLog?: ActivityLogEntry[];

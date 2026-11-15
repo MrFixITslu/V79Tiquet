@@ -1,4 +1,5 @@
 import PDFDocument from "pdfkit";
+import {depositTerms} from "./tiquetDepositPolicy.js";
 
 export function invoiceReference(jobId) {
   return "INV-" + String(jobId || "").slice(0, 8).toUpperCase();
@@ -14,6 +15,9 @@ export function validateInvoice(job, recipient, requireRecipient = true) {
   }
   if (!Number.isFinite(Number(job.amount)) || Number(job.amount) <= 0) {
     return "Set a positive invoice value before sending.";
+  }
+  if (depositTerms(job).pending) {
+    return "Select the 20% deposit or waiver before issuing this invoice.";
   }
   if (requireRecipient && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(recipient || ""))) {
     return "Add a valid customer email address to the job or linked client.";
@@ -53,6 +57,15 @@ export async function renderInvoicePdf({ job, client, settings, issuedAt, paidAm
   doc.moveTo(48, doc.y).lineTo(547, doc.y).strokeColor("#cbd5e1").stroke();
   doc.moveDown(0.8);
   doc.fontSize(11).fillColor("#0f172a").text("Invoice total", 48, doc.y, { continued: true }).text(amount, { align: "right" });
+  const terms = depositTerms(job);
+  if (terms.policy === "twenty_percent") {
+    const deposit = new Intl.NumberFormat("en-GB",
+      {style:"currency",currency}).format(terms.amount);
+    doc.moveDown(0.5).fontSize(9).text("Agreed deposit: 20% (" + deposit + ")");
+  } else if (terms.waived) {
+    doc.moveDown(0.5).fontSize(9).text(
+      "Deposit requirement waived; invoice balance remains payable.");
+  }
   const confirmedPayments = Math.max(0, Number(paidAmount) || 0);
   if (confirmedPayments > 0) {
     const fmt = value => new Intl.NumberFormat("en-GB", { style: "currency", currency }).format(value);

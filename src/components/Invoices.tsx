@@ -15,6 +15,11 @@ import { JobDetailModal } from "./JobDetailModal";
 import { api } from "../api";
 import { formatMoney } from "../currency";
 
+type PlanningDepositReview={
+  id:string;title:string;client:string;amount:number;
+  depositPolicy:'review_pending'|'twenty_percent'|'waived'|null;
+};
+
 type PaymentResponse = {
   payment: PaymentRecord;
   job: Job;
@@ -39,6 +44,32 @@ export function Invoices({
   const [payments, setPayments] = useState<PaymentRecord[]>([]);
   const [paymentJob, setPaymentJob] = useState<Job | null>(null);
   const [paymentError, setPaymentError] = useState<string | null>(null);
+  const [reviewDeposits,setReviewDeposits]=useState<PlanningDepositReview[]>([]);
+  const [reviewError,setReviewError]=useState<string|null>(null);
+  const [savingReviewId,setSavingReviewId]=useState<string|null>(null);
+  const loadReviewDeposits=async()=>{
+    try {
+      setReviewDeposits(await api.get<PlanningDepositReview[]>("/planning/review-deposits"));
+      setReviewError(null);
+    }catch(error){
+      setReviewError(error instanceof Error?error.message:"Could not load deposit reviews.");
+    }
+  };
+  const saveReviewDeposit=async(job:PlanningDepositReview,
+    policy:'twenty_percent'|'waived')=>{
+    if(savingReviewId)return;
+    if(policy==='waived' && !window.confirm(
+      'Waive the initial deposit for '+job.client+'? The invoice balance will remain payable.'
+    ))return;
+    setSavingReviewId(job.id);setReviewError(null);
+    try{
+      await api.post('/jobs/'+encodeURIComponent(job.id)+'/review-deposit-policy',{policy});
+      await loadReviewDeposits();
+      setJobs(current=>current.map(j=>j.id===job.id?{...j,depositPolicy:policy}:j));
+    }catch(error){
+      setReviewError(error instanceof Error?error.message:"Could not save deposit choice.");
+    }finally{setSavingReviewId(null)}
+  };
   const currency = settings.currency || "USD";
 
   const loadPayments = async () => {
@@ -52,6 +83,7 @@ export function Invoices({
 
   useEffect(() => {
     loadPayments();
+    loadReviewDeposits();
   }, []);
 
   const paidByJob = useMemo(() => {
@@ -97,6 +129,41 @@ export function Invoices({
           Invoice status and cash received are tracked separately. A job can only become Paid after recorded payments cover its value.
         </p>
       </div>
+
+      {/* Only linked FFPRO service jobs in Review appear here. */}
+      {reviewDeposits.length > 0 && (
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm" aria-label="Review deposit terms">
+          <h3 className="text-base font-semibold text-slate-900">Review deposit decisions</h3>
+          <p className="mt-1 text-sm text-slate-500">Choose a 20% deposit or waive it before these jobs are invoiced. A waiver never records a payment.</p>
+          <div className="mt-4 divide-y divide-slate-100">
+            {reviewDeposits.map(job=>(
+              <div key={job.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
+                <div>
+                  <p className="text-sm font-semibold text-slate-900">{job.title}</p>
+                  <p className="text-xs text-slate-500">{job.client} · {formatMoney(Number(job.amount||0),currency)}</p>
+                  <p className="mt-1 text-xs text-slate-600">
+                    {job.depositPolicy==='waived'?'Deposit waived':
+                     job.depositPolicy==='twenty_percent'?'20% deposit selected':'Awaiting reviewer selection'}
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button type="button" disabled={Boolean(savingReviewId)}
+                    onClick={()=>saveReviewDeposit(job,'twenty_percent')}
+                    className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-50">
+                    {savingReviewId===job.id?'Saving…':'Set 20% deposit'}
+                  </button>
+                  <button type="button" disabled={Boolean(savingReviewId)}
+                    onClick={()=>saveReviewDeposit(job,'waived')}
+                    className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-50">
+                    Waive deposit
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+      {reviewError && <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{reviewError}</p>}
 
       {paymentError && (
         <div className="rounded-xl border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">

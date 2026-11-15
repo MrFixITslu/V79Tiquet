@@ -106,6 +106,7 @@ const CAMEL_MAP = {
   trialendsat: 'trialEndsAt',
   stripecustomerid: 'stripeCustomerId',
   huborganizationid: 'hubOrganizationId',
+  depositpolicy: 'depositPolicy',
   hubuserid: 'hubUserId'
 };
 
