@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { formatMoney } from "../currency";
+import {ClientReviewDocuments} from "./ClientReviewDocuments";
 import {
   Briefcase,
   CheckCircle2,
@@ -30,6 +31,7 @@ interface PortalData {
     amount?: number;
     quoteApproved?: number;
     depositPaid?: number;
+    depositPolicy?:'twenty_percent'|'waived'|'review_pending'|null;
     dueDate?: string;
     createdAt: string;
     messages?: Array<{ id: string; sender: string; content: string; timestamp: string }>;
@@ -300,7 +302,11 @@ export function ClientPortal({ token }: { token: string }) {
   const currency = settings.currency || "USD";
   const currentStageIndex = STAGES.findIndex((s) => s.id === job.status);
   const totalAmount = job.amount || 0;
-  const depositAmount = Math.round(totalAmount * 0.3 * 100) / 100;
+  const depositPending=job.depositPolicy==='review_pending';
+  const depositWaived=job.depositPolicy==='waived';
+  const depositRate=job.depositPolicy==='twenty_percent'?0.2:0.3;
+  const depositAmount=(depositPending||depositWaived)?0:
+    Math.round(totalAmount*depositRate*100)/100;
   const remainingAmount = payments.outstandingAmount;
 
   return (
@@ -473,10 +479,20 @@ export function ClientPortal({ token }: { token: string }) {
                       2. Initial Deposit ({formatMoney(depositAmount, currency)})
                     </p>
                     <p className="text-xs text-slate-400">
-                      The deposit becomes payable after the quote is approved and is recorded only after V79 Billing verifies WiPay.
+                      {depositPending
+                        ? "Your reviewer will confirm whether a 20% deposit applies or is waived."
+                        : depositWaived
+                        ? "Your reviewer waived the deposit. This does not reduce the invoice balance."
+                        : "The deposit becomes payable after quote approval and is recorded only after V79 Billing verifies WiPay."}
                     </p>
                   </div>
-                  {payments.paidAmount + 0.005 >= depositAmount && depositAmount > 0 ? (
+                  {depositPending ? (
+                    <span className="text-xs font-semibold text-slate-300">Awaiting reviewer terms</span>
+                  ) : depositWaived ? (
+                    <span className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-300">
+                      <CheckCircle2 size={14}/> Deposit waived
+                    </span>
+                  ) : payments.paidAmount + 0.005 >= depositAmount && depositAmount > 0 ? (
                     <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-400 bg-emerald-950/80 border border-emerald-800 px-3 py-1.5 rounded-xl">
                       <CheckCircle2 className="w-3.5 h-3.5" /> Recorded
                     </span>
@@ -568,6 +584,9 @@ export function ClientPortal({ token }: { token: string }) {
                 <p className="text-xs text-slate-400 py-4 italic">No granular line items attached to this proposal.</p>
               )}
             </div>
+
+            {/* Server-approved documents only. Portal token never exposes FFPRO credentials. */}
+            <ClientReviewDocuments token={token} jobStatus={job.status}/>
 
             {/* Deliverables & Assets */}
             {job.deliverables && job.deliverables.length > 0 && (

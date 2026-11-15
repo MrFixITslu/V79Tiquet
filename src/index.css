@@ -78,3 +78,88 @@
   .v79-tiquet-app .text-\[9px\] { font-size: 0.6875rem !important; }
   .v79-tiquet-app .text-\[10px\] { font-size: 0.75rem !important; }
 }
+
+/* Opt-in light appearance. Keep the approved dark workspace as the default and
+   leave the shared dark sidebar/header distinct from light work surfaces. */
+.v79-tiquet-app[data-theme="light"] { --v79-bg: #f6f8fc; --v79-panel: #ffffff; --v79-panel-2: #f1f5f9; --v79-border-dark: #dbe4ee; color-scheme: light; }
+.v79-tiquet-app[data-theme="light"] main > .flex-1 { background: #f6f8fc !important; color: #0f172a; }
+.v79-tiquet-app[data-theme="light"] .bg-white { background-color: #ffffff !important; }
+.v79-tiquet-app[data-theme="light"] .bg-slate-50 { background-color: #f8fafc !important; }
+.v79-tiquet-app[data-theme="light"] .bg-slate-100 { background-color: #f1f5f9 !important; }
+.v79-tiquet-app[data-theme="light"] .border-slate-100,
+.v79-tiquet-app[data-theme="light"] .border-slate-200,
+.v79-tiquet-app[data-theme="light"] .border-slate-300 { border-color: #dbe4ee !important; }
+.v79-tiquet-app[data-theme="light"] .text-slate-900,
+.v79-tiquet-app[data-theme="light"] .text-slate-800 { color: #0f172a !important; }
+.v79-tiquet-app[data-theme="light"] main .text-slate-700 { color: #334155 !important; }
+.v79-tiquet-app[data-theme="light"] main .text-slate-600,
+.v79-tiquet-app[data-theme="light"] main .text-slate-500,
+.v79-tiquet-app[data-theme="light"] main > .flex-1 .text-slate-400 { color: #475569 !important; }
+.v79-tiquet-app[data-theme="light"] main > .flex-1 .text-slate-300,
+.v79-tiquet-app[data-theme="light"] main > .flex-1 .text-slate-200,
+.v79-tiquet-app[data-theme="light"] main > .flex-1 .text-slate-100 { color: #334155 !important; }
+.v79-tiquet-app[data-theme="light"] main > .flex-1 :is(h1,h2,h3,h4).text-white,
+.v79-tiquet-app[data-theme="light"] main > .flex-1 div.text-white { color: #0f172a !important; }
+.v79-tiquet-app[data-theme="light"] main > .flex-1 .text-sky-300 { color: #0758b8 !important; }
+.v79-tiquet-app[data-theme="light"] main > .flex-1 .text-amber-200 { color: #92400e !important; }
+.v79-tiquet-app[data-theme="light"] main > .flex-1 [class*="bg-[#091728]"],
+.v79-tiquet-app[data-theme="light"] main > .flex-1 [class*="bg-[#0b1a2c]"] { background-color: #ffffff !important; }
+.v79-tiquet-app[data-theme="light"] main > .flex-1 [class*="border-[#1a3854]"],
+.v79-tiquet-app[data-theme="light"] main > .flex-1 [class*="border-[#18324b]"] { border-color: #dbe4ee !important; }
+.v79-tiquet-app[data-theme="light"] input,
+.v79-tiquet-app[data-theme="light"] select,
+.v79-tiquet-app[data-theme="light"] textarea { background-color: #ffffff !important; color: #0f172a !important; border-color: #cbd5e1 !important; }
+.v79-tiquet-app[data-theme="light"] input::placeholder,
+.v79-tiquet-app[data-theme="light"] textarea::placeholder { color: #64748b !important; }
+/* Readable input placeholders in the existing dark appearance. */
+.v79-tiquet-app[data-theme="dark"] input::placeholder,
+.v79-tiquet-app[data-theme="dark"] textarea::placeholder { color: #94a3b8 !important; }
+
+
+/* PR #48: approved light-first workspace with a persistent dark alternative.
+   Never repaint the dark shared brand sidebar/header through these selectors. */
+.v79-tiquet-app[data-theme="light"] main > .flex-1 {
+  background-color: #f6f8fc !important;
+  color: #0f172a;
+}
+.v79-tiquet-app[data-theme="light"] main > .flex-1 [class*="bg-[#091728]"],
+.v79-tiquet-app[data-theme="light"] main > .flex-1 [class*="bg-[#0b1a2c]"] {
+  background-color: #fff !important;
+}
+.v79-tiquet-app[data-theme="light"] main > .flex-1 [class*="border-[#1a3854]"],
+.v79-tiquet-app[data-theme="light"] main > .flex-1 [class*="border-[#18324b]"] {
+  border-color: #dbe4ee !important;
+}
+.v79-tiquet-app[data-theme="light"] main > .flex-1 .text-amber-300 { color: #92400e !important; }
+.v79-tiquet-app[data-theme="light"] main > .flex-1 .text-rose-300 { color: #9f1239 !important; }
+.v79-tiquet-app[data-theme="light"] main > .flex-1 .text-emerald-400 { color: #047857 !important; }
+.v79-tiquet-app[data-theme="light"] main > .flex-1 .text-sky-400 { color: #0758b8 !important; }
+.v79-tiquet-app[data-theme="light"] main > .flex-1 [class*="hover:bg-white/[0.018]"]:hover {
+  background-color: #f1f5f9 !important;
+}
+.v79-job-lane {
+  background-color: #f0f4f9;
+  border-color: #dbe4ee;
+}
+.v79-tiquet-app[data-theme="dark"] .v79-job-lane {
+  background-color: #0b1a2c;
+  border-color: #244560;
+}
+.v79-tiquet-app[data-theme="dark"] [class~="bg-slate-200/70"] {
+  background-color: #20334a !important;
+}
+.v79-tiquet-app[data-theme="light"] main .recharts-cartesian-axis-tick-value {
+  fill: #475569;
+}
+@media (max-width: 767px) {
+  .v79-tiquet-app main > .flex-1 { overscroll-behavior: contain; }
+}
+
+
+/* Actual-browser QA: light mobile nav must not inherit the dark slate-700 override. */
+.v79-tiquet-app[data-theme="light"] nav[aria-label="Mobile workspace navigation"] {
+  color: #334155 !important;
+}
+.v79-tiquet-app[data-theme="light"] nav[aria-label="Mobile workspace navigation"] button[aria-current="page"] {
+  color: #0758b8 !important;
+}
