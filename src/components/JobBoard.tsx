@@ -1,4 +1,5 @@
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect } from "react";
+import { readTiquetJobId, tiquetNavigationPath } from "../navigationState.js";
 import { Job, JobStatus, ActivityLogEntry, COLUMNS, Employee, Client, BusinessSettings } from "../types";
 import { Plus, Search, Filter, Clock, DollarSign, ArrowRight, ArrowLeft, User, ShieldAlert, Sparkles, Folder } from "lucide-react";
 import { JobModal } from "./JobModal";
@@ -8,18 +9,31 @@ import { formatMoney } from "../currency";
 export function JobBoard({
   jobs,
   setJobs,
+  reloadJobs,
+  canConfirmCustomer,
   employees,
   clients,
   settings,
 }: {
   jobs: Job[];
   setJobs: React.Dispatch<React.SetStateAction<Job[]>>;
+  reloadJobs: () => Promise<void>;
+  canConfirmCustomer?: boolean;
   employees: Employee[];
   clients: Client[];
   settings: BusinessSettings;
 }) {
   const [isNewModalOpen, setIsNewModalOpen] = useState(false);
-  const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
+  const [showCancelled, setShowCancelled] = useState(false);
+  const [selectedJobId, setSelectedJobId] = useState<string | null>(() => readTiquetJobId(window.location.search));
+
+  // Restore an open ticket after refresh once its authorized job data arrives.
+  useEffect(() => {
+    const path = tiquetNavigationPath(window.location.href, "jobs", selectedJobId);
+    if (path !== window.location.pathname + window.location.search + window.location.hash) {
+      window.history.replaceState(window.history.state, "", path);
+    }
+  }, [selectedJobId]);
   const [searchQuery, setSearchQuery] = useState("");
   const [priorityFilter, setPriorityFilter] = useState<string>("all");
   const [assignedFilter, setAssignedFilter] = useState<string>("all");
@@ -120,6 +134,13 @@ export function JobBoard({
           </select>
 
           <button
+            type="button"
+            onClick={() => setShowCancelled((visible) => !visible)}
+            className="px-3 py-2 rounded-xl border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+          >
+            {showCancelled ? "Hide cancelled" : "Cancelled tickets (" + jobs.filter((job) => job.status === "cancelled").length + ")"}
+          </button>
+          <button
             onClick={() => setIsNewModalOpen(true)}
             className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-1.5 rounded-xl text-xs font-bold flex items-center gap-2 transition-all shadow-sm active:scale-95 cursor-pointer ml-auto sm:ml-0"
           >
@@ -131,7 +152,7 @@ export function JobBoard({
 
       {/* Kanban Board Columns Container */}
       <div className="flex-1 flex gap-5 overflow-x-auto pb-4 items-stretch min-h-[580px]">
-        {COLUMNS.map((col) => {
+        {COLUMNS.filter((col) => col.id !== "cancelled" || showCancelled).map((col) => {
           const colJobs = filteredJobs.filter((j) => j.status === col.id);
           return (
             <div key={col.id} className="flex-shrink-0 w-80 flex flex-col">
@@ -186,6 +207,8 @@ export function JobBoard({
           clients={clients}
           settings={settings}
           onClose={() => setSelectedJobId(null)}
+          onChanged={reloadJobs}
+          canConfirmCustomer={canConfirmCustomer}
           onUpdate={(updatedJob) => {
             setJobs(jobs.map((j) => (j.id === updatedJob.id ? updatedJob : j)));
           }}
@@ -202,10 +225,10 @@ const JobCard: React.FC<{
   onClick: () => void;
 }> = ({ job, moveJob, currency, onClick }) => {
   const currentIndex = COLUMNS.findIndex((c) => c.id === job.status);
-  const prevStatus = currentIndex > 0 ? COLUMNS[currentIndex - 1].id : null;
-  const nextStatus = job.status === "completed"
+  const prevStatus = job.status === "cancelled" || currentIndex <= 0 ? null : COLUMNS[currentIndex - 1].id;
+  const nextStatus = ["completed", "paid", "cancelled"].includes(job.status)
     ? null
-    : currentIndex < COLUMNS.length - 1
+    : currentIndex >= 0 && currentIndex < COLUMNS.length - 2
       ? COLUMNS[currentIndex + 1].id
       : null;
 

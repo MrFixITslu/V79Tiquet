@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Search, Shield, Zap, ChevronDown, UserPlus, Clock, X, Loader2, Menu } from "lucide-react";
+import { Search, Shield, Zap, ChevronDown, UserPlus, Clock, X, Loader2, Menu, Moon, Sun } from "lucide-react";
 import { JobBoard } from "./components/JobBoard";
 import { Sidebar } from "./components/Sidebar";
 import { JobRequestForm } from "./components/JobRequestForm";
@@ -18,6 +18,7 @@ import { JobDetailModal } from "./components/JobDetailModal";
 import { Job, Employee, PayrollRecord, AppUser, Client, BusinessSettings, AuthenticatedUser, Business, Industry, PagePermission } from "./types";
 import { api, getToken, setToken } from "./api";
 import { useSyncedCollection } from "./useSyncedCollection";
+import { readTiquetTab, readTiquetJobId, tiquetNavigationPath } from "./navigationState.js";
 
 const DEFAULT_SETTINGS: BusinessSettings = {
   name: "",
@@ -52,15 +53,33 @@ export default function App() {
   const [resetPasswordRoute, setResetPasswordRoute] = useState(() => matchResetPasswordPath(window.location.pathname));
   const [portalRoute] = useState(() => matchPortalPath(window.location.pathname));
 
-  const [activeTab, setActiveTab] = useState("dashboard");
+  const [activeTab, setActiveTab] = useState(() => readTiquetTab(window.location.search));
   const [isQuickActionsOpen, setIsQuickActionsOpen] = useState(false);
   const [isNewClientModalOpen, setIsNewClientModalOpen] = useState(false);
   const [isLogTimeModalOpen, setIsLogTimeModalOpen] = useState(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+  const [theme,setTheme]=useState<"dark"|"light">(()=>{
+    try { return window.localStorage.getItem("v79-tiquet-theme")==="dark"?"dark":"light"; }
+    catch{return "light";}
+  });
+  useEffect(()=>{
+    try {window.localStorage.setItem("v79-tiquet-theme",theme);}
+    catch{ /* Private browsing may block storage. */ }
+  },[theme]);
   const [selectedJobForModal, setSelectedJobForModal] = useState<Job | null>(null);
 
   const authenticated = !!currentUser && !!activeBusiness;
+
+  // Keep authorized workspace navigation in the URL so refresh restores the page.
+  useEffect(() => {
+    if (!authenticated || portalRoute.matched || resetPasswordRoute.matched) return;
+    const selectedJobId = activeTab === "jobs" ? readTiquetJobId(window.location.search) : null;
+    const path = tiquetNavigationPath(window.location.href, activeTab, selectedJobId);
+    if (path !== window.location.pathname + window.location.search + window.location.hash) {
+      window.history.replaceState(window.history.state, "", path);
+    }
+  }, [activeTab, authenticated, portalRoute.matched, resetPasswordRoute.matched]);
   const canAccess = useCallback((permission: PagePermission) => {
     if (!currentUser) return false;
     return currentUser.role === "Admin" || Boolean(currentUser.permissions?.includes(permission));
@@ -132,7 +151,7 @@ export default function App() {
   const canReadClients = authenticated && (
     canAccess("clients") || canAccess("jobs") || canAccess("new-request")
   );
-  const { items: jobs, setItems: setJobs } = useSyncedCollection<Job>("/jobs", canReadJobs);
+  const { items: jobs, setItems: setJobs, reload: reloadJobs } = useSyncedCollection<Job>("/jobs", canReadJobs);
   const { items: clients, setItems: setClients } = useSyncedCollection<Client>("/clients", canReadClients);
 
   // Surfaces whether the welcome email on a newly-created client actually
@@ -202,11 +221,24 @@ export default function App() {
   };
 
   const handleLogout = () => {
+    // Capture the current bearer BEFORE clearing sessionStorage. Hub-managed
+    // sessions normally use an HttpOnly cookie; send both when present so the
+    // server can revoke each distinct signed token durably.
+    const bearer = getToken();
     setToken(null);
     setCurrentUser(null);
     setActiveBusiness(null);
-    void fetch("/api/auth/logout", { method:"POST", credentials:"same-origin" })
-      .finally(() => window.location.assign("/api/platform/start"));
+    void fetch("/api/auth/logout", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: bearer ? { Authorization: `Bearer ${bearer}` } : {},
+    }).then(response => {
+      if (!response.ok) throw new Error("Logout revocation could not be confirmed");
+      window.location.assign("/api/platform/start");
+    }).catch(() => {
+      // Never imply server-side revocation succeeded when the DB is unavailable.
+      window.alert("Your Tiquet session could not be fully signed out. Close this tab and contact support before using a shared device.");
+    });
   };
 
   if (portalRoute.matched && portalRoute.token) {
@@ -246,14 +278,14 @@ export default function App() {
   }
 
   return (
-    <div className="v79-tiquet-app flex h-screen bg-[#07111f] text-slate-100 font-sans overflow-hidden">
+    <div data-theme={theme} className="v79-tiquet-app flex h-[100dvh] min-h-[100dvh] bg-[#07111f] text-slate-100 font-sans overflow-hidden">
       <Sidebar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         businessName={settings.name || activeBusiness!.name}
         onSwitchBusiness={handleLogout}
         onLogout={handleLogout}
-        jobCount={jobs.filter((j) => j.status !== "completed" && j.status !== "paid").length}
+        jobCount={jobs.filter((j) => !["completed", "paid", "cancelled"].includes(j.status)).length}
         openInvoiceCount={jobs.filter((j) => j.status === "invoiced").length}
         isOpenMobile={isMobileSidebarOpen}
         onCloseMobile={() => setIsMobileSidebarOpen(false)}
@@ -262,8 +294,8 @@ export default function App() {
       />
 
       <main className="flex-1 min-w-0 flex flex-col overflow-hidden bg-[#07111f]">
-        <header className="h-[72px] bg-[#07111f]/95 backdrop-blur-xl border-b border-[#17324d]/80 flex items-center justify-between px-4 sm:px-6 z-30">
-          <div className="flex items-center gap-3">
+        <header className="h-[64px] sm:h-[72px] bg-[#07111f]/95 backdrop-blur-xl border-b border-[#17324d]/80 flex items-center justify-between px-3 sm:px-6 z-30">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
             <button
               onClick={() => setIsMobileSidebarOpen(true)}
               aria-label="Open navigation menu"
@@ -275,11 +307,19 @@ export default function App() {
 
             <button
               onClick={() => setIsCommandPaletteOpen(true)}
-              className="flex items-center bg-[#091728] hover:bg-[#0d1e32] rounded-xl px-3 py-2 w-52 sm:w-80 border border-[#1a3854] transition-colors cursor-pointer text-left group"
+              aria-label="Search jobs, clients and actions"
+              className="sm:hidden flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-[#1a3854] bg-[#091728] text-slate-400 hover:text-[#55c7ff]"
+            >
+              <Search className="w-5 h-5" />
+            </button>
+
+            <button
+              onClick={() => setIsCommandPaletteOpen(true)}
+              className="hidden sm:flex items-center bg-[#091728] hover:bg-[#0d1e32] rounded-xl px-3 py-2 w-80 border border-[#1a3854] transition-colors cursor-pointer text-left group"
             >
               <Search className="w-4 h-4 text-slate-600 group-hover:text-[#55c7ff] transition-colors shrink-0" />
-              <span className="ml-2 text-xs sm:text-sm text-slate-500 truncate flex-1">Search jobs, clients, actions...</span>
-              <kbd className="hidden sm:inline-block text-[9px] font-mono font-bold text-slate-600 bg-[#07111f] border border-[#1a3854] px-1.5 py-0.5 rounded">
+              <span className="ml-2 text-sm text-slate-500 truncate flex-1">Search jobs, clients, actions...</span>
+              <kbd className="text-[9px] font-mono font-bold text-slate-600 bg-[#07111f] border border-[#1a3854] px-1.5 py-0.5 rounded">
                 ⌘K
               </kbd>
             </button>
@@ -290,7 +330,14 @@ export default function App() {
             </div>
           </div>
 
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 sm:gap-4">
+            <button type="button" data-testid="tiquet-theme-toggle"
+              onClick={()=>setTheme(current=>current==="dark"?"light":"dark")}
+              title={theme==="dark"?"Switch to light mode":"Switch to dark mode"}
+              aria-label={theme==="dark"?"Switch to light mode":"Switch to dark mode"}
+              className="min-h-11 min-w-11 rounded-xl border border-[#1a3854] text-slate-200 hover:text-white hover:bg-white/10 flex items-center justify-center focus-visible:outline focus-visible:outline-2">
+              {theme==="dark"?<Sun className="w-5 h-5"/>:<Moon className="w-5 h-5"/>}
+            </button>
             <div className="hidden sm:flex items-center gap-1.5 text-[9px] text-emerald-400 font-bold uppercase tracking-wider bg-emerald-500/10 px-3 py-1.5 rounded-full border border-emerald-500/20">
               <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
               Connected
@@ -300,11 +347,11 @@ export default function App() {
               <button
                 id="btn-quick-actions"
                 onClick={() => setIsQuickActionsOpen(!isQuickActionsOpen)}
-                className="flex min-h-10 items-center gap-2 bg-gradient-to-r from-[#FF7A00] to-[#ff9638] hover:from-[#ff8b21] hover:to-[#ffa14d] text-white px-3.5 py-1.5 rounded-xl text-[10px] font-black transition-all shadow-[0_8px_28px_rgba(255,122,0,.16)] active:scale-[0.98] cursor-pointer"
+                className="flex min-h-10 min-w-10 items-center justify-center gap-2 bg-gradient-to-r from-[#FF7A00] to-[#ff9638] hover:from-[#ff8b21] hover:to-[#ffa14d] text-white px-2.5 sm:px-3.5 py-1.5 rounded-xl text-[10px] font-black transition-all shadow-[0_8px_28px_rgba(255,122,0,.16)] active:scale-[0.98] cursor-pointer"
               >
                 <Zap className="w-3.5 h-3.5 text-white" />
-                <span>Quick Actions</span>
-                <ChevronDown className={`w-3.5 h-3.5 transition-transform duration-200 ${isQuickActionsOpen ? "rotate-180" : ""}`} />
+                <span className="hidden sm:inline">Quick Actions</span>
+                <ChevronDown className={`hidden sm:block w-3.5 h-3.5 transition-transform duration-200 ${isQuickActionsOpen ? "rotate-180" : ""}`} />
               </button>
 
               {isQuickActionsOpen && (
@@ -332,7 +379,7 @@ export default function App() {
               )}
             </div>
 
-            <div className="flex items-center gap-3 border-l border-[#17324d] pl-3">
+            <div className="flex items-center gap-2 sm:gap-3 border-l border-[#17324d] pl-2 sm:pl-3">
               {currentUser!.photoUrl ? (
                 <img
                   src={currentUser!.photoUrl}
@@ -355,7 +402,7 @@ export default function App() {
 
         {emailNotice && (
           <div
-            className={`px-8 py-2.5 text-sm font-medium flex items-center justify-between ${
+            className={`px-4 sm:px-8 py-2.5 text-xs sm:text-sm font-medium flex items-start sm:items-center justify-between gap-3 ${
               emailNotice.tone === "warning" ? "bg-amber-50 text-amber-800 border-b border-amber-200" : "bg-emerald-50 text-emerald-800 border-b border-emerald-200"
             }`}
           >
@@ -369,7 +416,7 @@ export default function App() {
         <div className="flex-1 overflow-auto p-4 sm:p-5 xl:p-6 bg-[#07111f]">
           {activeTab === "dashboard" && <Dashboard jobs={jobs} currency={settings.currency} />}
           {activeTab === "jobs" && (
-            <JobBoard jobs={jobs} setJobs={setJobs} employees={employees} clients={clients} settings={settings} />
+            <JobBoard jobs={jobs} setJobs={setJobs} reloadJobs={reloadJobs} employees={employees} clients={clients} settings={settings} canConfirmCustomer={currentUser?.role === "Admin"} />
           )}
           {activeTab === "clients" && <Clients clients={clients} setClients={setClients} jobs={jobs} industries={industries} currency={settings.currency} />}
           {activeTab === "payroll" && (
@@ -384,7 +431,7 @@ export default function App() {
           {activeTab === "users" && <UserManagement users={users} setUsers={setUsers} />}
           {activeTab === "files" && <FileRepository files={files} onFilesChanged={reloadFiles} />}
           {activeTab === "invoices" && (
-            <Invoices jobs={jobs} setJobs={setJobs} employees={employees} clients={clients} settings={settings} />
+            <Invoices jobs={jobs} setJobs={setJobs} reloadJobs={reloadJobs} employees={employees} clients={clients} settings={settings} canConfirmCustomer={currentUser?.role === "Admin"} />
           )}
           {activeTab === "settings" && (
             <Settings settings={settings} setSettings={handleUpdateSettings} industries={industries} setIndustries={setIndustries} workspaceId={activeBusiness!.id} />
@@ -483,6 +530,8 @@ export default function App() {
           clients={clients}
           settings={settings}
           onClose={() => setSelectedJobForModal(null)}
+          onChanged={reloadJobs}
+          canConfirmCustomer={currentUser?.role === "Admin"}
           onUpdate={(updatedJob) => {
             setJobs(jobs.map((j) => (j.id === updatedJob.id ? updatedJob : j)));
             setSelectedJobForModal(updatedJob);
@@ -497,7 +546,7 @@ function NewClientModal({ industries, onClose, onCreate }: { industries: Industr
   const [error, setError] = useState<string | null>(null);
   return (
     <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-md overflow-hidden relative animate-in fade-in zoom-in-95 duration-150">
+      <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-md max-h-[90dvh] overflow-y-auto relative animate-in fade-in zoom-in-95 duration-150">
         <div className="p-6 border-b border-slate-100 flex items-center justify-between">
           <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wide">Add New Client</h3>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 transition-colors p-1 rounded-full hover:bg-slate-50 cursor-pointer">
@@ -543,7 +592,7 @@ function NewClientModal({ industries, onClose, onCreate }: { industries: Industr
             <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Company / Organization</label>
             <input name="clientCompany" type="text" placeholder="e.g. Acme Corp" className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 outline-none text-sm text-slate-800" />
           </div>
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Email *</label>
               <input name="clientEmail" type="email" required placeholder="john@example.com" className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 outline-none text-sm text-slate-800" />
@@ -591,7 +640,7 @@ function LogTimeModal({
 }) {
   return (
     <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-md overflow-hidden relative animate-in fade-in zoom-in-95 duration-150">
+      <div className="bg-white rounded-3xl border border-slate-200 shadow-2xl w-full max-w-md max-h-[90dvh] overflow-y-auto relative animate-in fade-in zoom-in-95 duration-150">
         <div className="p-6 border-b border-slate-100 flex items-center justify-between">
           <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wide">Log Hours / Time Card</h3>
           <button onClick={onClose} className="text-slate-400 hover:text-slate-600 transition-colors p-1 rounded-full hover:bg-slate-50 cursor-pointer">
@@ -627,7 +676,7 @@ function LogTimeModal({
                 ))}
               </select>
             </div>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Date *</label>
                 <input name="logDate" type="date" required defaultValue={new Date().toISOString().split("T")[0]} className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 outline-none text-sm text-slate-800" />
@@ -637,7 +686,7 @@ function LogTimeModal({
                 <input name="logHours" type="number" required min="0.1" max="24" step="0.1" defaultValue="8" className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 outline-none text-sm text-slate-800" />
               </div>
             </div>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
               <div>
                 <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1">Clock In (Optional)</label>
                 <input name="clockIn" type="time" defaultValue="09:00" className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 outline-none text-sm text-slate-800" />

@@ -1,6 +1,9 @@
 import React, { useState } from "react";
 import { Job, Employee, JobNote, Client, BusinessSettings } from "../types";
 import { formatMoney } from "../currency";
+import { api } from "../api";
+import { AgentReplyDraftPanel } from "./AgentReplyDraftPanel";
+import { WebsiteEnquiryConfirmation } from "./WebsiteEnquiryConfirmation";
 import {
   X,
   FileText,
@@ -30,6 +33,8 @@ export function JobDetailModal({
   settings,
   onClose,
   onUpdate,
+  onChanged,
+  canConfirmCustomer,
 }: {
   job: Job;
   employees: Employee[];
@@ -37,8 +42,60 @@ export function JobDetailModal({
   settings: BusinessSettings;
   onClose: () => void;
   onUpdate: (updatedJob: Job) => void;
+  onChanged?: () => Promise<void>;
+  canConfirmCustomer?: boolean;
 }) {
   const [invoiceNotes, setInvoiceNotes] = useState(job.invoiceNotes || "");
+  const [showCancelConfirm, setShowCancelConfirm] = useState(false);
+  const [cancelReason, setCancelReason] = useState("Customer requested cancellation");
+  const [ticketActionLoading, setTicketActionLoading] = useState(false);
+  const [ticketActionError, setTicketActionError] = useState<string | null>(null);
+  const [editingDueDate,setEditingDueDate]=useState(false);
+  const [dueDateDraft,setDueDateDraft]=useState(job.dueDate?.slice(0,10)||"");
+  const [dueDateSaving,setDueDateSaving]=useState(false);
+  const saveDueDate=async()=>{
+    if(dueDateSaving || ["completed","paid","cancelled"].includes(job.status))return;
+    setDueDateSaving(true);setTicketActionError(null);
+    try{
+      const result=await api.put<{job:Job}>("/jobs/"+encodeURIComponent(job.id)+"/due-date",
+        {dueDate:dueDateDraft||null});
+      onUpdate(result.job);
+      await onChanged?.();
+      setEditingDueDate(false);
+    }catch(error){
+      setTicketActionError(error instanceof Error?error.message:"The due date could not be saved.");
+    }finally{setDueDateSaving(false)}
+  };
+
+  const submitCancel = async () => {
+    if (cancelReason.trim().length < 5 || ticketActionLoading) return;
+    setTicketActionLoading(true);
+    setTicketActionError(null);
+    try {
+      await api.post("/jobs/" + encodeURIComponent(job.id) + "/cancel", { reason: cancelReason.trim() });
+      if (onChanged) await onChanged();
+      onClose();
+    } catch (error: any) {
+      setTicketActionError(error.message || "Could not cancel ticket.");
+    } finally {
+      setTicketActionLoading(false);
+    }
+  };
+
+  const submitReopen = async () => {
+    if (ticketActionLoading || !window.confirm("Reopen this cancelled ticket as a new Request?")) return;
+    setTicketActionLoading(true);
+    setTicketActionError(null);
+    try {
+      await api.post("/jobs/" + encodeURIComponent(job.id) + "/reopen");
+      if (onChanged) await onChanged();
+      onClose();
+    } catch (error: any) {
+      setTicketActionError(error.message || "Could not reopen ticket.");
+    } finally {
+      setTicketActionLoading(false);
+    }
+  };
   const [showDocPreview, setShowDocPreview] = useState(false);
   const [docType, setDocType] = useState<"estimate" | "work_order" | "invoice">("invoice");
   const [newNote, setNewNote] = useState("");
@@ -175,6 +232,7 @@ export function JobDetailModal({
               ) : (
                 <button
                   onClick={() => setEditingAmount(true)}
+                  disabled={Boolean(job.invoiceSentAt) || job.status === "cancelled"}
                   className="font-semibold text-slate-900 flex items-center gap-1.5 group w-full text-left"
                 >
                   {job.amount ? formatMoney(job.amount, settings.currency) : "TBD"}
@@ -186,13 +244,60 @@ export function JobDetailModal({
               <p className="text-xs font-medium text-slate-500 uppercase tracking-wider mb-1 flex items-center gap-1">
                 <Calendar className="w-3 h-3" /> Due Date
               </p>
-              <p className="font-semibold text-slate-900">
-                {job.dueDate
-                  ? new Date(job.dueDate).toLocaleDateString()
-                  : "Not set"}
-              </p>
+              {editingDueDate ? (
+                <div className="space-y-2">
+                  <input aria-label="Edit ticket due date" type="date" value={dueDateDraft}
+                    onChange={e=>setDueDateDraft(e.target.value)} disabled={dueDateSaving}
+                    className="w-full rounded-md border border-slate-300 p-1 text-sm" />
+                  <div className="flex flex-wrap gap-2">
+                    <button type="button" disabled={dueDateSaving} onClick={saveDueDate}
+                      className="text-xs font-semibold text-indigo-700">Save date</button>
+                    <button type="button" disabled={dueDateSaving} onClick={()=>{setDueDateDraft(job.dueDate?.slice(0,10)||"");setEditingDueDate(false)}}
+                      className="text-xs text-slate-600">Cancel</button>
+                  </div>
+                </div>
+              ):(
+                <button type="button" onClick={()=>setEditingDueDate(true)}
+                  disabled={["completed","paid","cancelled"].includes(job.status)}
+                  className="font-semibold text-slate-900 flex items-center gap-1 text-left disabled:opacity-60">
+                  {job.dueDate?new Date(job.dueDate+"T12:00:00").toLocaleDateString():"Not set"}
+                  <Pencil className="w-3 h-3 text-slate-400" />
+                </button>
+              )}
             </div>
           </div>
+
+          {ticketActionError && (
+            <p role="alert" className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{ticketActionError}</p>
+          )}
+          {job.intakeEventId && /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(job.intakeEventId) && (
+            <WebsiteEnquiryConfirmation job={job} canConfirmCustomer={canConfirmCustomer} onChanged={onChanged} />
+          )}
+          {job.status === "cancelled" ? (
+            <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 space-y-2">
+              <p className="font-semibold text-sm text-slate-800">Ticket cancelled and archived</p>
+              <p className="text-sm text-slate-600">Reason: {job.cancellationReason || "Not recorded"}</p>
+              <p className="text-xs text-slate-500">{job.cancelledAt ? new Date(job.cancelledAt).toLocaleString() : ""} {job.cancelledBy || ""}</p>
+              <button type="button" disabled={ticketActionLoading} onClick={submitReopen} className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">Reopen Ticket</button>
+            </div>
+          ) : !["invoiced", "completed", "paid"].includes(job.status) && (
+            <div className="border-t border-slate-100 pt-4 space-y-3">
+              <button type="button" onClick={() => setShowCancelConfirm(!showCancelConfirm)} className="text-sm font-semibold text-red-700 hover:underline">Cancel Ticket</button>
+              {showCancelConfirm && (
+                <div className="rounded-xl border border-red-200 bg-red-50 p-4 space-y-3">
+                  <p className="text-sm text-red-900">Cancellation removes this ticket from active work, not from your records. Already billed or paid jobs cannot be cancelled here.</p>
+                  <label className="block text-sm font-semibold text-slate-800" htmlFor="cancellation-reason">Reason</label>
+                  <textarea id="cancellation-reason" value={cancelReason} maxLength={500} rows={2} onChange={(e) => setCancelReason(e.target.value)}
+                    className="w-full rounded-lg border border-slate-300 p-2 text-sm" />
+                  <div className="flex gap-2">
+                    <button type="button" disabled={ticketActionLoading || cancelReason.trim().length < 5} onClick={submitCancel}
+                      className="rounded-lg bg-red-700 px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">Confirm Cancellation</button>
+                    <button type="button" onClick={() => setShowCancelConfirm(false)} className="rounded-lg border border-slate-300 px-4 py-2 text-sm">Back</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div>
@@ -282,6 +387,7 @@ export function JobDetailModal({
 
                 <button
                   type="button"
+                  disabled={job.status === "cancelled"}
                   onClick={() => {
                     setDocType("invoice");
                     setShowDocPreview(true);
@@ -295,6 +401,8 @@ export function JobDetailModal({
               </div>
             </div>
           </div>
+
+          <AgentReplyDraftPanel jobId={job.id} />
 
           <div className="border-t border-slate-100 pt-6">
             <h4 className="text-sm font-semibold text-slate-900 mb-4 flex items-center gap-2">
@@ -368,6 +476,7 @@ export function JobDetailModal({
                 value={invoiceNotes}
                 onChange={(e) => setInvoiceNotes(e.target.value)}
                 onBlur={handleSaveNotes}
+                disabled={Boolean(job.invoiceSentAt) || job.status === "cancelled"}
                 rows={4}
                 className="w-full px-4 py-3 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition-colors resize-none text-sm text-slate-700"
                 placeholder="Enter document line items (e.g., 1. Web Design - $500)..."
