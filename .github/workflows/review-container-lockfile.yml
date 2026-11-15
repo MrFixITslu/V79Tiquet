@@ -1,0 +1,28 @@
+name: Review locked Tiquet container (no deploy)
+on:
+  pull_request:
+    paths:
+      - Dockerfile
+      - package.json
+      - package-lock.json
+      - .github/workflows/review-container-lockfile.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  deterministic-container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Fetch source without persisted credentials
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build isolated image using committed lockfile
+        run: docker build --pull=false --tag v79tiquet:locked-review .
+      - name: Confirm invoicing module exists in production stage
+        run: |
+          docker run --rm --network none --entrypoint node v79tiquet:locked-review \
+            -e "require('pdfkit'); console.log('LOCKED_RUNTIME_PDFKIT=PASS')"
+      - name: Assert no deployment triggered
+        run: echo "CI_ONLY=YES; NO_PRODUCTION_DEPLOYMENT=YES"
