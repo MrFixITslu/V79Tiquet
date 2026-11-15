@@ -1,9 +1,18 @@
--- =====================================================================
--- Tiquet PostgreSQL Schema
+-- ==============================================================-- Tiquet PostgreSQL Schema
 -- Migration from SQLite to PostgreSQL 16
--- =====================================================================
-
+-- ==============================================================
 -- 1. Accounts (Tenants)
+-- App Help receipts are deliberately independent of the job FK. Keep deletion
+-- tombstones so an uncertain delivery retry cannot recreate a deleted ticket.
+CREATE TABLE IF NOT EXISTS hub_help_support_receipts (
+    request_id TEXT PRIMARY KEY,
+    requester_hash TEXT NOT NULL,
+    body_sha256 TEXT NOT NULL,
+    job_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_hub_help_requester_time ON hub_help_support_receipts(requester_hash, created_at);
 CREATE TABLE IF NOT EXISTS accounts (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -81,6 +90,29 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_intake_event ON jobs(intakeEventId) W
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS clientId TEXT;
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS secureTokenExpires TEXT;
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS secureTokenRevokedAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS cancellationReason TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS cancelledAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS cancelledBy TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS invoiceIssuedAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS invoiceSentAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS invoiceSentTo TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS invoiceSendingAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS websiteAckStatus TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS websiteAckSentAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS websiteAckAttempts INTEGER DEFAULT 0;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS websiteAckRetryAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS websiteAckLeaseAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS websiteAckError TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS contactOutcome TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS contactNotes TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS contactAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS contactBy TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS crmSyncStatus TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS crmSyncLeaseAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS crmLeadId TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS crmCustomerId TEXT;
+CREATE INDEX IF NOT EXISTS idx_website_ack_queue ON jobs(websiteAckStatus, websiteAckRetryAt)
+  WHERE websiteAckStatus IN ('queued', 'failed', 'sending');
 CREATE INDEX IF NOT EXISTS idx_jobs_client_account ON jobs(account_id, clientId);
 CREATE INDEX IF NOT EXISTS idx_jobs_secure_token ON jobs(secureToken) WHERE secureToken IS NOT NULL;
 UPDATE jobs
@@ -193,6 +225,9 @@ CREATE TABLE IF NOT EXISTS settings (
     website TEXT,
     account_id TEXT DEFAULT 'default_account'
 );
+
+-- Invoice copies are workspace-specific; no global operator copy.
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS invoiceCopyEmail TEXT;
 
 -- 12. Clients
 CREATE TABLE IF NOT EXISTS clients (
@@ -318,3 +353,66 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_hub_organization
 ALTER TABLE users ADD COLUMN IF NOT EXISTS hub_user_id TEXT;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_hub_user
   ON users(hub_user_id) WHERE hub_user_id IS NOT NULL;
+
+-- Private staff-only agent reply drafts; never part of job_messages or customer portal.
+CREATE TABLE IF NOT EXISTS agent_reply_drafts (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+    job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+    created_by TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    content TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'DRAFT' CHECK (status = 'DRAFT'),
+    created_at TEXT NOT NULL,
+    UNIQUE (account_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_reply_drafts_account_job
+    ON agent_reply_drafts(account_id, job_id, created_at DESC);
+
+-- 21. Durable signed-session logout / copied-token revocation.
+-- Store only SHA-256 fingerprints (never the raw bearer); expire by JWT epoch seconds.
+-- This DDL is additive/idempotent, shared across all app instances using PostgreSQL.
+CREATE TABLE IF NOT EXISTS revoked_auth_tokens (
+    token_hash TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    expires_at BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_revoked_auth_tokens_expiry ON revoked_auth_tokens(expires_at);
+-- Sentinel dedicated service-ingestion extension; no Portal token or billing action.
+-- A reversible, default-disabled application endpoint is responsible for inserts.
+CREATE TABLE IF NOT EXISTS sentinel_incident_jobs (
+    source_incident_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    client_id TEXT NOT NULL REFERENCES clients(id),
+    job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id),
+    opened_at TEXT NOT NULL,
+    recovery_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sentinel_incident_account ON sentinel_incident_jobs(account_id);
+CREATE TABLE IF NOT EXISTS sentinel_ingest_events (
+    event_id TEXT PRIMARY KEY,
+    source_incident_id TEXT NOT NULL REFERENCES sentinel_incident_jobs(source_incident_id),
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    client_id TEXT NOT NULL REFERENCES clients(id),
+    action TEXT NOT NULL CHECK (action IN ('ticket.create','ticket.add_recovery_evidence')),
+    body_sha256 TEXT NOT NULL,
+    job_id TEXT NOT NULL REFERENCES jobs(id),
+    processed_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sentinel_events_incident ON sentinel_ingest_events(source_incident_id);
+
+-- Audit independent, one-event-only human approvals. Private signing keys are never stored here.
+CREATE TABLE IF NOT EXISTS sentinel_ticket_approvals (
+  approval_id TEXT PRIMARY KEY,
+  event_id TEXT NOT NULL UNIQUE REFERENCES sentinel_ingest_events(event_id) DEFERRABLE INITIALLY DEFERRED,
+  source_incident_id TEXT NOT NULL REFERENCES sentinel_incident_jobs(source_incident_id),
+  account_id TEXT NOT NULL REFERENCES accounts(id),
+  client_id TEXT NOT NULL REFERENCES clients(id),
+  job_id TEXT NOT NULL REFERENCES jobs(id),
+  approver_user_id TEXT NOT NULL,
+  approval_key_id TEXT NOT NULL,
+  evidence_sha256 TEXT NOT NULL,
+  approved_at TEXT NOT NULL,
+  recorded_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sentinel_approvals_incident ON sentinel_ticket_approvals(source_incident_id);
