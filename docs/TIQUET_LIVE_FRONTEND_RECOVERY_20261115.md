@@ -31,3 +31,13 @@ Do not release until all remaining acceptance gates pass. Existing Hub, payments
 - Rebuilt-versus-live compiled JS AST literal coverage: 98.33% (3046 live literals, 51 absent in rebuilt). This is not a behavioural or UI screenshot pass.
 - Environment-based platform provisioning test cannot run without isolated V79_PLATFORM_SHARED_SECRET and other QA fixtures; do not substitute production credentials.
 - Temporary three-way merge previews preserved in v79-integration-review-20261114/ui-parity/merge-preview-20261115 outside the worktree.
+
+## Step 2 isolated browser acceptance (synthetic only)
+- Actual Chrome against rebuilt Tiquet frontend on Acer localhost; synthetic admin/staff accounts, clients, job records, portal tokens and HTTP API mocks. Outbound non-local requests blocked.
+- Final run: 16/16 PASS; zero unmocked API requests. Desktop/mobile/portal screenshots created.
+- Covers dashboard JS errors, persisted theme, invoices/email buttons, 20% deposit, saved workspace BCC, due-date edit, admin-only CRM control, ticket cancellation UI, no broad whole-ticket PUT after narrow updates, non-admin CRM restriction, mobile navigation, unauthenticated redirection to a *synthetic* Hub login, one approved portal file, forged file response denied by mock, and zero review documents before Review.
+- Two defects found and fixed in isolated source: absent invoiceCopyEmail mapping on session restore; duplicate broad whole-ticket PUT after narrow deposit/due-date API updates.
+- Acer test harness/results/screenshots: /home/firelion/Projects/v79-tiquet-step2-browser-qa
+- Server evidence JSON: /home/firelion/v79-integration-review-20261114/ui-parity/browser-acceptance-20261115.json
+- This does not prove actual Hub authentication or MFA, email delivery, real-service authorisation, or production client file downloads. Cross-app isolated PG16 22/22 integration is separate evidence.
+- Security gate remains open: set up isolated Hub identity with real MFA, Tiquet QA with synthetic tenant accounts, complete full authenticated browser acceptance and guard/restore rehearsal before production cutover.

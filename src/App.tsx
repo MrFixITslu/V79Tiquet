@@ -131,6 +131,7 @@ export default function App() {
             logoUrl: settings?.logoUrl || "",
             website: settings?.website || "",
             paymentTerms: settings?.paymentTerms || DEFAULT_SETTINGS.paymentTerms,
+            invoiceCopyEmail: settings?.invoiceCopyEmail ?? "",
             currency: settings?.currency || "USD",
             taxRate: settings?.taxRate || 0,
           },

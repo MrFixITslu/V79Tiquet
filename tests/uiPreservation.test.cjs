@@ -19,6 +19,7 @@ test('invoice email, PDF, BCC and FFPRO deposit decision controls coexist', () =
   has(source('src/components/Settings.tsx'), 'Invoice copy (BCC)', 'invoiceCopyEmail');
   has(source('server/billingOptions.js'), 'invoiceBccForWorkspace', 'normalizeInvoiceCopyEmail');
   has(source('src/types.ts'), 'invoiceCopyEmail', 'depositPolicy');
+  has(source('src/App.tsx'), 'invoiceCopyEmail: settings?.invoiceCopyEmail ??');
 });
 test('CRM confirmation is admin-only and retains client identity', () => {
   has(source('src/App.tsx'), 'canConfirmCustomer={currentUser?.role === "Admin"}');
@@ -36,4 +37,13 @@ test('theme, mobile navigation and preferences are retained', () => {
   has(source('src/App.tsx'), 'v79-tiquet-theme', 'tiquet-theme-toggle', 'data-theme={theme}');
   has(source('src/components/Sidebar.tsx'), 'aria-current={active ? "page" : undefined}', 'Close navigation overlay');
   has(source('src/index.css'), '.v79-tiquet-app[data-theme="light"]', '.v79-tiquet-app[data-theme="dark"]');
+});
+
+test('dedicated ticket updates do not issue a second whole-record save', () => {
+  const inv = source('src/components/Invoices.tsx');
+  const deposit = inv.slice(inv.indexOf('const saveReviewDeposit'), inv.indexOf('const [invoiceNotice'));
+  assert.ok(!deposit.includes('setJobs('), 'Deposit update must not overwrite the whole ticket');
+  const detail = source('src/components/JobDetailModal.tsx');
+  const due = detail.slice(detail.indexOf('const saveDueDate'), detail.indexOf('const submitCancel'));
+  assert.ok(due.includes('if (onChanged) await onChanged();'), 'Due date must reload canonical state');
 });

@@ -59,8 +59,10 @@ export function JobDetailModal({
     try{
       const result=await api.put<{job:Job}>("/jobs/"+encodeURIComponent(job.id)+"/due-date",
         {dueDate:dueDateDraft||null});
-      onUpdate(result.job);
-      await onChanged?.();
+      // The narrow endpoint owns this update. Reload the canonical ticket;
+      // do not echo its whole payload through the generic job sync setter.
+      if (onChanged) await onChanged();
+      else onUpdate(result.job);
       setEditingDueDate(false);
     }catch(error){
       setTicketActionError(error instanceof Error?error.message:"The due date could not be saved.");

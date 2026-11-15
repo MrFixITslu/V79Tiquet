@@ -69,7 +69,9 @@ export function Invoices({
     try{
       await api.post('/jobs/'+encodeURIComponent(job.id)+'/review-deposit-policy',{policy});
       await loadReviewDeposits();
-      setJobs(current=>current.map(j=>j.id===job.id?{...j,depositPolicy:policy}:j));
+      // Server already persisted the policy. Reload only; a whole-ticket PUT
+      // here can overwrite a more recent staff update from another browser.
+      await reloadJobs();
     }catch(error){
       setReviewError(error instanceof Error?error.message:"Could not save deposit choice.");
     }finally{setSavingReviewId(null)}
