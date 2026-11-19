@@ -2,6 +2,17 @@
 -- Migration from SQLite to PostgreSQL 16
 -- ==============================================================
 -- 1. Accounts (Tenants)
+-- App Help receipts are deliberately independent of the job FK. Keep deletion
+-- tombstones so an uncertain delivery retry cannot recreate a deleted ticket.
+CREATE TABLE IF NOT EXISTS hub_help_support_receipts (
+    request_id TEXT PRIMARY KEY,
+    requester_hash TEXT NOT NULL,
+    body_sha256 TEXT NOT NULL,
+    job_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_hub_help_requester_time ON hub_help_support_receipts(requester_hash, created_at);
 CREATE TABLE IF NOT EXISTS accounts (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -76,9 +87,88 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS idx_jobs_account ON jobs(account_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_ffpro_sync_status ON jobs(ffproSyncStatus) WHERE ffproSyncStatus = 'pending';
 CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_intake_event ON jobs(intakeEventId) WHERE intakeEventId IS NOT NULL;
+
+-- Legacy jobs retain their existing 30% deposit until a reviewer selects an
+-- explicit new policy for an FFPRO-linked service project.
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS depositPolicy TEXT;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='jobs_deposit_policy_valid') THEN
+    ALTER TABLE jobs ADD CONSTRAINT jobs_deposit_policy_valid
+      CHECK (depositPolicy IS NULL OR depositPolicy IN
+        ('review_pending','twenty_percent','waived'));
+  END IF;
+END $$;
+
+
+-- Durable Tiquet -> FFPRO planning delivery; no effect on the payment ledger.
+CREATE TABLE IF NOT EXISTS tiquet_planning_outbox (
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  event_id TEXT NOT NULL UNIQUE,
+  approved_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TIMESTAMPTZ,
+  lease_until TIMESTAMPTZ,
+  project_id TEXT,
+  delivered_at TIMESTAMPTZ,
+  last_error TEXT,
+  PRIMARY KEY(account_id,job_id),
+  CONSTRAINT chk_tiquet_planning_status CHECK
+    (status IN ('pending','sending','retry','sent','permanent'))
+);
+CREATE INDEX IF NOT EXISTS idx_tiquet_plan_delivery
+ ON tiquet_planning_outbox(status,next_attempt_at);
+
+-- Durable close request; created atomically on Review -> Invoiced.
+CREATE TABLE IF NOT EXISTS tiquet_planning_closure_outbox (
+  account_id TEXT NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  event_id TEXT NOT NULL UNIQUE,
+  project_id TEXT NOT NULL,
+  invoiced_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'pending',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at TIMESTAMPTZ,
+  lease_until TIMESTAMPTZ,
+  delivered_at TIMESTAMPTZ,
+  last_error TEXT,
+  PRIMARY KEY(account_id,job_id),
+  CONSTRAINT chk_tiquet_close_status CHECK
+    (status IN ('pending','sending','retry','sent','permanent'))
+);
+CREATE INDEX IF NOT EXISTS idx_tiquet_close_delivery
+ ON tiquet_planning_closure_outbox(status,next_attempt_at);
+
+
+
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS clientId TEXT;
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS secureTokenExpires TEXT;
 ALTER TABLE jobs ADD COLUMN IF NOT EXISTS secureTokenRevokedAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS cancellationReason TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS cancelledAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS cancelledBy TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS invoiceIssuedAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS invoiceSentAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS invoiceSentTo TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS invoiceSendingAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS websiteAckStatus TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS websiteAckSentAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS websiteAckAttempts INTEGER DEFAULT 0;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS websiteAckRetryAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS websiteAckLeaseAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS websiteAckError TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS contactOutcome TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS contactNotes TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS contactAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS contactBy TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS crmSyncStatus TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS crmSyncLeaseAt TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS crmLeadId TEXT;
+ALTER TABLE jobs ADD COLUMN IF NOT EXISTS crmCustomerId TEXT;
+CREATE INDEX IF NOT EXISTS idx_website_ack_queue ON jobs(websiteAckStatus, websiteAckRetryAt)
+  WHERE websiteAckStatus IN ('queued', 'failed', 'sending');
 CREATE INDEX IF NOT EXISTS idx_jobs_client_account ON jobs(account_id, clientId);
 CREATE INDEX IF NOT EXISTS idx_jobs_secure_token ON jobs(secureToken) WHERE secureToken IS NOT NULL;
 UPDATE jobs
@@ -191,6 +281,9 @@ CREATE TABLE IF NOT EXISTS settings (
     website TEXT,
     account_id TEXT DEFAULT 'default_account'
 );
+
+-- Invoice copies are workspace-specific; no global operator copy.
+ALTER TABLE settings ADD COLUMN IF NOT EXISTS invoiceCopyEmail TEXT;
 
 -- 12. Clients
 CREATE TABLE IF NOT EXISTS clients (

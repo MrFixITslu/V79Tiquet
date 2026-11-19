@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Search, Shield, Zap, ChevronDown, UserPlus, Clock, X, Loader2, Menu } from "lucide-react";
+import { Search, Shield, Zap, ChevronDown, UserPlus, Clock, X, Loader2, Menu, Moon, Sun } from "lucide-react";
 import { JobBoard } from "./components/JobBoard";
 import { Sidebar } from "./components/Sidebar";
 import { JobRequestForm } from "./components/JobRequestForm";
@@ -59,6 +59,14 @@ export default function App() {
   const [isLogTimeModalOpen, setIsLogTimeModalOpen] = useState(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
+  const [theme,setTheme]=useState<"dark"|"light">(()=>{
+    try { return window.localStorage.getItem("v79-tiquet-theme")==="dark"?"dark":"light"; }
+    catch{return "light";}
+  });
+  useEffect(()=>{
+    try {window.localStorage.setItem("v79-tiquet-theme",theme);}
+    catch{ /* Private browsing may block storage. */ }
+  },[theme]);
   const [selectedJobForModal, setSelectedJobForModal] = useState<Job | null>(null);
 
   const authenticated = !!currentUser && !!activeBusiness;
@@ -123,6 +131,7 @@ export default function App() {
             logoUrl: settings?.logoUrl || "",
             website: settings?.website || "",
             paymentTerms: settings?.paymentTerms || DEFAULT_SETTINGS.paymentTerms,
+            invoiceCopyEmail: settings?.invoiceCopyEmail ?? "",
             currency: settings?.currency || "USD",
             taxRate: settings?.taxRate || 0,
           },
@@ -143,7 +152,7 @@ export default function App() {
   const canReadClients = authenticated && (
     canAccess("clients") || canAccess("jobs") || canAccess("new-request")
   );
-  const { items: jobs, setItems: setJobs } = useSyncedCollection<Job>("/jobs", canReadJobs);
+  const { items: jobs, setItems: setJobs, reload: reloadJobs } = useSyncedCollection<Job>("/jobs", canReadJobs);
   const { items: clients, setItems: setClients } = useSyncedCollection<Client>("/clients", canReadClients);
 
   // Surfaces whether the welcome email on a newly-created client actually
@@ -270,14 +279,14 @@ export default function App() {
   }
 
   return (
-    <div className="v79-tiquet-app flex h-[100dvh] min-h-[100dvh] bg-[#07111f] text-slate-100 font-sans overflow-hidden">
+    <div data-theme={theme} className="v79-tiquet-app flex h-[100dvh] min-h-[100dvh] bg-[#07111f] text-slate-100 font-sans overflow-hidden">
       <Sidebar
         activeTab={activeTab}
         setActiveTab={setActiveTab}
         businessName={settings.name || activeBusiness!.name}
         onSwitchBusiness={handleLogout}
         onLogout={handleLogout}
-        jobCount={jobs.filter((j) => j.status !== "completed" && j.status !== "paid").length}
+        jobCount={jobs.filter((j) => !["completed", "paid", "cancelled"].includes(j.status)).length}
         openInvoiceCount={jobs.filter((j) => j.status === "invoiced").length}
         isOpenMobile={isMobileSidebarOpen}
         onCloseMobile={() => setIsMobileSidebarOpen(false)}
@@ -323,6 +332,13 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-4">
+            <button type="button" data-testid="tiquet-theme-toggle"
+              onClick={()=>setTheme(current=>current==="dark"?"light":"dark")}
+              title={theme==="dark"?"Switch to light mode":"Switch to dark mode"}
+              aria-label={theme==="dark"?"Switch to light mode":"Switch to dark mode"}
+              className="min-h-11 min-w-11 rounded-xl border border-[#1a3854] text-slate-200 hover:text-white hover:bg-white/10 flex items-center justify-center focus-visible:outline focus-visible:outline-2">
+              {theme==="dark"?<Sun className="w-5 h-5"/>:<Moon className="w-5 h-5"/>}
+            </button>
             <div className="hidden sm:flex items-center gap-1.5 text-[9px] text-emerald-400 font-bold uppercase tracking-wider bg-emerald-500/10 px-3 py-1.5 rounded-full border border-emerald-500/20">
               <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
               Connected
@@ -401,7 +417,7 @@ export default function App() {
         <div className="flex-1 overflow-auto p-4 sm:p-5 xl:p-6 bg-[#07111f]">
           {activeTab === "dashboard" && <Dashboard jobs={jobs} currency={settings.currency} />}
           {activeTab === "jobs" && (
-            <JobBoard jobs={jobs} setJobs={setJobs} employees={employees} clients={clients} settings={settings} />
+            <JobBoard jobs={jobs} setJobs={setJobs} reloadJobs={reloadJobs} employees={employees} clients={clients} settings={settings} canConfirmCustomer={currentUser?.role === "Admin"} />
           )}
           {activeTab === "clients" && <Clients clients={clients} setClients={setClients} jobs={jobs} industries={industries} currency={settings.currency} />}
           {activeTab === "payroll" && (
@@ -416,7 +432,7 @@ export default function App() {
           {activeTab === "users" && <UserManagement users={users} setUsers={setUsers} />}
           {activeTab === "files" && <FileRepository files={files} onFilesChanged={reloadFiles} />}
           {activeTab === "invoices" && (
-            <Invoices jobs={jobs} setJobs={setJobs} employees={employees} clients={clients} settings={settings} />
+            <Invoices jobs={jobs} setJobs={setJobs} reloadJobs={reloadJobs} employees={employees} clients={clients} settings={settings} canConfirmCustomer={currentUser?.role === "Admin"} />
           )}
           {activeTab === "settings" && (
             <Settings settings={settings} setSettings={handleUpdateSettings} industries={industries} setIndustries={setIndustries} workspaceId={activeBusiness!.id} />
@@ -515,6 +531,8 @@ export default function App() {
           clients={clients}
           settings={settings}
           onClose={() => setSelectedJobForModal(null)}
+          onChanged={reloadJobs}
+          canConfirmCustomer={currentUser?.role === "Admin"}
           onUpdate={(updatedJob) => {
             setJobs(jobs.map((j) => (j.id === updatedJob.id ? updatedJob : j)));
             setSelectedJobForModal(updatedJob);

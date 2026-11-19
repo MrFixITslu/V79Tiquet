@@ -172,8 +172,9 @@ export async function sendStatusUpdate(clientEmail, jobTitle, newStatus, secureT
         estimation:   'Estimation In Progress',
         'in-progress':'Work In Progress',
         review:       'Ready for Review',
-        invoiced:     'Invoice Sent',
+        invoiced:     'Invoice Ready',
         completed:    'Completed',
+        cancelled:    'Cancelled',
     };
     const label = STATUS_LABELS[newStatus] || newStatus;
 
@@ -184,6 +185,7 @@ export async function sendStatusUpdate(clientEmail, jobTitle, newStatus, secureT
         review:       '#8b5cf6',
         invoiced:     '#10b981',
         completed:    '#059669',
+        cancelled:    '#64748b',
     };
     const badgeColour = STATUS_COLOURS[newStatus] || '#64748b';
 
@@ -382,3 +384,94 @@ export async function sendUserInvite(userEmail, name, role, tempPassword) {
     return send(userEmail, subject, html);
 }
 
+// Acknowledgement only for a confirmed signed Hub App Help ticket.
+// Never use this generic transactional sender for marketing or cold outreach.
+export async function sendHelpAcknowledgement(to, details) {
+  const reference=String(details?.reference||'');
+  const app=String(details?.app||'').toUpperCase();
+  const portalUrl=String(details?.portalUrl||'');
+  if (!/^HELP-[a-f0-9-]{36}$/i.test(reference) ||
+      !/^(ALL|HUB|TIQUET|POS|FFPRO|MARKETING|ACADEMY|COMBATZONE)$/.test(app) ||
+      !/^https:\/\/tiquet\.v79sl\.com\/portal\/[A-Za-z0-9_-]{40,180}$/.test(portalUrl) ||
+      typeof to!=='string'||!/^\S+@\S+\.\S+$/.test(to)) {
+    return {success:false,error:'Invalid support acknowledgement'};
+  }
+  const safeRef=escapeHtml(reference);
+  const safeApp=escapeHtml(app);
+  const safeUrl=escapeHtml(portalUrl);
+  const subject='Vision79 Digital support request received — '+reference;
+  const html='<!doctype html><html lang="en"><head><meta charset="utf-8"></head><body style="font-family:Arial,sans-serif;color:#152c38;padding:24px">'
+    +'<h1 style="font-size:23px;color:#0d6068">We have received your support request</h1>'
+    +'<p>Thank you for contacting Vision79 Digital. Your '+safeApp+' support request has been recorded and our team has been notified.</p>'
+    +'<p><strong>Ticket reference: '+safeRef+'</strong><br>Priority: High</p>'
+    +'<p>You can securely check your ticket status and leave updates using the private link below:</p>'
+    +'<p><a href="'+safeUrl+'" style="background:#0d6068;color:white;padding:12px 18px;text-decoration:none;border-radius:7px">Track your ticket in Tiquet</a></p>'
+    +'<p>This secure link expires after 14 days. Do not forward it; anyone with the link may view ticket details. Contact support if you need a fresh link.</p>'
+    +'<p>Our team will respond according to the support arrangements for your service. We have not yet confirmed a resolution time.</p>'
+    +'<p>Regards,<br>Customer Care Team<br><strong>Vision79 Digital</strong><br>https://v79sl.com</p>'
+    +'</body></html>';
+  return send(to,subject,html);
+}
+
+/**
+ * Deliver a genuine PDF invoice attachment. Unlike the general email helper,
+ * missing SMTP is a hard failure: we must never claim an invoice was sent.
+ */
+export async function sendInvoiceDocument({ to, bcc = null, companyName, number, title, amount, pdf, filename }) {
+  if (!isSmtpConfigured || !transporter) {
+    logger.warn("Invoice email blocked because SMTP is not configured", { invoice: number });
+    return { success: false, skipped: true, error: "SMTP not configured" };
+  }
+  const subject = "Invoice " + number + " from " + companyName;
+  const html = wrapEmailShell({
+    companyName,
+    companyAddress: "",
+    companyPhone: "",
+    companyEmail: "",
+    bodyHtml: "<h2 style='color:#0f172a'>Your invoice is attached</h2>" +
+      "<p>Please find invoice <strong>" + escapeHtml(number) +
+      "</strong> for " + escapeHtml(title) + ".</p>" +
+      "<p><strong>Total: " + escapeHtml(amount) + "</strong></p>" +
+      "<p>Contact your service provider if you have any questions. Thank you.</p>",
+  });
+  try {
+    const result = await transporter.sendMail({
+      from: SMTP_FROM, to, ...(bcc ? { bcc } : {}), subject, html,
+      attachments: [{ filename, content: pdf, contentType: "application/pdf" }],
+    });
+    logger.info("Invoice email accepted by SMTP", { invoice: number, messageId: result.messageId });
+    return { success: true, messageId: result.messageId };
+  } catch (error) {
+    logger.error("Invoice email failed", { invoice: number, error: error.message });
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * Acknowledges a WEBSITE enquiry, not an accepted job or paid service.
+ * Caller persists send status and retries separately; missing SMTP is a skip.
+ */
+export async function sendWebsiteTicketAcknowledgement({ to, customerName, title, requestSummary, reference, portalToken }) {
+  if (!to || !portalToken || !/^[A-Za-z0-9_-]{32,180}$/.test(portalToken)) {
+    return { success: false, error: "Invalid recipient or ticket tracking token." };
+  }
+  const tracker = APP_BASE_URL + "/portal/" + encodeURIComponent(portalToken);
+  const subject = "We received your request — " + reference + " | Vision79 Digital";
+  const html = [
+    '<!doctype html><html lang="en"><head><meta charset="utf-8"></head>',
+    '<body style="background:#f6f8fb;font-family:Arial,Helvetica,sans-serif;color:#18263d;padding:24px">',
+    '<div style="max-width:600px;margin:auto;background:#fff;border:1px solid #dbe4ef;border-radius:12px;padding:28px">',
+    '<h1 style="font-size:22px;margin:0 0 20px;color:#0b3860">Vision79 Digital</h1>',
+    '<h2 style="font-size:19px">Your request is received</h2>',
+    '<p>Hello ' + escapeHtml(customerName || "there") + ',</p>',
+    '<p>Thank you for contacting Vision79 Digital. We have received your enquiry and will contact you to confirm the service you need before work begins.</p>',
+    '<p><strong>Ticket reference:</strong> ' + escapeHtml(reference) + '</p>',
+    '<p><strong>Request:</strong> ' + escapeHtml(title) + '</p>',
+    '<p style="white-space:pre-wrap;font-size:14px">' + escapeHtml(String(requestSummary || "").slice(0, 500)) + '</p>',
+    '<p><strong>Status:</strong> Received — awaiting confirmation</p>',
+    '<p><a href="' + escapeHtml(tracker) + '" style="background:#1268a7;color:#fff;padding:12px 18px;display:inline-block;border-radius:7px;text-decoration:none">View your request</a></p>',
+    '<p style="font-size:13px;color:#546478">This link is private and expires after 14 days. Keep the ticket reference for future enquiries. If this was not your request, contact Vision79 Digital.</p>',
+    '<p>Regards,<br>Vision79 Digital Customer Care</p></div></body></html>'
+  ].join("");
+  return send(to, subject, html);
+}

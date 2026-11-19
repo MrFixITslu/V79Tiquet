@@ -1,6 +1,12 @@
+import { isApprovedWebsiteConversion } from "./websiteIntakeContract.js";
 import { createTiquetAuthentication } from "./hubAwareAuthentication.js";
+import { invoiceReference, invoiceRecipient, validateInvoice, renderInvoicePdf } from "./invoiceDocuments.js";
+import { normalizeInvoiceCopyEmail, invoiceBccForWorkspace, parseDueDate } from "./billingOptions.js";
+import { websiteTicketReference, isWebsiteEvent, validateContactOutcome, submitConfirmedCustomerToWebsite } from "./websiteCustomerWorkflow.js";
+import { createWebsiteAcknowledgementService } from "./websiteAckWorker.js";
 import { revokeSignedRequestTokens, isSignedSessionRevoked, tokenFingerprint } from "./tokenRevocation.js";
 import { createSentinelIngestRouter, sentinelConfigFromEnv, SENTINEL_PATH } from "./sentinelIngress.js";
+import { createHubHelpRouter, HUB_HELP_PATH } from "./hubHelpSupport.js";
 import { createSentinelHubServiceChecker } from "./sentinelHubServiceChecker.js";
 import { createSentinelNocApproverChecker } from "./sentinelNocApproverChecker.js";
 import { readPrivateMachineSecret } from "./sentinelMachineSecretFile.js";
@@ -9,14 +15,15 @@ import { authorizeTiquetStaffSocket, revalidateTiquetStaffSocket } from "./tique
 import { revalidateTiquetPortalSocket } from "./tiquetPortalSocketAccess.js";
 import { isStalledSocketRevalidation } from "./tiquetSocketHeartbeatGuard.js";
 import { createHubEntitlementChecker } from "./hubEntitlementRevalidation.js";
+import { createHubSessionStatusChecker } from "./hubSessionStatus.js";
+import { resolveOwnedJobFile, resolveJobFolder } from "./jobFileBoundary.js";
 import 'dotenv/config';
-import { createServer as createViteServer } from "vite";
 import express from "express";
 import cors from "cors";
 import http from "http";
 import { WebSocketServer } from "ws";
 import db, { dbDir, seedDefaultTemplatesForAccount } from "./db.js";
-import { sendPortalLink, sendStatusUpdate, sendTemplated, renderEmailFromPlainTemplate, sendPasswordReset, sendUserInvite } from "./email.js";
+import { sendPortalLink, sendStatusUpdate, sendTemplated, renderEmailFromPlainTemplate, sendPasswordReset, sendUserInvite, sendInvoiceDocument, sendWebsiteTicketAcknowledgement } from "./email.js";
 import { registerOAuthRoutes } from "./oauth.js";
 import { v4 as uuidv4 } from "uuid";
 import jwt from "jsonwebtoken";
@@ -34,6 +41,12 @@ import multer from "multer";
 import { registerStripeRoutes } from "./stripe.js";
 import { registerHealthCheck } from "./healthcheck.js";
 import { sendPaidEvent, sendPaymentEvent, generateEventId } from "./gatewayClient.js";
+import {queueTiquetPlanningApproval} from "./tiquetPlanningOutbox.js";
+import {sweepTiquetPlanning} from "./tiquetPlanningSweep.js";
+import {queueTiquetPlanningClosure,sweepTiquetPlanningClosure} from "./tiquetPlanningClosure.js";
+import {proxyPlanningFiles,PlanningFileProxyError} from "./tiquetPlanningFilesProxy.js";
+import {depositTerms,setReviewDepositPolicy,DepositPolicyError} from "./tiquetDepositPolicy.js";
+import {safeCallbackSecret,parsePlanningCallback,applyTiquetReviewCallback,ReviewCallbackError} from "./tiquetReviewCallback.js";
 import { logger } from "./logger.js";
 import platformRoutes from "./platform.js";
 import { createTiquetBillingReturnToken, createTiquetInvoiceOrder, getTiquetBillingCapabilities, getTiquetOrderStatus, tiquetBillingConfigured, verifyTiquetBillingReturnToken } from "./billingClient.js";
@@ -223,8 +236,18 @@ const checkHubSubscription = process.env.V79_ENTITLEMENT_RECHECK_ENABLED === "1"
     })
   : null;
 
+// OFF by default. Enable only on isolated paired Hub/Tiquet candidates.
+if (process.env.V79_TIQUET_SESSION_BINDING_ENABLED === "1" && !checkHubSubscription) {
+  throw new Error("Hub session binding requires active signed entitlement checks");
+}
+const checkHubSession = process.env.V79_TIQUET_SESSION_BINDING_ENABLED === "1"
+  ? createHubSessionStatusChecker({
+      hubUrl: process.env.V79_HUB_INTERNAL_URL,
+      secret: process.env.V79_TIQUET_LAUNCH_SECRET,
+    })
+  : null;
 const authenticateToken = createTiquetAuthentication({
-  jwt, jwtSecret: JWT_SECRET, db, checkHubSubscription,
+  jwt, jwtSecret: JWT_SECRET, db, checkHubSubscription, checkHubSession,
 });
 
 // --- Admin-only middleware ---
@@ -499,6 +522,14 @@ app.get("/api/platform/launch", async (req, res) => {
   try {
     const hubSession = await consumeHubLaunchTicket(ticket);
     const local = await provisionHubIdentity(hubSession);
+    if (checkHubSession) {
+      if (!/^[a-f0-9]{64}$/.test(String(hubSession.hubSessionId || "")) ||
+          !(await checkHubSession({
+            hubSessionId: hubSession.hubSessionId,
+            organizationId: hubSession.organization.id,
+            scopedUserId: hubSession.user.id,
+          }))) throw new Error("Hub session lineage is unavailable.");
+    }
     const token = jwt.sign({
       id: local.userId,
       email: local.email,
@@ -506,6 +537,7 @@ app.get("/api/platform/launch", async (req, res) => {
       account_id: local.accountId,
       hub_managed: true,
       hub_organization_id: hubSession.organization.id,
+      ...(checkHubSession ? { hub_session_id: hubSession.hubSessionId } : {}),
     }, JWT_SECRET, { expiresIn: "30m", jwtid: uuidv4() });
     setHubSessionCookie(res, token);
     logger.audit("hub_login_success", {
@@ -575,6 +607,31 @@ app.use(SENTINEL_PATH, createSentinelIngestRouter({
   authorizeApprover:sentinelNocApproverChecker
 }));
 app.use("/api/platform", platformRoutes);
+
+// FFPRO planning-ready callback: an authenticated and tenant-bound transition.
+app.post("/api/gateway/ffpro/planning/ready", async (req, res) => {
+  if (!safeCallbackSecret(req.get("X-FFPRO-Planning-Secret"),
+      process.env.FFPRO_PLANNING_CALLBACK_SECRET))
+    return res.status(401).json({error:"Unauthorised planning callback"});
+  try {
+    const event = parsePlanningCallback(req.body);
+    const result = await applyTiquetReviewCallback({
+      db, event,
+      afterCommit: ({accountId,jobId,title,occurredAt}) => safeQueuePlatformEvent({
+        accountId, type:"job.status_changed", subjectId:jobId,
+        occurredAt, payload:{title,previousStatus:"in-progress",status:"review"}
+      })
+    });
+    return res.status(200).json(result);
+  } catch(error) {
+    if(error instanceof ReviewCallbackError)
+      return res.status(error.status).json({error:error.code});
+    logger.error("[Tiquet Planning] Review callback failed:", error?.code || error?.name || "unknown");
+    return res.status(503).json({error:"Planning callback unavailable"});
+  }
+});
+
+app.use(HUB_HELP_PATH, createHubHelpRouter({db}));
 
 // --- AUTHENTICATION ROUTES ---
 if (LEGACY_AUTH_ENABLED) {
@@ -979,7 +1036,7 @@ const getJobMessages = async jobId => {
 };
 
 const PORTAL_LINK_TTL_MS = 14 * 24 * 60 * 60 * 1000;
-const JOB_STATUSES = new Set(["request", "estimation", "in-progress", "review", "invoiced", "completed", "paid"]);
+const JOB_STATUSES = new Set(["request", "estimation", "in-progress", "review", "invoiced", "completed", "paid", "cancelled"]);
 
 
 function createPortalCredential() {
@@ -1004,7 +1061,7 @@ async function getActivePortalJob(token) {
   const job = await db.prepare(
     "SELECT * FROM jobs WHERE secureToken = ? AND secureTokenRevokedAt IS NULL LIMIT 1"
   ).get(cleanToken);
-  if (!job) return null;
+  if (!job || job.status === "cancelled") return null;
   if (!job.secureTokenExpires || new Date(job.secureTokenExpires).getTime() <= Date.now()) return null;
   return job;
 }
@@ -1079,8 +1136,9 @@ async function recordVerifiedWipayPayment(job, order) {
   );
 
   const totalPaid = alreadyPaid + amount;
-  const depositThreshold = jobValue * 0.3;
-  if (totalPaid + 0.005 >= depositThreshold && !job.depositPaid) {
+      const terms = depositTerms(job);
+    const depositThreshold = terms.amount;
+  if (depositThreshold > 0 && totalPaid + 0.005 >= depositThreshold && !job.depositPaid) {
     await db.prepare("UPDATE jobs SET depositPaid = 1 WHERE id = ? AND account_id = ?").run(job.id, job.account_id);
   }
 
@@ -1160,6 +1218,11 @@ const createNotification = async ({
 const updateJobStage = async (id, newStatus, accountId, userName = "System") => {
   const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(id, accountId);
   if (!job) return null;
+  if (job.status === "cancelled" && newStatus !== "cancelled") {
+    const error = new Error("Use Reopen Ticket to restore a cancelled job.");
+    error.statusCode = 409;
+    throw error;
+  }
 
   if (newStatus === "paid" && job.status !== "paid" && Number(job.amount || 0) > 0) {
     const paidAmount = await recordedPaymentTotal(id, accountId);
@@ -1169,6 +1232,14 @@ const updateJobStage = async (id, newStatus, accountId, userName = "System") => 
       paymentError.code = "PAYMENT_REQUIRED";
       throw paymentError;
     }
+  }
+
+  if (newStatus === "invoiced" && job.status === "review" &&
+      job.depositPolicy === "review_pending") {
+    const err = new Error("Choose a 20% deposit or waive it before invoicing.");
+    err.code = "DEPOSIT_POLICY_PENDING";
+    err.statusCode = 409;
+    throw err;
   }
 
   let timeLogs = job.timeLogs ? JSON.parse(job.timeLogs) : [];
@@ -1196,10 +1267,28 @@ const updateJobStage = async (id, newStatus, accountId, userName = "System") => 
   }
 
   // 3. Status-specific logic: Stop timer if finished
-  const isFinished = ['completed', 'paid'].includes(newStatus);
+  const isFinished = ['completed', 'paid', 'cancelled'].includes(newStatus);
   const timerStartedAt = isFinished ? null : now;
 
   // 4. Update DB
+  if (newStatus === "invoiced" && job.status === "review") {
+    // Stage and durable closure event commit atomically, without fake payment.
+    await db.transaction(async (tx) => {
+      const update = await tx.prepare(`
+        UPDATE jobs SET status = ?, timeLogs = ?, timerStartedAt = ?, assignedTo = ?
+        WHERE id = ? AND account_id = ? AND status = ?
+      `).run(newStatus, JSON.stringify(timeLogs), timerStartedAt,
+        assignedTo, id, accountId, "review");
+      if (update.changes !== 1) {
+        const err = new Error("Ticket stage changed; refresh before invoicing.");
+        err.statusCode = 409;
+        throw err;
+      }
+      await queueTiquetPlanningClosure(tx,{
+        jobId:id,accountId,invoicedAt:now
+      });
+    })();
+  } else {
   await db.prepare(`
         UPDATE jobs SET 
             status = ?, 
@@ -1208,6 +1297,7 @@ const updateJobStage = async (id, newStatus, accountId, userName = "System") => 
             assignedTo = ?
         WHERE id = ? AND account_id = ?
     `).run(newStatus, JSON.stringify(timeLogs), timerStartedAt, assignedTo, id, accountId);
+  }
 
   // FFPRO cash sync is payment-ledger driven. A job status transition must
   // never manufacture revenue on its own.
@@ -1312,6 +1402,30 @@ async function triggerFfproPaymentSync(paymentId, accountId) {
 // the inline retries in gatewayClient.js (e.g. FFPRO2 was down for longer
 // than those cover). Mirrors the existing wsHeartbeat setInterval pattern
 // elsewhere in this file rather than introducing a queue/worker system.
+// Independent, tenant-checked planning outbox. It remains inert until
+// separately configured with the FFPRO planning URL and 32+ byte secret.
+setInterval(async () => {
+  try {
+    await sweepTiquetPlanning({
+      db,
+      baseUrl: process.env.FFPRO_PLANNING_GATEWAY_URL,
+      secret: process.env.FFPRO_PLANNING_GATEWAY_SECRET
+    });
+  } catch (error) {
+    logger.warn("[Tiquet Planning] Delivery sweep failed: " + (error?.code || error?.name || "unknown"));
+  }
+}, 60 * 1000);
+
+setInterval(() => {
+  sweepTiquetPlanningClosure({
+    db,
+    baseUrl:process.env.FFPRO_PLANNING_GATEWAY_URL,
+    secret:process.env.FFPRO_PLANNING_GATEWAY_SECRET
+  }).catch(error => logger.warn("[Tiquet Planning] Close sweep failed", {
+    code:error?.code||error?.name||"unknown"
+  }));
+}, 60 * 1000).unref();
+
 const FFPRO_SWEEP_INTERVAL_MS = 5 * 60 * 1000; // every 5 minutes
 setInterval(async () => {
   try {
@@ -1563,9 +1677,8 @@ app.post("/api/jobs", authenticateToken, requireAnyPagePermission("jobs", "new-r
 
 // Update a job
 // ---------------------------------------------------------------------
-// Public intake endpoint — used by the VISION79 website's contact form
-// (website2026) to open a job here automatically when someone clicks
-// "Send My Request". This is the only route in the app that is reachable
+// Approved CRM conversion intake — enquiries remain in the website CRM.
+// This service endpoint creates jobs only after an approved conversion. This is the only route in the app that is reachable
 // without a logged-in user, so it is deliberately locked down harder than
 // the rest of the API:
 //   - a shared secret header (X-Intake-Secret) instead of a JWT
@@ -1585,6 +1698,12 @@ const intakeLimiter = rateLimit({
     error: "Too many requests. Please try again later or contact us directly."
   }
 });
+// Acknowledgements have a durable SMTP retry state on each new website ticket.
+const websiteAckWorker = createWebsiteAcknowledgementService({
+  db, logger, send: sendWebsiteTicketAcknowledgement,
+  accountId: process.env.INTAKE_ACCOUNT_ID || "default_account"
+});
+
 const requireIntakeSecret = (req, res, next) => {
   const configuredSecret = process.env.INTAKE_SECRET;
   if (!configuredSecret) {
@@ -1602,6 +1721,8 @@ const requireIntakeSecret = (req, res, next) => {
   next();
 };
 app.post("/api/public/intake", intakeLimiter, requireIntakeSecret, async (req, res) => {
+  // Website enquiries stay in CRM. This authenticated integration accepts only approved conversions.
+  if (!isApprovedWebsiteConversion(req.body)) return res.status(422).json({ error: "Approved CRM conversion is required." });
   const accountId = process.env.INTAKE_ACCOUNT_ID || "default_account";
 
   // Hard safety check: INTAKE_ACCOUNT_ID must be a real, existing account
@@ -1665,12 +1786,15 @@ app.post("/api/public/intake", intakeLimiter, requireIntakeSecret, async (req, r
         success: true,
         action: "already_processed",
         jobId: existingJob.id,
-        clientId: existingClient?.id || null
+        clientId: existingClient?.id || null,
+        ticketReference: websiteTicketReference(existingJob.id),
+        acknowledgement: "previously_accepted"
       });
     }
   }
   const id = uuidv4();
-  const secureToken = uuidv4();
+  const portalCredential = createPortalCredential();
+  const secureToken = portalCredential.token;
   const title = `Website Inquiry — ${company}`.slice(0, 300);
   const now = new Date().toISOString();
   const descriptionParts = [];
@@ -1684,8 +1808,8 @@ app.post("/api/public/intake", intakeLimiter, requireIntakeSecret, async (req, r
   const trimNotes = notes => notes.length > MAX_NOTES_LENGTH ? notes.slice(notes.length - MAX_NOTES_LENGTH) : notes;
   try {
     await db.prepare(`
-            INSERT INTO jobs (id, title, client, description, status, createdAt, priority, clientEmail, secureToken, depositPaid, account_id, timerStartedAt, timeLogs, intakeEventId)
-            VALUES (@id, @title, @client, @description, @status, @createdAt, @priority, @clientEmail, @secureToken, 0, @account_id, @timerStartedAt, '[]', @intakeEventId)
+            INSERT INTO jobs (id, title, client, description, status, createdAt, priority, clientEmail, secureToken, secureTokenExpires, depositPaid, account_id, timerStartedAt, timeLogs, intakeEventId, websiteAckStatus, websiteAckAttempts, websiteAckRetryAt)
+            VALUES (@id, @title, @client, @description, @status, @createdAt, @priority, @clientEmail, @secureToken, @secureTokenExpires, 0, @account_id, @timerStartedAt, '[]', @intakeEventId, 'queued', 0, @websiteAckRetryAt)
         `).run({
       id,
       title,
@@ -1696,8 +1820,10 @@ app.post("/api/public/intake", intakeLimiter, requireIntakeSecret, async (req, r
       priority: "medium",
       clientEmail: email,
       secureToken,
+      secureTokenExpires: portalCredential.expiresAt,
       account_id: accountId,
       timerStartedAt: now,
+      websiteAckRetryAt: now,
       intakeEventId: eventId ? String(eventId) : null
     });
     const insertTag = db.prepare('INSERT INTO job_tags (job_id, tag, account_id) VALUES (?, ?, ?)');
@@ -1779,7 +1905,12 @@ app.post("/api/public/intake", intakeLimiter, requireIntakeSecret, async (req, r
       success: true,
       action,
       jobId: id,
-      clientId
+      clientId,
+      ticketReference: websiteTicketReference(id),
+      acknowledgement: "queued"
+    });
+    void websiteAckWorker.process(id).catch(error => {
+      logger.error("Ticket receipt send attempt failed", { jobId: id, reason: error.message });
     });
   } catch (error) {
     console.error("[Intake] Failed to create job:", error);
@@ -1821,6 +1952,25 @@ app.put("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"), as
     });
     if (status !== undefined && !JOB_STATUSES.has(String(status))) {
       return badRequest(res, "Invalid job status");
+    }
+    if (status === "cancelled" || (existingJob.status === "cancelled" && status && status !== "cancelled")) {
+      return res.status(409).json({ error: "Use Cancel Ticket or Reopen Ticket to change this status.", code: "CANCELLATION_WORKFLOW_REQUIRED" });
+    }
+    // Due dates use the validated, auditable dedicated endpoint.
+    const requestedDate = dueDate ? String(dueDate).slice(0, 10) : null;
+    const storedDate = existingJob.dueDate ? String(existingJob.dueDate).slice(0, 10) : null;
+    if (dueDate !== undefined && requestedDate !== storedDate) {
+      return res.status(409).json({ error: "Use the ticket Due Date editor to reschedule and record the change." });
+    }
+    if (existingJob.invoiceSentAt) {
+      const lockedFields = { title, client, description, amount, invoiceNotes, clientEmail, clientId };
+      const changed = Object.entries(lockedFields).some(([field, value]) =>
+        value !== undefined && String(value ?? "") !== String(existingJob[field] ?? "")
+      );
+      if (changed) return res.status(409).json({
+        error: "This invoice was already issued. Use a documented adjustment or credit-note process instead of editing its contents.",
+        code: "ISSUED_INVOICE_LOCKED"
+      });
     }
     if (clientId !== undefined && clientId !== null) {
       const linkedClient = await db.prepare("SELECT id FROM clients WHERE id = ? AND account_id = ?").get(clientId, req.accountId);
@@ -1946,6 +2096,153 @@ app.put("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"), as
   }
 });
 
+// Change only the due date; never overwrite unrelated fields from a stale browser form.
+app.put("/api/jobs/:id/due-date", authenticateToken, requireAnyPagePermission("jobs"), async (req, res) => {
+  let dueDate;
+  try {
+    dueDate = parseDueDate(req.body?.dueDate);
+  } catch (error) {
+    return badRequest(res, error.message);
+  }
+  try {
+    const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(req.params.id, req.accountId);
+    if (!job) return res.status(404).json({ error: "Job not found" });
+    if (["completed", "paid", "cancelled"].includes(job.status)) {
+      return res.status(409).json({ error: "Closed or cancelled tickets cannot be rescheduled." });
+    }
+    const previous = job.dueDate ? String(job.dueDate).slice(0, 10) : null;
+    if (previous === dueDate) return res.json({ job, unchanged: true });
+    const updated = await db.prepare(
+      "UPDATE jobs SET dueDate = ? WHERE id = ? AND account_id = ? AND status NOT IN ('completed', 'paid', 'cancelled') RETURNING *"
+    ).get(dueDate, job.id, req.accountId);
+    if (!updated) return res.status(409).json({ error: "Ticket status changed while saving. Refresh and retry." });
+    const now = new Date().toISOString();
+    const action = "Due date changed from " + (previous || "Not set") + " to " + (dueDate || "Not set");
+    await db.prepare('INSERT INTO activity_logs (id, job_id, action, timestamp, "user", account_id) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(uuidv4(), job.id, action, now, req.user.email, req.accountId);
+    logger.audit("job_due_date_updated", { accountId: req.accountId, jobId: job.id });
+    res.json({ job: updated, success: true });
+  } catch (error) {
+    logger.error("due date update failed", { error: error.message });
+    res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+  }
+});
+
+// Admin-only customer call outcomes for website-originated enquiries.
+// A confirmation is NOT a payment, quote approval or an automatic stage change.
+app.post("/api/jobs/:id/customer-confirmation", authenticateToken, requireAdmin, async (req, res) => {
+  let decision;
+  try { decision = validateContactOutcome(req.body?.outcome, req.body?.notes); }
+  catch (error) { return badRequest(res, error.message); }
+
+  const accountId = process.env.INTAKE_ACCOUNT_ID || "default_account";
+  if (req.accountId !== accountId) return res.status(403).json({ error: "This workflow is limited to Vision79's website workspace." });
+  try {
+    const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(req.params.id, accountId);
+    if (!job) return res.status(404).json({ error: "Ticket not found" });
+    if (!isWebsiteEvent(job.intakeEventId)) return res.status(409).json({ error: "This is not a website-originated enquiry." });
+    if (["completed", "paid", "cancelled"].includes(job.status))
+      return res.status(409).json({ error: "Closed or cancelled tickets cannot be confirmed as a new customer." });
+    if (job.crmCustomerId && job.crmLeadId) {
+      return res.json({ success: true, alreadyConverted: true, crmLeadId: Number(job.crmLeadId), customerId: job.crmCustomerId });
+    }
+    if (job.contactOutcome === "confirmed" && decision.outcome !== "confirmed") {
+      return res.status(409).json({ error: "A previously confirmed enquiry cannot be declined without administrative reconciliation." });
+    }
+    const actor = req.user.email;
+    const now = new Date().toISOString();
+    const activity = async (action) => db.prepare(
+      'INSERT INTO activity_logs (id, job_id, action, timestamp, "user", account_id) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(uuidv4(), job.id, action, now, actor, accountId);
+
+    if (decision.outcome !== "confirmed") {
+      await db.prepare([
+        "UPDATE jobs SET contactOutcome = ?, contactNotes = ?, contactAt = ?, contactBy = ?",
+        "WHERE id = ? AND account_id = ?"
+      ].join(" ")).run(decision.outcome, decision.notes, now, actor, job.id, accountId);
+      await activity("Website enquiry call outcome: " + decision.outcome + ". Notes: " + decision.notes);
+      logger.audit("website_enquiry_call_recorded", { accountId, jobId: job.id, outcome: decision.outcome });
+      const updated = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(job.id, accountId);
+      return res.json({ success: true, outcome: decision.outcome, job: updated });
+    }
+
+    // A small lease prevents concurrent conversion clicks. If the website
+    // confirms a conversion but this server crashes, retries are idempotent.
+    const stale = new Date(Date.now() - 5 * 60_000).toISOString();
+    const claimed = await db.prepare([
+      "UPDATE jobs SET contactOutcome = 'confirmed', contactNotes = ?,",
+      "contactAt = ?, contactBy = ?, crmSyncStatus = 'pending', crmSyncLeaseAt = ?",
+      "WHERE id = ? AND account_id = ?",
+      "AND (crmSyncLeaseAt IS NULL OR crmSyncLeaseAt < ?)",
+      "AND crmCustomerId IS NULL AND status NOT IN ('cancelled','completed','paid')",
+      "RETURNING *"
+    ].join(" ")).get(decision.notes, now, actor, now, job.id, accountId, stale);
+    if (!claimed) return res.status(409).json({ error: "This enquiry is being updated. Refresh before retrying." });
+    try {
+      const converted = await submitConfirmedCustomerToWebsite({
+        jobId: claimed.id, intakeEventId: claimed.intakeEventId,
+        accountId, confirmationNotes: decision.notes, confirmedBy: actor
+      });
+      await db.prepare([
+        "UPDATE jobs SET crmSyncStatus = 'synced', crmSyncLeaseAt = NULL,",
+        "crmLeadId = ?, crmCustomerId = ?",
+        "WHERE id = ? AND account_id = ? AND crmSyncLeaseAt = ?"
+      ].join(" ")).run(String(converted.crmLeadId), converted.crmCustomerId, job.id, accountId, now);
+      if (job.clientId) {
+        await db.prepare("UPDATE clients SET leadStatus = ? WHERE id = ? AND account_id = ?")
+          .run("Converted", job.clientId, accountId);
+      }
+      await activity("Customer confirmed by phone; website CRM lead #" +
+        converted.crmLeadId + " linked to customer " + converted.crmCustomerId +
+        ". Call notes: " + decision.notes);
+      logger.audit("website_enquiry_converted", { accountId, jobId: job.id, crmLeadId: converted.crmLeadId });
+      const updated = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(job.id, accountId);
+      return res.json({ success: true, outcome: "confirmed", crmLeadId: converted.crmLeadId,
+        customerId: converted.crmCustomerId, alreadyConverted: converted.alreadyConverted, job: updated });
+    } catch (error) {
+      await db.prepare([
+        "UPDATE jobs SET crmSyncStatus = 'failed', crmSyncLeaseAt = NULL",
+        "WHERE id = ? AND account_id = ? AND crmSyncLeaseAt = ?"
+      ].join(" ")).run(job.id, accountId, now);
+      await activity("Customer confirmation recorded; website CRM conversion pending verification.");
+      return res.status(error.status === 409 ? 409 : 503).json({
+        error: error.status === 409 ? error.message : "Customer call saved, but CRM conversion is pending. Retry when the website CRM is available.",
+        confirmationSaved: true, crmSyncStatus: "failed"
+      });
+    }
+  } catch (error) {
+    logger.error("Customer confirmation update failed", { error: error.message });
+    return res.status(500).json({ error: isProduction ? "Customer confirmation could not be completed." : error.message });
+  }
+});
+
+// Explicit retry: never send a second acknowledgement that SMTP has accepted.
+app.post("/api/jobs/:id/retry-acknowledgement", authenticateToken, requireAdmin, async (req, res) => {
+  const accountId = process.env.INTAKE_ACCOUNT_ID || "default_account";
+  if (req.accountId !== accountId) return res.status(403).json({ error: "Wrong workspace." });
+  try {
+    const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(req.params.id, accountId);
+    if (!job) return res.status(404).json({ error: "Ticket not found" });
+    if (!isWebsiteEvent(job.intakeEventId) || !job.websiteAckStatus)
+      return res.status(409).json({ error: "Acknowledgements are only available for new website enquiries." });
+    if (job.websiteAckStatus === "sent")
+      return res.status(409).json({ error: "An acknowledgement was already accepted by the email service." });
+    if (job.websiteAckStatus === "sending" && job.websiteAckLeaseAt &&
+        Date.now() - Date.parse(job.websiteAckLeaseAt) < 5 * 60_000)
+      return res.status(409).json({ error: "The acknowledgement is being sent. Check again shortly." });
+    await db.prepare([
+      "UPDATE jobs SET websiteAckStatus = 'queued', websiteAckAttempts = 0,",
+      "websiteAckRetryAt = ?, websiteAckLeaseAt = NULL",
+      "WHERE id = ? AND account_id = ? AND websiteAckStatus <> 'sent'"
+    ].join(" ")).run(new Date().toISOString(), job.id, accountId);
+    const attempt = await websiteAckWorker.process(job.id);
+    return res.json({ success: attempt.accepted, acknowledged: attempt.accepted, retryScheduled: !attempt.accepted });
+  } catch (error) {
+    logger.error("Ticket acknowledgement retry failed", { jobId: req.params.id, error: error.message });
+    return res.status(503).json({ error: "Could not retry acknowledgement." });
+  }
+});
+
 // Delete job endpoint
 app.delete("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"), async (req, res) => {
   const {
@@ -1974,6 +2271,127 @@ app.delete("/api/jobs/:id", authenticateToken, requireAnyPagePermission("jobs"),
     res.status(500).json({
       error: isProduction ? "Internal Server Error" : error.message
     });
+  }
+});
+
+
+// Cancellation is a distinct, auditable outcome, never a Completed or Paid job.
+app.post("/api/jobs/:id/cancel", authenticateToken, requireAnyPagePermission("jobs"), async (req, res) => {
+  const reason = String(req.body?.reason || "").trim();
+  if (reason.length < 5 || reason.length > 500) return badRequest(res, "Provide a cancellation reason (5-500 characters).");
+  try {
+    const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(req.params.id, req.accountId);
+    if (!job) return res.status(404).json({ error: "Job not found" });
+    if (job.status === "cancelled") return res.status(409).json({ error: "Ticket already cancelled.", code: "ALREADY_CANCELLED" });
+    if (["invoiced", "completed", "paid"].includes(job.status) || (await recordedPaymentTotal(job.id, req.accountId)) > 0) {
+      return res.status(409).json({ error: "This job has billing or completed work. Review an adjustment or refund before cancellation.", code: "BILLING_REVIEW_REQUIRED" });
+    }
+    await updateJobStage(job.id, "cancelled", req.accountId, req.user.email);
+    const now = new Date().toISOString();
+    await db.prepare("UPDATE jobs SET cancellationReason = ?, cancelledAt = ?, cancelledBy = ?, secureTokenRevokedAt = ? WHERE id = ? AND account_id = ?")
+      .run(reason, now, req.user.email, now, job.id, req.accountId);
+    await db.prepare('INSERT INTO activity_logs (id, job_id, action, timestamp, "user", account_id) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(uuidv4(), job.id, "Cancellation reason: " + reason, now, req.user.email, req.accountId);
+    logger.audit("job_cancelled", { accountId: req.accountId, jobId: job.id });
+    const updated = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(job.id, req.accountId);
+    res.json({ job: updated, success: true });
+  } catch (error) {
+    const code = error.statusCode || 500;
+    res.status(code).json({ error: code === 500 && isProduction ? "Internal Server Error" : error.message });
+  }
+});
+
+app.post("/api/jobs/:id/reopen", authenticateToken, requireAnyPagePermission("jobs"), async (req, res) => {
+  try {
+    const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(req.params.id, req.accountId);
+    if (!job) return res.status(404).json({ error: "Job not found" });
+    if (job.status !== "cancelled") return res.status(409).json({ error: "Only cancelled jobs can be reopened." });
+    // Reopening preserves the cancellation record, but restarts the ordinary request workflow.
+    await db.prepare("UPDATE jobs SET status = ?, quoteApproved = 0 WHERE id = ? AND account_id = ? AND status = ?")
+      .run("request", job.id, req.accountId, "cancelled");
+    const now = new Date().toISOString();
+    await db.prepare('INSERT INTO activity_logs (id, job_id, action, timestamp, "user", account_id) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(uuidv4(), job.id, "Cancelled ticket reopened as Request", now, req.user.email, req.accountId);
+    await safeQueuePlatformEvent({ accountId: req.accountId, type: "job.status_changed", subjectId: job.id, occurredAt: now,
+      payload: { title: job.title, previousStatus: "cancelled", status: "request" } });
+    logger.audit("job_reopened", { accountId: req.accountId, jobId: job.id });
+    const updated = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(job.id, req.accountId);
+    res.json({ job: updated, success: true });
+  } catch (error) {
+    res.status(500).json({ error: isProduction ? "Internal Server Error" : error.message });
+  }
+});
+
+async function loadInvoiceContext(id, accountId) {
+  const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(id, accountId);
+  if (!job) return null;
+  const client = job.clientId ? await db.prepare("SELECT * FROM clients WHERE id = ? AND account_id = ?").get(job.clientId, accountId) : null;
+  const settings = await db.prepare("SELECT * FROM settings WHERE account_id = ? LIMIT 1").get(accountId);
+  const paidAmount = await recordedPaymentTotal(job.id, accountId);
+  return { job, client, settings: settings || {}, paidAmount };
+}
+
+app.get("/api/jobs/:id/invoice.pdf", authenticateToken, requireAnyPagePermission("invoices"), async (req, res) => {
+  try {
+    const context = await loadInvoiceContext(req.params.id, req.accountId);
+    if (!context) return res.status(404).json({ error: "Job not found" });
+    const issue = validateInvoice(context.job, null, false);
+    if (issue) return res.status(409).json({ error: issue });
+    const pdf = await renderInvoicePdf({ ...context, issuedAt: context.job.invoiceIssuedAt || new Date().toISOString() });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Cache-Control", "no-store, private");
+    res.setHeader("Content-Disposition", 'attachment; filename="' + invoiceReference(context.job.id) + '.pdf"');
+    res.send(pdf);
+  } catch (error) {
+    logger.error("invoice pdf failed", { error: error.message });
+    res.status(500).json({ error: "Could not generate the invoice PDF." });
+  }
+});
+
+const invoiceEmailLimiter = rateLimit({ windowMs: 60_000, limit: 5, standardHeaders: "draft-7", legacyHeaders: false });
+app.post("/api/jobs/:id/send-invoice", authenticateToken, requireAnyPagePermission("invoices"), invoiceEmailLimiter, async (req, res) => {
+  let leaseAcquired = false;
+  try {
+    const context = await loadInvoiceContext(req.params.id, req.accountId);
+    if (!context) return res.status(404).json({ error: "Job not found" });
+    const { job, client, settings, paidAmount } = context;
+    const recipient = invoiceRecipient(job, client);
+    const issue = validateInvoice(job, recipient);
+    if (issue) return res.status(409).json({ error: issue });
+    if (job.invoiceSentAt && Date.now() - Date.parse(job.invoiceSentAt) < 60_000) {
+      return res.status(429).json({ error: "This invoice was just sent. Please check the delivery record before resending." });
+    }
+    const now = new Date().toISOString();
+    const leaseCutoff = new Date(Date.now() - 300_000).toISOString();
+    const acquired = await db.prepare("UPDATE jobs SET invoiceSendingAt = ? WHERE id = ? AND account_id = ? AND (invoiceSendingAt IS NULL OR invoiceSendingAt < ?) RETURNING id")
+      .get(now, job.id, req.accountId, leaseCutoff);
+    if (!acquired) return res.status(409).json({ error: "This invoice is already being sent. Check again shortly." });
+    leaseAcquired = true;
+    const issuedAt = job.invoiceIssuedAt || now;
+    const pdf = await renderInvoicePdf({ job, client, settings, issuedAt, paidAmount });
+    const number = invoiceReference(job.id);
+    const amount = new Intl.NumberFormat("en-GB", { style: "currency", currency: settings.currency || "XCD" }).format(Number(job.amount));
+    // Only a workspace's own configured address may receive the private invoice copy.
+    const bcc = invoiceBccForWorkspace(settings, recipient);
+    const result = await sendInvoiceDocument({ to: recipient, bcc, companyName: settings.name || "V79 Tiquet",
+      number, title: job.title, amount, pdf, filename: number + ".pdf" });
+    if (!result.success || result.skipped) {
+      return res.status(503).json({ error: result.skipped ? "Email is not configured. Download the PDF and send it manually." : "Email service did not accept the invoice. Please retry later." });
+    }
+    await db.prepare("UPDATE jobs SET invoiceIssuedAt = COALESCE(invoiceIssuedAt, ?), invoiceSentAt = ?, invoiceSentTo = ? WHERE id = ? AND account_id = ?")
+      .run(issuedAt, now, recipient, job.id, req.accountId);
+    await db.prepare('INSERT INTO activity_logs (id, job_id, action, timestamp, "user", account_id) VALUES (?, ?, ?, ?, ?, ?)')
+      .run(uuidv4(), job.id, "Invoice " + number + " emailed to " + recipient + (bcc ? " (BCC " + bcc + ")" : ""), now, req.user.email, req.accountId);
+    logger.audit("invoice_emailed", { accountId: req.accountId, jobId: job.id, invoice: number });
+    res.json({ success: true, invoice: number, sentTo: recipient, copyTo: bcc || null, sentAt: now });
+  } catch (error) {
+    logger.error("invoice send failed", { error: error.message });
+    res.status(500).json({ error: "Could not send invoice; verify delivery before retrying." });
+  } finally {
+    if (leaseAcquired) {
+      db.prepare("UPDATE jobs SET invoiceSendingAt = NULL WHERE id = ? AND account_id = ?")
+        .run(req.params.id, req.accountId).catch(error => logger.error("invoice send lease cleanup failed", { error: error.message }));
+    }
   }
 });
 
@@ -2122,6 +2540,49 @@ app.get("/api/payments/summary", authenticateToken, requireAnyPagePermission("da
   }
 });
 
+// Authorised reviewer sets the deposit terms for a linked FFPRO plan.
+// Staff invoice queue includes only approved, linked FFPRO planning projects.
+// Unrelated legacy jobs must not be offered the new deposit policy.
+app.get("/api/planning/review-deposits",
+  authenticateToken, requireAnyPagePermission("invoices"), async (req,res) => {
+  try {
+    const result=await db.query(
+      'SELECT j.id,j.title,j.client,j.amount,j.depositPolicy AS "depositPolicy" '+
+      'FROM jobs j JOIN tiquet_planning_outbox o ON '+
+      'o.job_id=j.id AND o.account_id=j.account_id '+
+      'WHERE j.account_id=$1 AND j.status=$2 AND '+
+      "o.status='sent' AND o.project_id IS NOT NULL ORDER BY j.createdAt DESC LIMIT 150",
+      [req.accountId,'review']
+    );
+    return res.json(result.rows);
+  } catch(error) {
+    logger.warn("[Tiquet Deposit] Cannot load Review queue", {
+      code:error?.code||error?.name||"unknown"
+    });
+    return res.status(503).json({error:"Review queue temporarily unavailable"});
+  }
+});
+
+app.post("/api/jobs/:id/review-deposit-policy",
+  authenticateToken, requireAnyPagePermission("invoices"), async (req, res) => {
+  try {
+    const result = await setReviewDepositPolicy({
+      db, accountId:req.accountId, jobId:req.params.id,
+      policy:req.body?.policy, actor:req.user?.email || req.user?.id
+    });
+    const job = await db.prepare("SELECT amount,depositPolicy FROM jobs WHERE id=? AND account_id=?")
+      .get(req.params.id,req.accountId);
+    return res.json({success:true,...result,terms:depositTerms(job)});
+  } catch(error) {
+    if(error instanceof DepositPolicyError)
+      return res.status(error.status).json({error:error.code,code:error.code});
+    logger.error("[Tiquet Deposit] Review selection failed",{
+      code:error?.code||error?.name||"unknown"
+    });
+    return res.status(503).json({error:"Deposit terms temporarily unavailable."});
+  }
+});
+
 app.post("/api/payments", authenticateToken, requireAnyPagePermission("invoices"), async (req, res) => {
   const body = sanitizeObject(req.body || {});
   const jobId = String(body.jobId || "").trim();
@@ -2143,6 +2604,10 @@ app.post("/api/payments", authenticateToken, requireAnyPagePermission("invoices"
   try {
     const job = await db.prepare("SELECT * FROM jobs WHERE id = ? AND account_id = ?").get(jobId, req.accountId);
     if (!job) return res.status(404).json({ error: "Job not found" });
+    if (job.status === "cancelled") return res.status(409).json({
+      error: "Cannot record a new payment against a cancelled ticket.",
+      code: "CANCELLED_TICKET"
+    });
 
     const jobValue = Math.max(0, Number(job.amount || 0));
     if (jobValue <= 0) return res.status(409).json({
@@ -2184,8 +2649,9 @@ app.post("/api/payments", authenticateToken, requireAnyPagePermission("invoices"
     );
 
     const totalPaid = alreadyPaid + amount;
-    const depositThreshold = jobValue * 0.3;
-    if (totalPaid + 0.005 >= depositThreshold && !job.depositPaid) {
+        const terms = depositTerms(job);
+    const depositThreshold = terms.amount;
+    if (depositThreshold > 0 && totalPaid + 0.005 >= depositThreshold && !job.depositPaid) {
       await db.prepare("UPDATE jobs SET depositPaid = 1 WHERE id = ? AND account_id = ?")
         .run(job.id, req.accountId);
     }
@@ -2261,21 +2727,29 @@ app.put("/api/settings", authenticateToken, requireAdmin, async (req, res) => {
     website,
     paymentTerms,
     currency,
-    taxRate
+    taxRate,
+    invoiceCopyEmail
   } = sanitizeObject(req.body);
+  let copyAddress;
+  try {
+    copyAddress = invoiceCopyEmail === undefined ? undefined : normalizeInvoiceCopyEmail(invoiceCopyEmail);
+  } catch (error) {
+    return badRequest(res, error.message);
+  }
   try {
     const existing = await db.prepare("SELECT id FROM settings WHERE account_id = ?").get(req.accountId);
     if (existing) {
       await db.prepare(`
                 UPDATE settings 
-                SET name = ?, address = ?, email = ?, phone = ?, logoUrl = ?, website = ?, paymentTerms = ?, currency = ?, taxRate = ? 
+                SET name = ?, address = ?, email = ?, phone = ?, logoUrl = ?, website = ?, paymentTerms = ?, currency = ?, taxRate = ?,
+                    invoiceCopyEmail = COALESCE(?, invoiceCopyEmail)
                 WHERE account_id = ?
-            `).run(name, address, email, phone, logoUrl, website, paymentTerms, currency, taxRate, req.accountId);
+            `).run(name, address, email, phone, logoUrl, website, paymentTerms, currency, taxRate, copyAddress === undefined ? null : copyAddress, req.accountId);
     } else {
       await db.prepare(`
-                INSERT INTO settings (id, name, address, email, phone, logoUrl, website, paymentTerms, currency, taxRate, account_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            `).run(uuidv4(), name, address, email, phone, logoUrl, website, paymentTerms, currency, taxRate, req.accountId);
+                INSERT INTO settings (id, name, address, email, phone, logoUrl, website, paymentTerms, currency, taxRate, invoiceCopyEmail, account_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `).run(uuidv4(), name, address, email, phone, logoUrl, website, paymentTerms, currency, taxRate, copyAddress === undefined ? "" : copyAddress, req.accountId);
     }
     res.json(await db.prepare("SELECT * FROM settings WHERE account_id = ?").get(req.accountId));
   } catch (error) {
@@ -3429,15 +3903,20 @@ app.delete("/api/jobs/:id/files/:filename", authenticateToken, requireAnyPagePer
     if (!job) return res.status(404).json({
       error: 'Job not found'
     });
-    const folder = getJobFolder(req.accountId, job.client, jobId);
-    const filePath = path.join(folder, filename);
-
-    // Security: ensure file is inside the job folder (prevent path traversal)
-    if (!filePath.startsWith(folder)) return res.status(403).json({
+    // Only this sensitive deletion path gets strict segment resolution.
+    // Normal uploads and existing folder naming remain unchanged.
+    const folder = resolveJobFolder(UPLOADS_ROOT, req.accountId, job.client, jobId);
+    const filePath = resolveOwnedJobFile(folder, filename);
+    if (!filePath) return res.status(403).json({
       error: 'Forbidden'
     });
     if (!fs.existsSync(filePath)) return res.status(404).json({
       error: 'File not found'
+    });
+    // Refuse directory or symlink targets; delete only a regular file in
+    // this exact job directory, not a similarly prefixed sibling job.
+    if (!fs.lstatSync(filePath).isFile()) return res.status(403).json({
+      error: 'Forbidden'
     });
     fs.unlinkSync(filePath);
     appendProjectLog(req.accountId, job.client, jobId, {
@@ -3461,10 +3940,76 @@ const getSettingsForPortal = async accountId => {
   return (await db.prepare("SELECT * FROM settings WHERE account_id = ? LIMIT 1").get(accountId)) || {};
 };
 
+// Hub App Help tickets carry an internal staff description and tenant IDs.
+// A bearer-link customer can only read the verified public support summary.
+function isHubHelpPortalJob(job) {
+  return typeof job?.intakeEventId === "string" && /^hub-help:[a-f0-9]{64}$/.test(job.intakeEventId);
+}
+
+// Only holders of a valid, unexpired Tiquet client portal link may access
+// the FFPRO-approved subset. Project and organisation IDs come from SQL,
+// never from the client's URL or query string.
+async function sendApprovedPlanningFiles(req,res,fileId=null) {
+  res.setHeader("Cache-Control","private, no-store");
+  res.setHeader("Referrer-Policy","no-referrer");
+  res.setHeader("X-Content-Type-Options","nosniff");
+  res.setHeader("Content-Security-Policy","sandbox; default-src 'none'; frame-ancestors 'none'");
+  try {
+    const job=await getActivePortalJob(req.params.token);
+    if(!job||isHubHelpPortalJob(job))
+      return res.status(404).json({error:"Shared documents not found"});
+    const result=await proxyPlanningFiles({
+      db,job,fileId,
+      baseUrl:process.env.FFPRO_PLANNING_GATEWAY_URL,
+      secret:process.env.FFPRO_PLANNING_GATEWAY_SECRET
+    });
+    if(result.kind==="list")return res.json({files:result.files});
+    const name=result.fileName.replace(/[^A-Za-z0-9._ -]/g,"_").slice(0,120);
+    res.setHeader("Content-Type","application/octet-stream");
+    res.setHeader("Content-Disposition",'attachment; filename="'+name+'"');
+    res.setHeader("Content-Length",String(result.data.length));
+    return res.end(result.data);
+  }catch(error) {
+    if(error instanceof PlanningFileProxyError)
+      return res.status(error.status).json({error:"Shared document unavailable"});
+    logger.warn("[Tiquet Portal] Planning-file gateway error",{
+      code:error?.code||error?.name||"unknown"
+    });
+    return res.status(503).json({error:"Shared documents temporarily unavailable"});
+  }
+}
+app.get("/api/portal/:token/planning/files",(req,res)=>sendApprovedPlanningFiles(req,res));
+app.get("/api/portal/:token/planning/files/:fileId",
+  (req,res)=>sendApprovedPlanningFiles(req,res,req.params.fileId));
+
 app.get("/api/portal/:token", async (req, res) => {
   try {
     const job = await getActivePortalJob(req.params.token);
     if (!job) return res.status(404).json({ error: "Invalid or expired link" });
+    if (isHubHelpPortalJob(job)) {
+      const summaryText = String(job.description || "").split("\n\n").at(-1).slice(0, 18000);
+      const rows = await getJobMessages(job.id);
+      const messages = rows.filter(row => row.sender === "Client" || row.sender === "V79 Customer Care")
+        .slice(-100).map(row => ({
+          id: row.id, sender: row.sender === "Client" ? "Client" : "Support",
+          content: String(row.content || "").slice(0, 2000), timestamp: row.timestamp
+        }));
+      res.setHeader("Cache-Control", "no-store");
+      res.setHeader("Referrer-Policy", "no-referrer");
+      return res.json({
+        job: {
+          id: job.id, title: job.title, client: job.client, status: job.status,
+          priority: job.priority, createdAt: job.createdAt, dueDate: null,
+          description: summaryText, amount: 0, depositPaid: 0,
+          quoteApproved: false, activityLog: [], messages, lineItems: [],
+          deliverables: [], timeLogs: [], stageAssignments: {}, timerStartedAt: null
+        },
+        settings: { businessName: "Vision79 Digital" },
+        payments: { totalPaid: 0, outstandingAmount: 0, fullyPaid: true },
+        billing: { available: false, provider: "wipay", environment: null, currency: null }
+      });
+    }
+
 
     const summary = await paymentSummary(job);
     const {
@@ -3515,13 +4060,28 @@ app.post("/api/portal/:token/approve-quote", portalActionLimiter, async (req, re
   try {
     const job = await getActivePortalJob(req.params.token);
     if (!job) return res.status(404).json({ error: "Invalid or expired link" });
+    if (isHubHelpPortalJob(job)) return res.status(403).json({ error: "Billing and quote actions are unavailable for support tickets." });
 
     if (!job.quoteApproved) {
       if (job.status === "request" || job.status === "estimation") {
         await updateJobStage(job.id, "in-progress", job.account_id, "Client Portal");
       }
-      await db.prepare("UPDATE jobs SET quoteApproved = 1 WHERE id = ? AND account_id = ?")
-        .run(job.id, job.account_id);
+      // Approval and durable planning event are committed together. The
+      // FFPRO project may be created later by the retry worker.
+      await db.transaction(async (tx) => {
+        const planningConfigured = Boolean(
+          process.env.FFPRO_PLANNING_GATEWAY_URL &&
+          String(process.env.FFPRO_PLANNING_GATEWAY_SECRET || "").length >= 32
+        );
+        await tx.prepare(
+          "UPDATE jobs SET quoteApproved = 1, depositPolicy = CASE " +
+          "WHEN ? = 1 THEN COALESCE(depositPolicy,'review_pending') ELSE depositPolicy END " +
+          "WHERE id = ? AND account_id = ?"
+        ).run(planningConfigured ? 1 : 0, job.id, job.account_id);
+        await queueTiquetPlanningApproval(tx, {
+          jobId: job.id, accountId: job.account_id, approvedAt: new Date().toISOString()
+        });
+      })();
       await db.prepare(
         "INSERT INTO activity_logs (id, job_id, action, timestamp, user, account_id) VALUES (?, ?, ?, ?, ?, ?)"
       ).run(uuidv4(), job.id, "Quote approved by client", new Date().toISOString(), "Client", job.account_id);
@@ -3537,6 +4097,8 @@ async function startPortalWipayCheckout(req, res, paymentKind) {
   try {
     const job = await getActivePortalJob(req.params.token);
     if (!job) return res.status(404).json({ error: "Invalid or expired link" });
+    if (isHubHelpPortalJob(job)) return res.status(403).json({ error: "Billing and quote actions are unavailable for support tickets." });
+    if (job.status === "cancelled") return res.status(409).json({ error: "This ticket has been cancelled.", code: "CANCELLED_TICKET" });
     if (!tiquetBillingConfigured()) return res.status(503).json({ error: "Online payment is not configured.", code: "BILLING_NOT_CONFIGURED" });
 
     const [summary, account, settings] = await Promise.all([
@@ -3555,7 +4117,16 @@ async function startPortalWipayCheckout(req, res, paymentKind) {
 
     let amount = summary.outstandingAmount;
     if (paymentKind === "deposit") {
-      const depositTarget = Math.round(Math.max(0, Number(job.amount || 0)) * 0.3 * 100) / 100;
+      const terms = depositTerms(job);
+      if (terms.pending) return res.status(409).json({
+        error: "Deposit terms must be selected in Review.",
+        code: "DEPOSIT_POLICY_PENDING"
+      });
+      if (terms.waived) return res.status(409).json({
+        error: "The reviewer waived the deposit requirement.",
+        code: "DEPOSIT_WAIVED"
+      });
+      const depositTarget = terms.amount;
       amount = Math.max(0, Math.min(summary.outstandingAmount, depositTarget - summary.paidAmount));
       if (amount <= 0.005) return res.status(409).json({ error: "The required deposit is already recorded.", code: "DEPOSIT_ALREADY_PAID" });
     }
@@ -3583,6 +4154,8 @@ app.post("/api/portal/:token/payment-confirm", portalActionLimiter, async (req, 
   try {
     const job = await getActivePortalJob(req.params.token);
     if (!job) return res.status(404).json({ error: "Invalid or expired link" });
+    if (isHubHelpPortalJob(job)) return res.status(403).json({ error: "Billing and quote actions are unavailable for support tickets." });
+    if (job.status === "cancelled") return res.status(409).json({ error: "This ticket has been cancelled.", code: "CANCELLED_TICKET" });
     const orderId = String(req.body?.orderId || "").trim();
     if (!/^v79_[A-Za-z0-9_]+$/.test(orderId) || orderId.length > 64) return res.status(400).json({ error: "Invalid billing order." });
 
@@ -3904,6 +4477,7 @@ if (process.env.STRIPE_SECRET_KEY) {
 
 // Serve frontend
 if (!isProduction) {
+  const { createServer: createViteServer } = await import("vite");
   const vite = await createViteServer({
     root: path.resolve(__dirname, '..'),
     server: {
@@ -4023,7 +4597,7 @@ wss.on("connection", async (ws, req) => {
         return;
       }
       const staffAccess = await authorizeTiquetStaffSocket({
-        decoded, db, checkHubSubscription,
+        decoded, db, checkHubSubscription, checkHubSession,
       });
       if (!staffAccess.allowed) {
         ws.close(4003, "Hub entitlement or staff session unavailable");
@@ -4032,6 +4606,7 @@ wss.on("connection", async (ws, req) => {
       jobId = job.id;
       ws.role = "staff";
       ws.hubIdentity = staffAccess.hubIdentity;
+      ws.hubSessionId = staffAccess.hubSessionId;
       ws.sessionIdentity = staffAccess.sessionIdentity;
       ws.tokenHash = tokenFingerprint(authParam);
       ws.jwtExpiresAt = staffAccess.jwtExpiresAt;
@@ -4082,7 +4657,7 @@ const wsHeartbeat = setInterval(() => {
             unsubscribeFromJob(ws.jobId, ws);
             return ws.close(4003, "Portal link no longer authorized");
           }
-        } else if (!(await revalidateTiquetStaffSocket(ws, checkHubSubscription, Date.now(), db))) {
+        } else if (!(await revalidateTiquetStaffSocket(ws, checkHubSubscription, Date.now(), db, checkHubSession))) {
           unsubscribeFromJob(ws.jobId, ws);
           return ws.close(4003, "Hub entitlement or session expired");
         }
@@ -4118,6 +4693,7 @@ if (process.env.INTAKE_SECRET) {
   })();
 }
 startPlatformEventPump();
+websiteAckWorker.start();
 
 server.listen(PRIMARY_PORT, '0.0.0.0', () => {
   logger.info(`Backend server running on primary port ${PRIMARY_PORT} in ${isProduction ? 'production' : 'development'} mode (HTTP + WS)`);

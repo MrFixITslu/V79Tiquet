@@ -12,8 +12,13 @@ import {
   Landmark,
 } from "lucide-react";
 import { JobDetailModal } from "./JobDetailModal";
-import { api } from "../api";
+import { api, getToken } from "../api";
 import { formatMoney } from "../currency";
+
+type PlanningDepositReview={
+  id:string;title:string;client:string;amount:number;
+  depositPolicy:'review_pending'|'twenty_percent'|'waived'|null;
+};
 
 type PaymentResponse = {
   payment: PaymentRecord;
@@ -24,12 +29,16 @@ type PaymentResponse = {
 export function Invoices({
   jobs,
   setJobs,
+  reloadJobs,
+  canConfirmCustomer,
   employees,
   clients,
   settings,
 }: {
   jobs: Job[];
   setJobs: React.Dispatch<React.SetStateAction<Job[]>>;
+  reloadJobs: () => Promise<void>;
+  canConfirmCustomer?: boolean;
   employees: Employee[];
   clients: Client[];
   settings: BusinessSettings;
@@ -39,6 +48,85 @@ export function Invoices({
   const [payments, setPayments] = useState<PaymentRecord[]>([]);
   const [paymentJob, setPaymentJob] = useState<Job | null>(null);
   const [paymentError, setPaymentError] = useState<string | null>(null);
+  const [reviewDeposits,setReviewDeposits]=useState<PlanningDepositReview[]>([]);
+  const [reviewError,setReviewError]=useState<string|null>(null);
+  const [savingReviewId,setSavingReviewId]=useState<string|null>(null);
+  const loadReviewDeposits=async()=>{
+    try {
+      setReviewDeposits(await api.get<PlanningDepositReview[]>("/planning/review-deposits"));
+      setReviewError(null);
+    }catch(error){
+      setReviewError(error instanceof Error?error.message:"Could not load deposit reviews.");
+    }
+  };
+  const saveReviewDeposit=async(job:PlanningDepositReview,
+    policy:'twenty_percent'|'waived')=>{
+    if(savingReviewId)return;
+    if(policy==='waived' && !window.confirm(
+      'Waive the initial deposit for '+job.client+'? The invoice balance will remain payable.'
+    ))return;
+    setSavingReviewId(job.id);setReviewError(null);
+    try{
+      await api.post('/jobs/'+encodeURIComponent(job.id)+'/review-deposit-policy',{policy});
+      await loadReviewDeposits();
+      // Server already persisted the policy. Reload only; a whole-ticket PUT
+      // here can overwrite a more recent staff update from another browser.
+      await reloadJobs();
+    }catch(error){
+      setReviewError(error instanceof Error?error.message:"Could not save deposit choice.");
+    }finally{setSavingReviewId(null)}
+  };
+  const [invoiceNotice, setInvoiceNotice] = useState<{ error: boolean; text: string } | null>(null);
+  const [sendingInvoiceId, setSendingInvoiceId] = useState<string | null>(null);
+  const [downloadingInvoiceId, setDownloadingInvoiceId] = useState<string | null>(null);
+
+  const sendInvoice = async (job: Job) => {
+    const recipient = job.clientEmail || clients.find((c) => c.id === job.clientId)?.email;
+    if (!recipient) {
+      setInvoiceNotice({ error: true, text: "Add a customer email to this job or its linked client before sending." });
+      return;
+    }
+    if (!window.confirm("Send invoice for " + job.title + " to " + recipient + "?")) return;
+    setInvoiceNotice(null);
+    setSendingInvoiceId(job.id);
+    try {
+      const result = await api.post<{ sentTo: string; invoice: string }>("/jobs/" + encodeURIComponent(job.id) + "/send-invoice");
+      await reloadJobs();
+      setInvoiceNotice({ error: false, text: result.invoice + " accepted by the email service for " + result.sentTo + ". This does not confirm inbox delivery." });
+    } catch (error: any) {
+      setInvoiceNotice({ error: true, text: error.message || "Invoice could not be sent." });
+    } finally {
+      setSendingInvoiceId(null);
+    }
+  };
+
+  const downloadInvoice = async (job: Job) => {
+    setInvoiceNotice(null);
+    setDownloadingInvoiceId(job.id);
+    try {
+      const response = await fetch("/api/jobs/" + encodeURIComponent(job.id) + "/invoice.pdf", {
+        headers: { Authorization: "Bearer " + (getToken() || "") }, credentials: "same-origin"
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || "PDF generation failed.");
+      }
+      const blob = await response.blob();
+      if (blob.type !== "application/pdf") throw new Error("The server did not return a PDF.");
+      const uri = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = uri;
+      anchor.download = "INV-" + job.id.slice(0, 8).toUpperCase() + ".pdf";
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setTimeout(() => URL.revokeObjectURL(uri), 30_000);
+    } catch (error: any) {
+      setInvoiceNotice({ error: true, text: error.message || "Could not download PDF." });
+    } finally {
+      setDownloadingInvoiceId(null);
+    }
+  };
   const currency = settings.currency || "USD";
 
   const loadPayments = async () => {
@@ -52,6 +140,7 @@ export function Invoices({
 
   useEffect(() => {
     loadPayments();
+    loadReviewDeposits();
   }, []);
 
   const paidByJob = useMemo(() => {
@@ -98,6 +187,46 @@ export function Invoices({
         </p>
       </div>
 
+      {/* Only linked FFPRO service jobs in Review appear here. */}
+      {reviewDeposits.length > 0 && (
+        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm" aria-label="Review deposit terms">
+          <h3 className="text-base font-semibold text-slate-900">Review deposit decisions</h3>
+          <p className="mt-1 text-sm text-slate-500">Choose a 20% deposit or waive it before these jobs are invoiced. A waiver never records a payment.</p>
+          <div className="mt-4 divide-y divide-slate-100">
+            {reviewDeposits.map(job=>(
+              <div key={job.id} className="flex flex-wrap items-center justify-between gap-3 py-3">
+                <div>
+                  <p className="text-sm font-semibold text-slate-900">{job.title}</p>
+                  <p className="text-xs text-slate-500">{job.client} · {formatMoney(Number(job.amount||0),currency)}</p>
+                  <p className="mt-1 text-xs text-slate-600">
+                    {job.depositPolicy==='waived'?'Deposit waived':
+                     job.depositPolicy==='twenty_percent'?'20% deposit selected':'Awaiting reviewer selection'}
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button type="button" disabled={Boolean(savingReviewId)}
+                    onClick={()=>saveReviewDeposit(job,'twenty_percent')}
+                    className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-50">
+                    {savingReviewId===job.id?'Saving…':'Set 20% deposit'}
+                  </button>
+                  <button type="button" disabled={Boolean(savingReviewId)}
+                    onClick={()=>saveReviewDeposit(job,'waived')}
+                    className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-50 disabled:opacity-50">
+                    Waive deposit
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+      {reviewError && <p role="alert" className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{reviewError}</p>}
+      {invoiceNotice && (
+        <div role="status" className={"rounded-xl border px-4 py-3 text-sm " +
+          (invoiceNotice.error ? "border-red-200 bg-red-50 text-red-800" : "border-emerald-200 bg-emerald-50 text-emerald-800")}>
+          {invoiceNotice.text}
+        </div>
+      )}
       {paymentError && (
         <div className="rounded-xl border border-rose-400/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">
           {paymentError}
@@ -159,7 +288,10 @@ export function Invoices({
                   <tr key={job.id} className="hover:bg-slate-50 transition-colors">
                     <td className="px-5 py-4">
                       <p className="font-semibold text-slate-900">{job.title}</p>
-                      <p className="text-xs text-slate-500 mt-0.5">{job.client}</p>
+                        <p className="text-xs text-slate-500 mt-0.5">{job.client}</p>
+                        {job.invoiceSentAt && <p className="text-xs text-emerald-700 mt-1">
+                          Last emailed {new Date(job.invoiceSentAt).toLocaleString()} to {job.invoiceSentTo || "customer"}
+                        </p>}
                     </td>
                     <td className="px-5 py-4 font-semibold text-slate-900">{formatMoney(job.amount || 0, currency)}</td>
                     <td className="px-5 py-4 font-semibold text-emerald-600">{formatMoney(received, currency)}</td>
@@ -177,6 +309,16 @@ export function Invoices({
                     </td>
                     <td className="px-5 py-4 text-right">
                       <div className="flex justify-end gap-2">
+                        <button type="button" disabled={downloadingInvoiceId === job.id}
+                          onClick={() => downloadInvoice(job)}
+                          className="px-3 py-2 text-slate-700 hover:bg-slate-100 rounded-lg text-xs font-bold disabled:opacity-50">
+                          {downloadingInvoiceId === job.id ? "Preparing..." : "Download PDF"}
+                        </button>
+                        <button type="button" disabled={sendingInvoiceId === job.id}
+                          onClick={() => sendInvoice(job)}
+                          className="px-3 py-2 text-indigo-700 hover:bg-indigo-50 rounded-lg text-xs font-bold disabled:opacity-50">
+                          {sendingInvoiceId === job.id ? "Sending..." : job.invoiceSentAt ? "Resend Invoice" : "Email Invoice"}
+                        </button>
                         {outstanding > 0.005 && (
                           <button
                             onClick={() => setPaymentJob(job)}
@@ -228,6 +370,8 @@ export function Invoices({
           clients={clients}
           settings={settings}
           onClose={() => setSelectedJobId(null)}
+          onChanged={reloadJobs}
+          canConfirmCustomer={canConfirmCustomer}
           onUpdate={(updatedJob) => {
             setJobs(jobs.map((job) => (job.id === updatedJob.id ? updatedJob : job)));
           }}
