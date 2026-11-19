@@ -274,6 +274,14 @@ export function Settings({
                 className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 outline-none text-sm resize-none"
               />
             </div>
+            <div className="space-y-1">
+              <label htmlFor="invoice-copy-email" className="block text-xs font-bold text-slate-400 uppercase tracking-widest">Invoice copy (BCC)</label>
+              <input id="invoice-copy-email" type="email" name="invoiceCopyEmail" autoComplete="off"
+                maxLength={254} value={draft.invoiceCopyEmail || ""} onChange={handleChange}
+                placeholder="accounts@example.com"
+                className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-indigo-500/20 outline-none text-sm" />
+              <p className="text-xs text-slate-500">Optional private copy of emailed invoices for this workspace only. Never shared with customers.</p>
+            </div>
           </div>
         </div>
       </div>
