@@ -1,3 +1,4 @@
+import { isApprovedWebsiteConversion } from "./websiteIntakeContract.js";
 import { createTiquetAuthentication } from "./hubAwareAuthentication.js";
 import { invoiceReference, invoiceRecipient, validateInvoice, renderInvoicePdf } from "./invoiceDocuments.js";
 import { normalizeInvoiceCopyEmail, invoiceBccForWorkspace, parseDueDate } from "./billingOptions.js";
@@ -1675,9 +1676,8 @@ app.post("/api/jobs", authenticateToken, requireAnyPagePermission("jobs", "new-r
 
 // Update a job
 // ---------------------------------------------------------------------
-// Public intake endpoint — used by the VISION79 website's contact form
-// (website2026) to open a job here automatically when someone clicks
-// "Send My Request". This is the only route in the app that is reachable
+// Approved CRM conversion intake — enquiries remain in the website CRM.
+// This service endpoint creates jobs only after an approved conversion. This is the only route in the app that is reachable
 // without a logged-in user, so it is deliberately locked down harder than
 // the rest of the API:
 //   - a shared secret header (X-Intake-Secret) instead of a JWT
@@ -1720,6 +1720,8 @@ const requireIntakeSecret = (req, res, next) => {
   next();
 };
 app.post("/api/public/intake", intakeLimiter, requireIntakeSecret, async (req, res) => {
+  // Website enquiries stay in CRM. This authenticated integration accepts only approved conversions.
+  if (!isApprovedWebsiteConversion(req.body)) return res.status(422).json({ error: "Approved CRM conversion is required." });
   const accountId = process.env.INTAKE_ACCOUNT_ID || "default_account";
 
   // Hard safety check: INTAKE_ACCOUNT_ID must be a real, existing account
